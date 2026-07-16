@@ -4060,6 +4060,44 @@ TEST(tool_manage_adr_unified_backend_issue256) {
     PASS();
 }
 
+TEST(tool_manage_adr_rejects_removed_sections_argument) {
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *st = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(st);
+    ASSERT_EQ(cbm_store_upsert_project(st, "adr-sections-guard", "/tmp/adr-sections-guard"),
+              CBM_STORE_OK);
+    cbm_mcp_server_set_project(srv, "adr-sections-guard");
+    ASSERT_EQ(cbm_store_adr_store(st, "adr-sections-guard", "## PURPOSE\nOriginal ADR.\n"),
+              CBM_STORE_OK);
+
+    mcp_mutation_guard_probe_t probe = {0};
+    cbm_mcp_server_set_project_mutation_guard(srv, mcp_mutation_guard_probe_begin,
+                                              mcp_mutation_guard_probe_end, &probe);
+
+    char *resp = cbm_mcp_server_handle(
+        srv, "{\"jsonrpc\":\"2.0\",\"id\":122,\"method\":\"tools/call\","
+             "\"params\":{\"name\":\"manage_adr\",\"arguments\":{"
+             "\"project\":\"adr-sections-guard\",\"mode\":\"update\","
+             "\"sections\":[\"PURPOSE\"],\"content\":\"## PURPOSE\\nReplacement ADR.\\n\"}}}");
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "invalid_arguments"));
+    ASSERT_NOT_NULL(strstr(resp, "No ADR write was performed"));
+    ASSERT_NOT_NULL(strstr(resp, "\"isError\":true"));
+    free(resp);
+    ASSERT_EQ(probe.begin_count, 0);
+    ASSERT_EQ(probe.end_count, 0);
+
+    cbm_adr_t adr;
+    memset(&adr, 0, sizeof(adr));
+    ASSERT_EQ(cbm_store_adr_get(st, "adr-sections-guard", &adr), CBM_STORE_OK);
+    ASSERT_STR_EQ(adr.content, "## PURPOSE\nOriginal ADR.\n");
+    cbm_store_adr_free(&adr);
+
+    cbm_mcp_server_free(srv);
+    PASS();
+}
+
 TEST(tool_manage_adr_mutation_guard_balances_success) {
     const char *project = "guard-adr-success";
     cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
@@ -9423,6 +9461,7 @@ SUITE(mcp) {
     RUN_TEST(tool_manage_adr_no_project);
     RUN_TEST(tool_manage_adr_get_with_existing_adr);
     RUN_TEST(tool_manage_adr_unified_backend_issue256);
+    RUN_TEST(tool_manage_adr_rejects_removed_sections_argument);
     RUN_TEST(tool_index_repository_reports_store_backed_adr);
     RUN_TEST(tool_index_repository_dot_uses_absolute_project_key_and_preserves_adr);
     RUN_TEST(index_repository_relative_path_uses_explicit_session_root);
