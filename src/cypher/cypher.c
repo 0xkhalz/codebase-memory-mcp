@@ -3233,7 +3233,15 @@ static void expand_pattern_rels(cbm_store_t *store, cbm_pattern_t *pat, binding_
 
         bool is_variable_length = (rel->min_hops != SKIP_ONE || rel->max_hops != SKIP_ONE);
 
-        size_t alloc_n = (size_t)*bind_cap * (size_t)CYP_GROWTH_10 + SKIP_ONE;
+        /* Size this hop's output for BOTH writers without dropping any row: the
+         * expansion helpers emit at most max_new = bind_cap*10 rows (they stop at
+         * max_new), and the OPTIONAL fallback emits at most one row per source
+         * (<= *bind_count). A source either matches (feeds the expansion) or takes
+         * the fallback, never both, so the two counts are additive and bounded by
+         * max_new + *bind_count. Computed in size_t so the product cannot overflow.
+         * The previous "+ 1" sizing fit only a SINGLE fallback row after a
+         * saturated expansion; a second one ran off the end (heap OOB, CWE-787). */
+        size_t alloc_n = (size_t)*bind_cap * (size_t)CYP_GROWTH_10 + (size_t)*bind_count;
         binding_t *new_bindings = malloc(alloc_n * sizeof(binding_t));
         if (!new_bindings) {
             return; /* OOM: leave existing bindings untouched rather than corrupt */
@@ -3261,7 +3269,10 @@ static void expand_pattern_rels(cbm_store_t *store, cbm_pattern_t *pat, binding_
                                     &new_count, max_new, &match_count);
             }
 
-            /* OPTIONAL MATCH: keep binding with empty target if no matches */
+            /* OPTIONAL MATCH: no expansion for this source, so keep the binding
+             * with the target unbound (projection renders it ""). The buffer is
+             * sized max_new + *bind_count precisely so every such fallback row has
+             * a slot — no guard needed, and no OPTIONAL no-match row is dropped. */
             if (is_optional && match_count == 0) {
                 binding_t nb = {0};
                 binding_copy(&nb, b);
