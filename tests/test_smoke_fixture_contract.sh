@@ -51,8 +51,10 @@ helper_source = read(helper_relative)
 # The server owns the ephemeral bind. A parent-side socket probe followed by
 # python -m http.server would reintroduce the close/rebind race this guards.
 require(
-    "ThreadingHTTPServer((args.bind, 0)" in helper_source,
-    "fixture server must bind port 0 itself and retain the listening socket",
+    "HTTPServer((args.bind, 0)" in helper_source
+    and "ThreadingHTTPServer)" in helper_source,
+    "fixture server must bind port 0 itself on a threading server and retain "
+    "the listening socket",
 )
 require(
     "--port-file" in helper_source and "os.replace" in helper_source,
@@ -429,6 +431,60 @@ if helper.is_file():
                     process.kill()
                     process.wait(timeout=3)
                     failures.append("fixture server did not terminate promptly")
+
+# Regression guard, by construction: binding must not depend on reverse DNS.
+# http.server's default server_bind() resolves socket.getfqdn(), which blocks
+# for the resolver timeout on hosts that do not answer for the bind address --
+# the server stays alive and never publishes its port (macOS Intel). Force the
+# resolver to hang and require the port anyway, so the dependency cannot
+# return without turning this gate red on every platform.
+if helper.is_file():
+    with tempfile.TemporaryDirectory(prefix="cbm-fixture-dns-") as dns_temp:
+        dns_root = pathlib.Path(dns_temp)
+        dns_fixture = dns_root / "fixture"
+        dns_fixture.mkdir()
+        (dns_fixture / "expected-artifact.txt").write_bytes(b"fixture-ok\n")
+        dns_port_file = dns_root / "port"
+        dns_wrapper = dns_root / "hang_reverse_dns.py"
+        dns_wrapper.write_text(
+            "import runpy, socket, sys, time\n"
+            "socket.getfqdn = lambda *a, **k: time.sleep(300)\n"
+            "sys.argv = ['smoke-fixture-server.py', '--directory', "
+            f"{str(dns_fixture)!r}, '--port-file', {str(dns_port_file)!r}]\n"
+            f"runpy.run_path({str(helper)!r}, run_name='__main__')\n",
+            encoding="utf-8",
+        )
+        dns_log = dns_root / "server.log"
+        with dns_log.open("wb") as dns_handle:
+            dns_process = subprocess.Popen(
+                [sys.executable, str(dns_wrapper)],
+                stdout=dns_handle,
+                stderr=subprocess.STDOUT,
+            )
+        try:
+            dns_port = 0
+            dns_deadline = time.monotonic() + 20
+            while time.monotonic() < dns_deadline:
+                if dns_port_file.is_file():
+                    dns_text = dns_port_file.read_text(encoding="ascii").strip()
+                    if dns_text:
+                        dns_port = int(dns_text)
+                        break
+                if dns_process.poll() is not None:
+                    break
+                time.sleep(0.02)
+            require(
+                dns_port > 0,
+                "fixture server must bind without a reverse-DNS lookup "
+                "(hanging socket.getfqdn must not block port publication)",
+            )
+        finally:
+            dns_process.terminate()
+            try:
+                dns_process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                dns_process.kill()
+                dns_process.wait(timeout=3)
 
 if failures:
     print("smoke fixture contract: FAIL", file=sys.stderr)

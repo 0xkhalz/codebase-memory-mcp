@@ -8,7 +8,27 @@ import functools
 import http.server
 import os
 import pathlib
+import socketserver
 import tempfile
+
+
+class FixtureHTTPServer(http.server.ThreadingHTTPServer):
+    """Bind without the stdlib's reverse-DNS lookup.
+
+    http.server.HTTPServer.server_bind() resolves socket.getfqdn(host). On a
+    host whose resolver does not answer for the bind address that call blocks
+    for the resolver timeout, so the process stays alive and never reaches
+    publish_port -- observed on macOS Intel runners as waited=30.0s,
+    exit_status=alive, port_file=absent, empty startup log. The FQDN only
+    feeds CGI-style variables this fixture never serves, so binding without
+    it is both sufficient and immune to resolver behaviour.
+    """
+
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
 
 
 def publish_port(port_file: pathlib.Path, port: int) -> None:
@@ -46,7 +66,7 @@ def main() -> None:
         http.server.SimpleHTTPRequestHandler,
         directory=str(directory),
     )
-    with http.server.ThreadingHTTPServer((args.bind, 0), handler) as server:
+    with FixtureHTTPServer((args.bind, 0), handler) as server:
         publish_port(args.port_file, server.server_port)
         print(
             f"smoke fixture server: http://{args.bind}:{server.server_port} "
