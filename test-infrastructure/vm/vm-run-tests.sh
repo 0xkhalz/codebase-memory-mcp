@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # vm-run-tests.sh — run C test suites on the Windows VM under a CI-shaped
 # protected temp root. Runs ON the VM (MSYS2 shell), invoked by win.sh
-# test / ubsan-test / trap-ubsan-test.
+# test / ubsan-test / trap-ubsan-test / soak.
 #
 # Why the temp root: the daemon/coordination suites fail closed on the
 # MSYS-shared /tmp (C:\msys64\tmp), whose ancestry grants mutation rights to
@@ -21,7 +21,21 @@ RUNNER="${CBM_VM_RUNNER:-build/c/test-runner}"
 LOG="${CBM_VM_TEST_LOG:-/tmp/win-test.log}"
 
 [ $# -ge 1 ] || { echo "usage: vm-run-tests.sh <suite...> | --par" >&2; exit 2; }
-[ -x "$RUNNER" ] || { echo "ERROR: runner '$RUNNER' missing — build first" >&2; exit 2; }
+if [ "$1" = "--soak" ]; then
+    [ $# -eq 2 ] || { echo "usage: vm-run-tests.sh --soak <positive-minutes>" >&2; exit 2; }
+    duration="$2"
+    case "$duration" in
+    ''|*[!0-9]*) echo "usage: vm-run-tests.sh --soak <positive-minutes>" >&2; exit 2 ;;
+    esac
+    [ "$duration" -gt 0 ] ||
+        { echo "usage: vm-run-tests.sh --soak <positive-minutes>" >&2; exit 2; }
+    binary="${CBM_VM_SOAK_BINARY:-build/c/codebase-memory-mcp.exe}"
+    [ -x "$binary" ] || { echo "ERROR: binary '$binary' missing — build first" >&2; exit 2; }
+    artifact="$binary"
+else
+    [ -x "$RUNNER" ] || { echo "ERROR: runner '$RUNNER' missing — build first" >&2; exit 2; }
+    artifact="$RUNNER"
+fi
 
 # Stale roots from earlier runs are removed up front; the current root is kept
 # after the run for post-mortem inspection.
@@ -61,7 +75,7 @@ export TEMP TMP TMPDIR
 # Two steps, both idempotent: protect the DIRECTORY (inheritance flags are
 # directory-only — a /T re-root leaves files with empty, deny-all DACLs),
 # then /reset the children so they re-inherit the clean set from it.
-runner_dir_w="$(cygpath -w "$(dirname "$RUNNER")")"
+runner_dir_w="$(cygpath -w "$(dirname "$artifact")")"
 me="$(whoami | tr -d '\r')"
 MSYS2_ARG_CONV_EXCL='*' icacls "$runner_dir_w" /inheritance:r \
     /grant:r "${me}:(OI)(CI)F" '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' \
@@ -69,6 +83,18 @@ MSYS2_ARG_CONV_EXCL='*' icacls "$runner_dir_w" /inheritance:r \
 MSYS2_ARG_CONV_EXCL='*' icacls "${runner_dir_w}\\*" /reset /T /C /Q >/dev/null 2>&1 || true
 
 echo "=== vm-run-tests: runner=$RUNNER temp=$TEMP suites: $* ==="
+
+if [ "$1" = "--soak" ]; then
+    echo "=== vm-run-tests: binary=$binary temp=$TEMP soak=${duration}m ==="
+    scripts/soak-test.sh "$binary" "$duration" 2>&1 | tee "$LOG"
+    rc="${PIPESTATUS[0]}"
+    if ! grep -Fq '=== soak-test: PASSED ===' "$LOG"; then
+        echo "GUARD: native Windows soak produced no completion summary; treating as failure " \
+            "(soak rc=$rc)" >&2
+        exit 90
+    fi
+    exit "$rc"
+fi
 
 # --par runs the repo's full parallel harness (wave + tail scheduling,
 # per-shard union guard, manifest) under this same protected environment;

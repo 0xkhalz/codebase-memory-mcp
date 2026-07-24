@@ -22,6 +22,11 @@ for required in \
     'FAIL: soak DACL normalize' \
     'FAIL: soak DACL stamp' \
     'FAIL: soak child DACL reset' \
+    'SOAK_NATIVE_WINDOWS=false' \
+    "eval 'coproc CBM_SOAK_SERVER {" \
+    'SERVER_PID=$CBM_SOAK_SERVER_PID' \
+    'start_mcp_server truncate' \
+    'start_mcp_server append' \
     'def handle_${i}(request):' \
     'trace_path "{\"project\":\"$PROJ_NAME\",\"function_name\":\"handle_1\",\"direction\":\"both\"}"' \
     'wait_for_daemon_stop "$DAEMON_STOP_COUNT"' \
@@ -41,6 +46,12 @@ fi
 
 if grep -Fq '"repo_path":"$SOAK_PROJECT"' "$soak"; then
     echo "FAIL: soak must not send an unconverted host/MSYS project path to a Windows binary" >&2
+    exit 1
+fi
+
+if grep -Fq "json.load(open('\$DIAG_FILE'))" "$soak" ||
+    grep -Fq 'with open(sys.argv[1]' "$soak"; then
+    echo "FAIL: native Windows Python must consume diagnostics through stdin, not an MSYS path" >&2
     exit 1
 fi
 

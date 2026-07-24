@@ -6,7 +6,7 @@
 #   Linux arm64:    test (ASan+LeakSan) + build (-O2)  [native, fast]
 #   Linux amd64:    test + build                        [QEMU, slower]
 #   Linux portable: Alpine musl static build + smoke    [portable binary]
-#   Windows:        cross-compile with mingw-w64        [compile-check; use
+#   Windows:        cross-compile + Wine version check  [fast check only; use
 #                   vm/win.sh for mandatory real-Windows verification]
 #   macOS:          run natively (not in Docker)
 #
@@ -27,6 +27,7 @@
 #   ./test-infrastructure/run.sh all          # above + amd64 + Windows Wine smoke
 #   ./test-infrastructure/run.sh portable     # Alpine portable build + smoke only
 #   ./test-infrastructure/run.sh windows      # Windows cross-compile only
+#   ./test-infrastructure/run.sh soak-windows # native Windows VM, 10 min
 #   ./test-infrastructure/run.sh test         # Linux arm64 test only (no perf)
 #   ./test-infrastructure/run.sh perf         # Linux arm64 perf/incremental only
 #   ./test-infrastructure/run.sh tsan         # Linux arm64 ThreadSanitizer race gate
@@ -60,6 +61,11 @@ print_real_windows_gate() {
     echo "=== Container/cross-compile legs passed ==="
     echo "=== Real-Windows gate remains: vm/win.sh sync, test, guards, smoke-install ==="
 }
+
+if [ "${1:-full}" = "soak-windows" ]; then
+    echo "=== Windows: native daemon soak (real Windows VM, 10 min) ==="
+    exec "$ROOT/test-infrastructure/vm/win.sh" soak 10
+fi
 
 if ! docker info >/dev/null 2>&1; then
     echo "ERROR: no Docker daemon reachable." >&2
@@ -126,16 +132,12 @@ case "${1:-full}" in
         $COMPOSE run --rm -e CBM_SKIP_PERF=1 test-portable
         ;;
     windows)
-        echo "=== Windows: cross-compile + smoke (Wine) ==="
+        echo "=== Windows: cross-compile + launcher/payload version check (Wine) ==="
         $COMPOSE run --rm smoke-windows
         ;;
     smoke-windows)
-        echo "=== Windows: smoke test (cross-compile + Wine) ==="
+        echo "=== Windows: launcher/payload version check (cross-compile + Wine) ==="
         $COMPOSE run --rm smoke-windows
-        ;;
-    soak-windows)
-        echo "=== Windows: soak test (cross-compile + Wine, 10 min) ==="
-        $COMPOSE run --rm soak-windows
         ;;
     amd64)
         echo "=== Linux amd64: test + build ==="
@@ -157,7 +159,7 @@ case "${1:-full}" in
         $COMPOSE run --rm -e CBM_SKIP_PERF=1 test-amd64
         $COMPOSE run --rm build-amd64
         $COMPOSE run --rm smoke-amd64
-        echo "=== Windows: cross-compile + smoke (Wine) ==="
+        echo "=== Windows: cross-compile + launcher/payload version check (Wine) ==="
         $COMPOSE run --rm smoke-windows
         print_real_windows_gate
         ;;

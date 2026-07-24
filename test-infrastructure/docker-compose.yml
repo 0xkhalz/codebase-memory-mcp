@@ -177,28 +177,10 @@ services:
     command:
       - |
         scripts/build.sh CC=x86_64-w64-mingw32-clang CXX=x86_64-w64-mingw32-clang++ BUILD_DIR=build/win-cross &&
-        mv build/win-cross/codebase-memory-mcp build/win-cross/codebase-memory-mcp.exe 2>/dev/null || true &&
-        WINEDEBUG=-all scripts/smoke-test.sh ./build/win-cross/codebase-memory-mcp.exe
-
-  # ── Windows soak (cross-compile + Wine) ───────────────────
-  # Soak is the one place a CPU cap is meaningful: sustained runs under
-  # deliberate resource starvation surface scheduling/backpressure behaviour the
-  # full-parallel correctness suite does not target. Opt in with
-  # CBM_LOCAL_CI_CPUS=<n>; default 0 = unlimited, so normal soak runs stay fast.
-  soak-windows:
-    build:
-      context: ..
-      dockerfile: test-infrastructure/Dockerfile.mingw
-    platform: linux/amd64
-    cpus: ${CBM_LOCAL_CI_CPUS:-0}
-    volumes:
-      - ..:/src
-    entrypoint: ["/bin/bash", "-c"]
-    command:
-      - |
-        scripts/build.sh CC=x86_64-w64-mingw32-clang CXX=x86_64-w64-mingw32-clang++ BUILD_DIR=build/win-cross &&
-        mv build/win-cross/codebase-memory-mcp build/win-cross/codebase-memory-mcp.exe 2>/dev/null || true &&
-        CBM_DIAGNOSTICS=1 WINEDEBUG=-all scripts/soak-test.sh ./build/win-cross/codebase-memory-mcp.exe 10
+        mv build/win-cross/codebase-memory-mcp.exe build/win-cross/codebase-memory-mcp.payload.exe &&
+        mv build/win-cross/codebase-memory-mcp-launcher.exe build/win-cross/codebase-memory-mcp.exe &&
+        WINEDEBUG=-all wine64 ./build/win-cross/codebase-memory-mcp.payload.exe --version &&
+        WINEDEBUG=-all wine64 cmd /c build/win-cross/codebase-memory-mcp.exe --version
 
   # ── Linux portable (Alpine musl static) ────────────────────
   test-portable:

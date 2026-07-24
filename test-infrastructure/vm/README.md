@@ -67,6 +67,7 @@ vm/win.sh sync              # mirror the uncommitted worktree and rebuild before
 vm/win.sh test cli daemon_ipc         # run suites natively, seconds
 vm/win.sh guards                      # the Windows guard scripts
 vm/win.sh smoke-install               # managed-install E2E, stderr VISIBLE
+vm/win.sh soak 10                     # native daemon endurance gate
 vm/win.sh sh "cd /c/cbm && gdb ..."   # anything, interactively
 vm/win.sh push-file src/cli/cli.c /c/cbm/src/cli/cli.c   # WIP iteration
 ```

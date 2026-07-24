@@ -23,7 +23,6 @@ def publish_port(port_file: pathlib.Path, port: int) -> None:
     ) as temporary:
         temporary.write(f"{port}\n")
         temporary.flush()
-        os.fsync(temporary.fileno())
         temporary_path = pathlib.Path(temporary.name)
     try:
         os.replace(temporary_path, port_file)

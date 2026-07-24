@@ -40,6 +40,9 @@ smoke_local = read("scripts/smoke-local.sh")
 vm_smoke = read("test-infrastructure/vm/vm-smoke.sh")
 windows_path_guard = read("test-infrastructure/vm/windows-user-path-guard.ps1")
 compose = read("test-infrastructure/docker-compose.yml")
+local_ci = read("test-infrastructure/run.sh")
+windows_vm = read("test-infrastructure/vm/win.sh")
+windows_vm_runner = read("test-infrastructure/vm/vm-run-tests.sh")
 pr_workflow = read(".github/workflows/pr.yml")
 test_driver = read("scripts/test.sh")
 cli_source = read("src/cli/cli.c")
@@ -54,6 +57,10 @@ require(
 require(
     "--port-file" in helper_source and "os.replace" in helper_source,
     "fixture server must publish its assigned port atomically through a file",
+)
+require(
+    "os.fsync(" not in helper_source,
+    "fixture readiness publication must not wait for crash-durability sync",
 )
 require(
     "socket.socket" not in smoke_local and "python3 -m http.server" not in smoke_local,
@@ -228,6 +235,48 @@ for service in ("smoke:", "smoke-amd64:"):
         "scripts/smoke-local.sh" in section,
         f"docker-compose {service[:-1]} service must run smoke-local.sh",
     )
+for service in ("smoke-windows:",):
+    match = re.search(
+        rf"^  {re.escape(service)}\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:|\Z)",
+        compose,
+        re.MULTILINE | re.DOTALL,
+    )
+    section = match.group("body") if match else ""
+    require(
+        "mv build/win-cross/codebase-memory-mcp.exe "
+        "build/win-cross/codebase-memory-mcp.payload.exe" in section
+        and "mv build/win-cross/codebase-memory-mcp-launcher.exe "
+        "build/win-cross/codebase-memory-mcp.exe" in section,
+        f"docker-compose {service[:-1]} must assemble the Windows launcher/payload pair",
+    )
+require(
+    "wine64 ./build/win-cross/codebase-memory-mcp.payload.exe --version" in compose
+    and "wine64 cmd /c build/win-cross/codebase-memory-mcp.exe --version" in compose,
+    "docker-compose Windows cross-smoke must execute the payload through Wine and the launcher "
+    "through a Wine Windows parent",
+)
+require(
+    "soak-windows:" not in compose,
+    "docker-compose must not advertise a Wine daemon soak that cannot enforce Windows security "
+    "and locking semantics",
+)
+require(
+    'if [ "${1:-full}" = "soak-windows" ]' in local_ci
+    and 'exec "$ROOT/test-infrastructure/vm/win.sh" soak 10' in local_ci,
+    "the maintained Windows soak entry point must route to the real Windows VM",
+)
+require(
+    "soak)" in windows_vm
+    and "vm-run-tests.sh --soak '$duration'" in windows_vm,
+    "the Windows VM driver must route the native daemon soak through its protected-temp harness",
+)
+require(
+    'if [ "$1" = "--soak" ]' in windows_vm_runner
+    and 'scripts/soak-test.sh "$binary" "$duration"' in windows_vm_runner
+    and "=== soak-test: PASSED ===" in windows_vm_runner,
+    "the Windows VM harness must run and completion-guard the native daemon soak under its "
+    "protected temp root",
+)
 require(
     pr_workflow.count("scripts/smoke-local.sh") >= 2,
     "PR Ubuntu and macOS smoke steps must run smoke-local.sh",
@@ -330,10 +379,40 @@ if helper.is_file():
                         break
                     time.sleep(0.02)
                 require(port > 0, "fixture server must publish a nonzero assigned port")
-                if port == 0 and log_file.is_file():
-                    details = log_file.read_text(encoding="utf-8", errors="replace").strip()
-                    if details:
-                        failures.append(f"fixture server startup log: {details}")
+                if port == 0:
+                    # A bare "no port" verdict is unactionable on a runner we
+                    # cannot reproduce locally: this failed macOS-Intel-only
+                    # and the conditional startup-log line named nothing
+                    # because the log was empty. Report the observable state
+                    # unconditionally so the next remote run identifies the
+                    # cause instead of costing another blind round.
+                    waited = 30 - max(0.0, deadline - time.monotonic())
+                    exit_status = process.poll()
+                    if log_file.is_file():
+                        details = log_file.read_text(
+                            encoding="utf-8", errors="replace"
+                        ).strip()
+                    else:
+                        details = "(no server.log created)"
+                    if port_file.is_file():
+                        raw = port_file.read_text(encoding="ascii", errors="replace")
+                        port_state = f"exists content={raw!r}"
+                    else:
+                        port_state = "absent"
+                    leftovers = sorted(
+                        entry.name
+                        for entry in temp_path.iterdir()
+                        if entry.name.startswith(f".{port_file.name}.")
+                    )
+                    failures.append(
+                        "fixture server diagnostics: "
+                        f"waited={waited:.1f}s "
+                        f"exit_status={'alive' if exit_status is None else exit_status} "
+                        f"port_file={port_state} "
+                        f"staged_temp_files={leftovers or 'none'} "
+                        f"interpreter={sys.executable} "
+                        f"startup_log={details or '(empty)'}"
+                    )
                 if port > 0:
                     opener = urllib.request.build_opener(
                         urllib.request.ProxyHandler({})
