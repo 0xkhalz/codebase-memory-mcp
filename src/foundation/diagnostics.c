@@ -151,6 +151,15 @@ static void diag_write_allocator_stats(void) {
         return;
     }
     mi_stats_print_out(diag_stats_write, sink);
+    /* Arena slice map: the legend distinguishes free-committed (retained, "_")
+     * from free-reserved (already returned to the OS, ".") and free-purgeable
+     * ("~"). That is what localises retained memory to a specific arena state
+     * instead of inferring it from totals. mi_debug_show_arenas writes through
+     * mimalloc's own output hook, so redirect that into this file. */
+    (void)fputs("\n--- arenas ---\n", sink);
+    mi_register_output(diag_stats_write, sink);
+    mi_debug_show_arenas();
+    mi_register_output(NULL, NULL);
     (void)fputs("\n--- options ---\n", sink);
     mi_options_print_out(diag_stats_write, sink);
     (void)fclose(sink);
