@@ -21,6 +21,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -706,4 +707,87 @@ int cbm_mem_phase_report_json(char *out, size_t size) {
         length += written;
     }
     return length > 0 && (size_t)length < size ? length : 0;
+}
+
+/* ── Windows region census (see mem.h) ─────────────────────────────── */
+
+static atomic_int g_mem_census_enabled = -1;
+
+bool cbm_mem_census_enabled(void) {
+    int state = atomic_load_explicit(&g_mem_census_enabled, memory_order_acquire);
+    if (state >= 0) {
+        return state == 1;
+    }
+    char buf[CBM_SZ_16];
+    bool on = cbm_safe_getenv("CBM_MEM_CENSUS", buf, sizeof(buf), NULL) != NULL && buf[0] == '1';
+    atomic_store_explicit(&g_mem_census_enabled, on ? 1 : 0, memory_order_release);
+    return on;
+}
+
+bool cbm_mem_win_census(cbm_mem_win_census_t *out) {
+    if (!out) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+#ifndef _WIN32
+    return false;
+#else
+    /* Walk the whole user address space once. VirtualQuery reports the largest
+     * run of pages sharing a state/type, so the region count also tells us how
+     * fragmented the space has become. */
+    MEMORY_BASIC_INFORMATION mbi;
+    unsigned char *address = NULL;
+    while (VirtualQuery(address, &mbi, sizeof(mbi)) == sizeof(mbi)) {
+        out->regions++;
+        if (mbi.State == MEM_COMMIT) {
+            out->committed_total += mbi.RegionSize;
+            switch (mbi.Type) {
+            case MEM_PRIVATE:
+                out->committed_private += mbi.RegionSize;
+                break;
+            case MEM_MAPPED:
+                out->committed_mapped += mbi.RegionSize;
+                break;
+            case MEM_IMAGE:
+                out->committed_image += mbi.RegionSize;
+                break;
+            default:
+                break;
+            }
+        } else if (mbi.State == MEM_RESERVE) {
+            out->reserved_total += mbi.RegionSize;
+        }
+        unsigned char *next = (unsigned char *)mbi.BaseAddress + mbi.RegionSize;
+        if (next <= address) {
+            break; /* no forward progress: stop rather than spin */
+        }
+        address = next;
+    }
+
+    /* The CRT heaps are the pool --wrap cannot reach: anything ucrtbase or a
+     * system DLL allocates internally lands here, and Windows heaps do not
+     * decommit on free. HeapWalk needs the heap locked to be coherent. */
+    HANDLE heaps[64];
+    DWORD count = GetProcessHeaps((DWORD)(sizeof(heaps) / sizeof(heaps[0])), heaps);
+    if (count > 0) {
+        out->heap_walk_ok = true;
+        out->crt_heap_count = (unsigned)(count > 64 ? 64 : count);
+        for (DWORD i = 0; i < out->crt_heap_count; i++) {
+            if (!HeapLock(heaps[i])) {
+                continue;
+            }
+            PROCESS_HEAP_ENTRY entry;
+            memset(&entry, 0, sizeof(entry));
+            while (HeapWalk(heaps[i], &entry)) {
+                if ((entry.wFlags & PROCESS_HEAP_REGION) != 0) {
+                    out->crt_heap_committed += entry.Region.dwCommittedSize;
+                } else if ((entry.wFlags & PROCESS_HEAP_ENTRY_BUSY) != 0) {
+                    out->crt_heap_busy += entry.cbData + entry.cbOverhead;
+                }
+            }
+            HeapUnlock(heaps[i]);
+        }
+    }
+    return true;
+#endif
 }

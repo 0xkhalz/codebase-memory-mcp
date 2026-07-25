@@ -200,4 +200,48 @@ void cbm_mem_phase_reset(void);
  * first. Returns bytes written (0 when disabled or empty). */
 int cbm_mem_phase_report_json(char *out, size_t size);
 
+/* ── Windows region census: which POOL holds the memory? ─────────────
+ *
+ * The allocator walk can only describe memory the allocator owns. When the
+ * process commits far more than the allocator holds — 440 MB private against
+ * 34.7 MiB of arenas (#581) — the remainder is by definition somewhere else,
+ * and "somewhere else" has to be named before it can be fixed. Guessing
+ * between the CRT heap, private VirtualAlloc, mapped files and thread stacks
+ * costs a soak run per guess; asking the OS costs one pass.
+ *
+ * Two independent walks, deliberately overlapping so they cross-check:
+ *   VirtualQuery over the whole address space  → committed bytes by region TYPE
+ *   GetProcessHeaps + HeapWalk                 → what the CRT heaps hold
+ *
+ * committed_private is the total the OS charges us for anonymous memory; the
+ * allocator's arenas and the CRT heaps are both drawn from it, so
+ *   committed_private - crt_heap_committed - <arena committed>
+ * is the unattributed remainder. A census where that remainder is the part
+ * that grows says the leak is in neither heap — which is a different bug from
+ * either heap leaking, and points at raw VirtualAlloc or stacks instead.
+ *
+ * Windows-only; returns false everywhere else so callers must handle absence
+ * rather than silently reading zeros as "nothing there".
+ */
+typedef struct {
+    size_t committed_total;   /* all MEM_COMMIT regions */
+    size_t committed_private; /* MEM_PRIVATE: heaps, stacks, raw VirtualAlloc */
+    size_t committed_mapped;  /* MEM_MAPPED: file/section views */
+    size_t committed_image;   /* MEM_IMAGE: loaded modules */
+    size_t reserved_total;    /* MEM_RESERVE, uncommitted */
+    size_t crt_heap_committed; /* committed bytes across all CRT heaps */
+    size_t crt_heap_busy;      /* bytes in live allocations inside them */
+    unsigned crt_heap_count;
+    unsigned regions;
+    bool heap_walk_ok; /* false → crt_* are unknown, not zero */
+} cbm_mem_win_census_t;
+
+/* Snapshot the OS-level region census. Returns false when unavailable
+ * (non-Windows, or out is NULL). */
+bool cbm_mem_win_census(cbm_mem_win_census_t *out);
+
+/* Census logging gate: CBM_MEM_CENSUS=1. Off by default — HeapWalk locks each
+ * CRT heap, so this is a diagnostic, never a hot-path metric. */
+bool cbm_mem_census_enabled(void);
+
 #endif /* CBM_MEM_H */

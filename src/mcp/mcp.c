@@ -10449,6 +10449,34 @@ char *cbm_mcp_handle_tool(cbm_mcp_server_t *srv, const char *tool_name, const ch
     cbm_mem_phase_mark("request.release_store");
     release_request_store(srv);
     cbm_mem_phase_mark("idle");
+    /* One census per completed request, so growth can be attributed to a POOL
+     * rather than inferred from a process total (#581). Emitted after the
+     * request store is released, which is the point where a well-behaved
+     * request has given everything back. */
+    if (cbm_mem_census_enabled()) {
+        cbm_mem_win_census_t census;
+        if (cbm_mem_win_census(&census)) {
+            const size_t mb = (size_t)CBM_SZ_1K * CBM_SZ_1K;
+            char private_mb[CBM_SZ_32];
+            char crt_mb[CBM_SZ_32];
+            char busy_mb[CBM_SZ_32];
+            char mapped_mb[CBM_SZ_32];
+            char rss_mb[CBM_SZ_32];
+            char regions[CBM_SZ_32];
+            (void)snprintf(private_mb, sizeof(private_mb), "%zu",
+                           census.committed_private / mb);
+            (void)snprintf(crt_mb, sizeof(crt_mb), "%zu",
+                           census.crt_heap_committed / mb);
+            (void)snprintf(busy_mb, sizeof(busy_mb), "%zu", census.crt_heap_busy / mb);
+            (void)snprintf(mapped_mb, sizeof(mapped_mb), "%zu",
+                           census.committed_mapped / mb);
+            (void)snprintf(rss_mb, sizeof(rss_mb), "%zu", cbm_mem_rss() / mb);
+            (void)snprintf(regions, sizeof(regions), "%u", census.regions);
+            cbm_log_info("mem.census", "private_mb", private_mb, "crt_heap_mb", crt_mb,
+                         "crt_busy_mb", busy_mb, "mapped_mb", mapped_mb, "rss_mb", rss_mb,
+                         "regions", regions);
+        }
+    }
     return result;
 }
 
