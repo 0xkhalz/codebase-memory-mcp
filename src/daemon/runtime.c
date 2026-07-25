@@ -1248,6 +1248,10 @@ static void *runtime_application_worker(void *opaque) {
     if (!sent && !atomic_load_explicit(&worker->disconnecting, memory_order_acquire)) {
         cbm_daemon_ipc_connection_interrupt(worker->connection);
     }
+    /* Same reasoning as the connection worker: hand this thread's allocator
+     * pages back while it still owns them, since abandoned pages are not
+     * reclaimed in practice (#581). */
+    cbm_mem_collect();
     return NULL;
 }
 
