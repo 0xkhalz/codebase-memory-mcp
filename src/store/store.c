@@ -736,7 +736,11 @@ enum {
     STORE_PAGECACHE_SLOTS = 2048,            /* ~8.7 MiB, shared by all connections */
 };
 
-static void store_configure_shared_pagecache(void) {
+/* Must run before ANY sqlite3 call: SQLITE_CONFIG_PAGECACHE is refused once
+ * sqlite3_initialize has run, and being refused is what left every request's
+ * page cache coming from the general allocator (#581). Idempotent, so the
+ * open paths can keep calling it as a backstop. */
+void cbm_store_configure_pagecache(void) {
     static atomic_int configured = ATOMIC_VAR_INIT(0);
     int expected = 0;
     if (!atomic_compare_exchange_strong(&configured, &expected, 1)) {
@@ -757,12 +761,12 @@ static void store_configure_shared_pagecache(void) {
 }
 
 cbm_store_t *cbm_store_open_memory(void) {
-    store_configure_shared_pagecache();
+    cbm_store_configure_pagecache();
     return store_open_internal(":memory:", true, true);
 }
 
 cbm_store_t *cbm_store_open_path(const char *db_path) {
-    store_configure_shared_pagecache();
+    cbm_store_configure_pagecache();
     if (!db_path) {
         return NULL;
     }
@@ -770,7 +774,7 @@ cbm_store_t *cbm_store_open_path(const char *db_path) {
 }
 
 cbm_store_t *cbm_store_open_path_existing(const char *db_path) {
-    store_configure_shared_pagecache();
+    cbm_store_configure_pagecache();
     if (!db_path) {
         return NULL;
     }
@@ -841,7 +845,7 @@ static bool build_immutable_uri(const char *path, char *out, size_t out_sz) {
 }
 
 cbm_store_t *cbm_store_open_path_query(const char *db_path) {
-    store_configure_shared_pagecache();
+    cbm_store_configure_pagecache();
     if (!db_path) {
         return NULL;
     }

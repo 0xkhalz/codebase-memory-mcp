@@ -208,6 +208,13 @@ typedef struct {
 /* ── Lifecycle ──────────────────────────────────────────────────── */
 
 /* Open an in-memory database (for testing). */
+/* Install the process-wide SQLite page-cache slab. Call once, as early in
+ * process startup as possible — before any store is opened. SQLite refuses the
+ * configuration after it initialises itself, and the fallback (a fresh page
+ * cache per connection, from the general allocator) is what made a long-lived
+ * Windows daemon ratchet committed memory (#581). Safe to call repeatedly. */
+void cbm_store_configure_pagecache(void);
+
 cbm_store_t *cbm_store_open_memory(void);
 
 /* Open a file-backed database at the given path. Creates if needed. */

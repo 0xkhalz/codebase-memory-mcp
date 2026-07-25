@@ -14,7 +14,8 @@
  * per-account daemon. One-shot CLI tool calls run in an isolated local server
  * and never create or retain a daemon generation.
  */
-#include "cbm.h" // cbm_alloc_init — bind 3rd-party allocators to mimalloc before any sqlite/git init
+#include "cbm.h"
+#include "store/store.h" // cbm_alloc_init — bind 3rd-party allocators to mimalloc before any sqlite/git init
 #include "daemon/application.h"
 #include "daemon/bootstrap.h"
 #include "daemon/frontend.h"
@@ -1705,6 +1706,9 @@ static int main_run_daemon_ctl(int argc, char **argv, const cbm_daemon_ipc_endpo
 int main(int argc, char **argv) {
     /* Must remain the first statement: see allocator binding contract above. */
     cbm_alloc_init();
+    /* Immediately after, and before anything can touch SQLite: the page-cache
+     * slab can only be installed ahead of sqlite3_initialize (#581). */
+    cbm_store_configure_pagecache();
 #ifndef _WIN32
     pid_t process_initial_ppid = getppid();
 #endif
