@@ -114,7 +114,15 @@ static uint64_t profile_hash(void *const *frames, int count) {
 
 static int profile_capture(void **frames) {
 #ifdef _WIN32
-    return (int)CaptureStackBackTrace(PROFILE_SKIP_FRAMES, PROFILE_FRAMES, frames, NULL);
+    int captured = (int)CaptureStackBackTrace(PROFILE_SKIP_FRAMES, PROFILE_FRAMES, frames, NULL);
+    if (captured > 0) {
+        return captured;
+    }
+    /* Fall back to the immediate return address rather than dropping the
+     * sample: one frame still separates call sites, and a coarse attribution
+     * beats an empty profile that looks like "nothing allocates". */
+    frames[0] = __builtin_return_address(0);
+    return frames[0] != NULL ? 1 : 0;
 #else
     void *raw[PROFILE_FRAMES + PROFILE_SKIP_FRAMES];
     int got = backtrace(raw, PROFILE_FRAMES + PROFILE_SKIP_FRAMES);
@@ -172,6 +180,9 @@ void cbm_mem_profile_alloc(void *block, size_t size) {
     void *frames[PROFILE_FRAMES];
     int count = profile_capture(frames);
     if (count <= 0) {
+        cbm_mutex_lock(&g_profile_mutex);
+        g_totals.capture_failed++;
+        cbm_mutex_unlock(&g_profile_mutex);
         g_profile_reentrant = false;
         return;
     }

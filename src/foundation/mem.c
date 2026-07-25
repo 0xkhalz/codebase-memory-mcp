@@ -883,7 +883,8 @@ void cbm_mem_census_log(const char *tag) {
     (void)snprintf(prof_live_kb, sizeof(prof_live_kb), "%zu", profile.live_bytes / CBM_SZ_1K);
     (void)snprintf(prof_sites, sizeof(prof_sites), "%zu", profile.sites);
     (void)snprintf(prof_lost, sizeof(prof_lost), "%zu",
-                   profile.site_table_full + profile.pointer_table_full);
+                   profile.site_table_full + profile.pointer_table_full +
+                       profile.capture_failed);
     char profile_path[CBM_SZ_1K];
     if (cbm_safe_getenv("CBM_MEM_PROFILE_OUT", profile_path, sizeof(profile_path), NULL) != NULL) {
         (void)cbm_mem_profile_dump(profile_path, tag ? tag : "?");

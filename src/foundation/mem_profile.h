@@ -42,6 +42,10 @@ typedef struct {
     size_t untracked_frees;    /* frees whose pointer was not in the table */
     size_t site_table_full;    /* records lost: site table exhausted */
     size_t pointer_table_full; /* records lost: pointer table exhausted */
+    /* Stack capture returned nothing. On Windows ARM64 CaptureStackBackTrace
+     * can legitimately fail, and dropping those samples silently makes a
+     * working profiler look like an empty one. */
+    size_t capture_failed;
 } cbm_mem_profile_totals_t;
 
 void cbm_mem_profile_totals(cbm_mem_profile_totals_t *out);
