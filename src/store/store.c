@@ -65,6 +65,8 @@ enum {
 
 #define SLEN(s) (sizeof(s) - 1)
 #include "store/store.h"
+
+#include <stdatomic.h>
 #include "foundation/compat_fs.h"
 #include "foundation/platform.h"
 #include "foundation/compat.h"
@@ -712,11 +714,55 @@ static cbm_store_t *store_open_internal(const char *path, bool in_memory, bool c
     return s;
 }
 
+/* ── Shared page-cache slab ──────────────────────────────────────────
+ *
+ * Every request opens its own short-lived read-only store, and SQLite serves
+ * that connection's page cache from the general allocator. Measured on native
+ * Windows (#581): those blocks land in the allocator's MEDIUM size class, and a
+ * handful of survivors pin a 512 KiB page each — 140 pages held ~1.4 MiB of
+ * live data, roughly 2% occupancy, which no purge can reclaim because the pages
+ * are in use rather than free. The arena census confirmed the allocator was
+ * behaving correctly: zero free-committed slices, 58% already returned to the
+ * OS. The problem was allocation SHAPE, not retention.
+ *
+ * Giving SQLite one contiguous slab to serve page cache from makes that memory
+ * dense and bounded, and — because the slab is reused across connections —
+ * removes the per-request churn that did the pinning. Costs a fixed upfront
+ * commit, which is the point: bounded beats unbounded.
+ *
+ * Must run before SQLite initialises, so it is done once on the first open. */
+enum {
+    STORE_PAGECACHE_SLOT_BYTES = 4096 + 256, /* page + pcache1 header slack */
+    STORE_PAGECACHE_SLOTS = 2048,            /* ~8.7 MiB, shared by all connections */
+};
+
+static void store_configure_shared_pagecache(void) {
+    static atomic_int configured = ATOMIC_VAR_INIT(0);
+    int expected = 0;
+    if (!atomic_compare_exchange_strong(&configured, &expected, 1)) {
+        return;
+    }
+    static char slab[STORE_PAGECACHE_SLOT_BYTES * STORE_PAGECACHE_SLOTS];
+    int rc = sqlite3_config(SQLITE_CONFIG_PAGECACHE, slab, STORE_PAGECACHE_SLOT_BYTES,
+                            STORE_PAGECACHE_SLOTS);
+    if (rc != SQLITE_OK) {
+        /* Fail loud rather than silently reverting to per-connection cache
+         * allocation, which is the behaviour that produced #581. Not fatal:
+         * the store still works, it just fragments — so say so clearly. */
+        cbm_log_warn("store.pagecache.config_failed", "rc", rc == SQLITE_MISUSE ? "misuse" : "error",
+                     "detail",
+                     "shared SQLite page-cache slab was refused (SQLite already initialised?); "
+                     "page cache will be served from the general allocator and may fragment");
+    }
+}
+
 cbm_store_t *cbm_store_open_memory(void) {
+    store_configure_shared_pagecache();
     return store_open_internal(":memory:", true, true);
 }
 
 cbm_store_t *cbm_store_open_path(const char *db_path) {
+    store_configure_shared_pagecache();
     if (!db_path) {
         return NULL;
     }
@@ -724,6 +770,7 @@ cbm_store_t *cbm_store_open_path(const char *db_path) {
 }
 
 cbm_store_t *cbm_store_open_path_existing(const char *db_path) {
+    store_configure_shared_pagecache();
     if (!db_path) {
         return NULL;
     }
@@ -794,6 +841,7 @@ static bool build_immutable_uri(const char *path, char *out, size_t out_sz) {
 }
 
 cbm_store_t *cbm_store_open_path_query(const char *db_path) {
+    store_configure_shared_pagecache();
     if (!db_path) {
         return NULL;
     }

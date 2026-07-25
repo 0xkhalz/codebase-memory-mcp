@@ -142,7 +142,12 @@ static void diag_write_allocator_stats(void) {
         return;
     }
     char path[CBM_PATH_MAX];
-    int written = snprintf(path, sizeof(path), "%s/allocator-stats.txt", g_diag_directory_path);
+    /* Deliberately NOT inside the diagnostics directory: that tree is
+     * owner-private with anchored (openat-based) writes on POSIX, which a plain
+     * path-based open does not satisfy. This file is a developer diagnostic, so
+     * a predictable temp path keeps it working identically on every platform. */
+    int written = snprintf(path, sizeof(path), "%s/cbm-allocator-stats-%d.txt", cbm_tmpdir(),
+                           (int)getpid());
     if (written <= 0 || (size_t)written >= sizeof(path)) {
         return;
     }
