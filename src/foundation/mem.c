@@ -34,6 +34,23 @@
 #include <unistd.h>
 #endif
 
+#ifdef _WIN32
+/* mimalloc internals. Not in the public header, but the allocator is compiled
+ * into this binary as a unity object, so the symbols are present.
+ *
+ * WHY WE REACH FOR THEM: arena creation (arena.c:515) and arena purging
+ * (arena.c:2060) are BOTH gated on `_mi_preloading()`. If that flag never
+ * clears, no arena is ever created and purge never runs — memory comes
+ * straight from the OS and is never given back, which is exactly the Windows
+ * behaviour in #581 and why no amount of purge configuration helped. The flag
+ * is cleared only by `_mi_auto_process_init()`, which upstream invokes from a
+ * `__attribute__((constructor))` for clang/gcc and from `.CRT$XIU` TLS
+ * callbacks for MSVC. Whether that constructor actually runs in our static
+ * MinGW link is the open question, so ask the allocator rather than assume. */
+extern bool _mi_preloading(void);
+extern void _mi_auto_process_init(void);
+#endif
+
 /* ── Static state ─────────────────────────────────────────────── */
 
 static size_t g_budget;          /* budget in bytes */
@@ -199,6 +216,21 @@ void cbm_mem_init_with_cap(double ram_fraction, size_t hard_cap_bytes) {
     /* Reduce upfront memory: don't eagerly commit arenas.
      * Force decommit on purge (MADV_FREE_REUSABLE on macOS) so RSS
      * drops immediately instead of staying high until memory pressure. */
+#ifdef _WIN32
+    /* Decisive check: is the allocator still "preloading"? If so its arena
+     * machinery — including every purge path — is inert, and completing init
+     * here is what turns the options above from decoration into behaviour. */
+    if (_mi_preloading()) {
+        _mi_auto_process_init();
+        cbm_log_warn("mem.allocator.preloading_completed", "still_preloading",
+                     _mi_preloading() ? "true" : "false", "detail",
+                     "allocator was still preloading, so arena creation and purging were "
+                     "disabled; process init completed explicitly");
+    } else {
+        cbm_log_info("mem.allocator.preloading", "state", "already_complete");
+    }
+#endif
+
     mi_option_set(mi_option_arena_eager_commit, 0);
     mi_option_set(mi_option_purge_decommits, SKIP_ONE);
     mi_option_set(mi_option_purge_delay, 0); /* immediate purge, no 1s delay */
