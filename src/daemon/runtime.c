@@ -1868,7 +1868,6 @@ static void runtime_connection_serve(cbm_daemon_runtime_worker_t *worker) {
     return;
 }
 
-
 /* One persistent thread per pooled slot. It parks on work_ready between
  * connections instead of being recreated, so the process keeps a constant set
  * of allocator thread-heaps (#581). */
@@ -1933,8 +1932,7 @@ static void runtime_reap_completed_workers(cbm_daemon_runtime_service_t *service
          * it parks for the next connection, which is the whole point of the
          * pool. Threads are joined once, at service shutdown. */
         bool reap = worker->in_use && worker->thread_started && !worker->joining &&
-                    !worker->has_work &&
-                    atomic_load_explicit(&worker->done, memory_order_acquire);
+                    !worker->has_work && atomic_load_explicit(&worker->done, memory_order_acquire);
         if (reap) {
             runtime_worker_reset_after_join(worker);
         }

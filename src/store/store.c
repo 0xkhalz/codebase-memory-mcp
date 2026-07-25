@@ -753,8 +753,8 @@ void cbm_store_configure_pagecache(void) {
         /* Fail loud rather than silently reverting to per-connection cache
          * allocation, which is the behaviour that produced #581. Not fatal:
          * the store still works, it just fragments — so say so clearly. */
-        cbm_log_warn("store.pagecache.config_failed", "rc", rc == SQLITE_MISUSE ? "misuse" : "error",
-                     "detail",
+        cbm_log_warn("store.pagecache.config_failed", "rc",
+                     rc == SQLITE_MISUSE ? "misuse" : "error", "detail",
                      "shared SQLite page-cache slab was refused (SQLite already initialised?); "
                      "page cache will be served from the general allocator and may fragment");
     }

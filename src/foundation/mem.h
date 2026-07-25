@@ -223,12 +223,14 @@ int cbm_mem_phase_report_json(char *out, size_t size);
  * Windows-only; returns false everywhere else so callers must handle absence
  * rather than silently reading zeros as "nothing there".
  */
+enum { CBM_MEM_TRACKED_REGIONS = 6 };
+
 typedef struct {
-    size_t committed_total;   /* all MEM_COMMIT regions */
-    size_t committed_private; /* MEM_PRIVATE: heaps, stacks, raw VirtualAlloc */
-    size_t committed_mapped;  /* MEM_MAPPED: file/section views */
-    size_t committed_image;   /* MEM_IMAGE: loaded modules */
-    size_t reserved_total;    /* MEM_RESERVE, uncommitted */
+    size_t committed_total;    /* all MEM_COMMIT regions */
+    size_t committed_private;  /* MEM_PRIVATE: heaps, stacks, raw VirtualAlloc */
+    size_t committed_mapped;   /* MEM_MAPPED: file/section views */
+    size_t committed_image;    /* MEM_IMAGE: loaded modules */
+    size_t reserved_total;     /* MEM_RESERVE, uncommitted */
     size_t crt_heap_committed; /* committed bytes across all CRT heaps */
     size_t crt_heap_busy;      /* bytes in live allocations inside them */
     unsigned crt_heap_count;
@@ -249,9 +251,8 @@ typedef struct {
     /* Identity, not just size: base and extent of the largest private regions,
      * so they can be matched against the allocator's arena addresses instead of
      * guessed at by toggling options one at a time. */
-    enum { CBM_MEM_TRACKED_REGIONS = 6 };
-    void *large_base[6];
-    size_t large_size[6];
+    void *large_base[CBM_MEM_TRACKED_REGIONS];
+    size_t large_size[CBM_MEM_TRACKED_REGIONS];
     unsigned large_tracked;
     size_t largest_private_region;
     unsigned private_regions_1mb;

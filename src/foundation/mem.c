@@ -295,12 +295,12 @@ void cbm_mem_init_with_cap(double ram_fraction, size_t hard_cap_bytes) {
          * mean freed pages will not come back. */
         char classes[CBM_SZ_256];
         int length = 0;
-        for (int i = 0; i < CBM_MEM_OWNERSHIP_CLASSES && length >= 0 &&
-                        (size_t)length < sizeof(classes);
+        for (int i = 0;
+             i < CBM_MEM_OWNERSHIP_CLASSES && length >= 0 && (size_t)length < sizeof(classes);
              i++) {
             if (audit.allocated[i] && !audit.owned[i]) {
-                int written = snprintf(classes + length, sizeof(classes) - (size_t)length,
-                                       "%s%zu", length ? "," : "", audit.probe_bytes[i]);
+                int written = snprintf(classes + length, sizeof(classes) - (size_t)length, "%s%zu",
+                                       length ? "," : "", audit.probe_bytes[i]);
                 if (written < 0) {
                     break;
                 }
@@ -358,9 +358,8 @@ void cbm_mem_init_with_cap(double ram_fraction, size_t hard_cap_bytes) {
         char profile_threshold[CBM_SZ_32];
         (void)snprintf(profile_threshold, sizeof(profile_threshold), "%zu",
                        cbm_mem_profile_threshold());
-        cbm_log_info("mem.profile.gate", "enabled",
-                     cbm_mem_profile_enabled() ? "true" : "false", "threshold",
-                     profile_threshold);
+        cbm_log_info("mem.profile.gate", "enabled", cbm_mem_profile_enabled() ? "true" : "false",
+                     "threshold", profile_threshold);
     }
     cbm_log_info("mem.init", "budget_mb", budget_mb, "total_ram_mb", ram_mb, "source",
                  resolved.source);
@@ -766,7 +765,7 @@ bool cbm_mem_win_census(cbm_mem_win_census_t *out) {
                 } else {
                     out->private_large_bytes += mbi.RegionSize;
                     out->private_large_count++;
-                    if (out->large_tracked < 6) {
+                    if (out->large_tracked < CBM_MEM_TRACKED_REGIONS) {
                         out->large_base[out->large_tracked] = mbi.BaseAddress;
                         out->large_size[out->large_tracked] = mbi.RegionSize;
                         out->large_tracked++;
@@ -827,17 +826,6 @@ bool cbm_mem_win_census(cbm_mem_win_census_t *out) {
 #endif
 }
 
-#ifdef _WIN32
-/* Defined in the vendored allocator's Windows primitives (see the note there):
- * how often a decommit was attempted, how often it failed, and the last error.
- * A non-zero failure count means the allocator's "purged" accounting is
- * fiction and the OS still charges us for those pages. */
-extern size_t mi_cbm_decommit_calls;
-extern size_t mi_cbm_decommit_failures;
-extern size_t mi_cbm_decommit_last_error;
-extern size_t mi_cbm_decommit_bytes;
-#endif
-
 /* mi_stats_print_out hands us one chunk at a time; append each to the file. */
 static void mem_stats_writer(const char *text, void *arg) {
     FILE *out = arg;
@@ -897,22 +885,6 @@ void cbm_mem_census_log(const char *tag) {
         (void)strncat(large_map, one, sizeof(large_map) - strlen(large_map) - 1);
     }
     (void)snprintf(heaps, sizeof(heaps), "%u", census.heap_walk_ok ? census.crt_heap_count : 0);
-    char dc_calls[CBM_SZ_32];
-    char dc_fail[CBM_SZ_32];
-    char dc_err[CBM_SZ_32];
-    char dc_mb[CBM_SZ_32];
-#ifdef _WIN32
-    (void)snprintf(dc_calls, sizeof(dc_calls), "%zu", mi_cbm_decommit_calls);
-    (void)snprintf(dc_fail, sizeof(dc_fail), "%zu", mi_cbm_decommit_failures);
-    (void)snprintf(dc_err, sizeof(dc_err), "%zu", mi_cbm_decommit_last_error);
-    (void)snprintf(dc_mb, sizeof(dc_mb), "%zu",
-                   mi_cbm_decommit_bytes / ((size_t)CBM_SZ_1K * CBM_SZ_1K));
-#else
-    (void)snprintf(dc_calls, sizeof(dc_calls), "n/a");
-    (void)snprintf(dc_fail, sizeof(dc_fail), "n/a");
-    (void)snprintf(dc_err, sizeof(dc_err), "n/a");
-    (void)snprintf(dc_mb, sizeof(dc_mb), "n/a");
-#endif
     /* Attribution alongside the pool totals: the census says which pool holds
      * the memory, the profile says which call sites put it there. Emitting
      * both from one place keeps the two views on the same sample. */
@@ -937,18 +909,17 @@ void cbm_mem_census_log(const char *tag) {
     (void)snprintf(prof_sites, sizeof(prof_sites), "%zu", profile.sites);
     (void)snprintf(prof_total_kb, sizeof(prof_total_kb), "%zu", profile.total_bytes / CBM_SZ_1K);
     (void)snprintf(prof_lost, sizeof(prof_lost), "%zu",
-                   profile.site_table_full + profile.pointer_table_full +
-                       profile.capture_failed);
+                   profile.site_table_full + profile.pointer_table_full + profile.capture_failed);
     char profile_path[CBM_SZ_1K];
     if (cbm_safe_getenv("CBM_MEM_PROFILE_OUT", profile_path, sizeof(profile_path), NULL) != NULL) {
         (void)cbm_mem_profile_dump(profile_path, tag ? tag : "?");
     }
-    cbm_log_info("mem.census", "at", tag ? tag : "?",
-                 "prof_live_kb", prof_live_kb, "mi_area_kb", map_area_kb, "mi_live_kb", map_live_kb, "prof_sites", prof_sites, "prof_total_kb", prof_total_kb, "prof_lost", prof_lost, "priv_kb", priv_kb, "crt_kb", crt_kb,
+    cbm_log_info("mem.census", "at", tag ? tag : "?", "prof_live_kb", prof_live_kb, "mi_area_kb",
+                 map_area_kb, "mi_live_kb", map_live_kb, "prof_sites", prof_sites, "prof_total_kb",
+                 prof_total_kb, "prof_lost", prof_lost, "priv_kb", priv_kb, "crt_kb", crt_kb,
                  "crt_busy_kb", busy_kb, "mapped_kb", mapped_kb, "rss_kb", rss_kb, "biggest_kb",
                  biggest_kb, "regions", regions, "big_regions", big_regions, "heaps", heaps,
-                 "decommit_calls", dc_calls, "decommit_fails", dc_fail, "decommit_err", dc_err,
-                 "decommit_mb", dc_mb, "biggest_base", base, "priv_small_kb", psmall, "priv_med_kb", pmed,
+                 "biggest_base", base, "priv_small_kb", psmall, "priv_med_kb", pmed,
                  "priv_large_kb", plarge, "priv_counts", pcounts, "large_map", large_map);
     /* The phase table answers WHICH bracketed path the committed bytes stayed
      * in. Emitted once at the end rather than per request: it is cumulative,

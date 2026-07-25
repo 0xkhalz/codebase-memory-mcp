@@ -43,8 +43,8 @@ void cbm_mem_profile_alloc_at(void *block, size_t size, void *caller);
 void cbm_mem_profile_free(void *block);
 
 typedef struct {
-    size_t sites;              /* distinct call sites seen */
-    size_t live_bytes;         /* currently retained, attributed */
+    size_t sites;      /* distinct call sites seen */
+    size_t live_bytes; /* currently retained, attributed */
     size_t live_blocks;
     size_t total_bytes;        /* cumulative allocated at/above threshold */
     size_t untracked_frees;    /* frees whose pointer was not in the table */

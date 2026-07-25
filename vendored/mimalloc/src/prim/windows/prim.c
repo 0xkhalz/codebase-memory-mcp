@@ -382,26 +382,8 @@ int _mi_prim_commit(void* addr, size_t size, bool* is_zero) {
   return 0;
 }
 
-// cbm diagnostic (#581): a failed decommit is assumed successful below, so the
-// allocator decrements its own committed counter while the OS keeps charging
-// for the pages. That divergence is invisible in mi_stats and was the reason a
-// Windows daemon ratcheted commit charge while reporting a small heap. These
-// counters are read by the process census; they are diagnostic only, so a
-// racing update that loses a count is acceptable.
-size_t mi_cbm_decommit_calls = 0;
-size_t mi_cbm_decommit_failures = 0;
-size_t mi_cbm_decommit_last_error = 0;
-size_t mi_cbm_decommit_bytes = 0;
-
 int _mi_prim_decommit(void* addr, size_t size, bool* needs_recommit) {
   BOOL ok = VirtualFree(addr, size, MEM_DECOMMIT);
-  mi_cbm_decommit_calls++;
-  if (ok) {
-    mi_cbm_decommit_bytes += size;
-  } else {
-    mi_cbm_decommit_failures++;
-    mi_cbm_decommit_last_error = (size_t)GetLastError();
-  }
   *needs_recommit = true;  // for safety, assume always decommitted even in the case of an error.
   return (ok ? 0 : (int)GetLastError());
 }

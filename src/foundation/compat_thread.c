@@ -49,10 +49,10 @@ static bool thread_release_heap_enabled(void) {
     static int state = -1;
     if (state < 0) {
         char buf[CBM_SZ_16];
-        state = (cbm_safe_getenv("CBM_MI_THREAD_DONE", buf, sizeof(buf), NULL) != NULL &&
-                 buf[0] == '0')
-                    ? 0
-                    : 1;
+        state =
+            (cbm_safe_getenv("CBM_MI_THREAD_DONE", buf, sizeof(buf), NULL) != NULL && buf[0] == '0')
+                ? 0
+                : 1;
     }
     return state == 1;
 }
