@@ -10,6 +10,7 @@
 #include "platform.h"
 #include "log.h"
 #include "compat_thread.h"
+#include "mem_profile.h"
 
 #include "foundation/constants.h"
 
@@ -858,7 +859,24 @@ void cbm_mem_census_log(const char *tag) {
     (void)snprintf(dc_err, sizeof(dc_err), "n/a");
     (void)snprintf(dc_mb, sizeof(dc_mb), "n/a");
 #endif
-    cbm_log_info("mem.census", "at", tag ? tag : "?", "priv_kb", priv_kb, "crt_kb", crt_kb,
+    /* Attribution alongside the pool totals: the census says which pool holds
+     * the memory, the profile says which call sites put it there. Emitting
+     * both from one place keeps the two views on the same sample. */
+    cbm_mem_profile_totals_t profile;
+    cbm_mem_profile_totals(&profile);
+    char prof_live_kb[CBM_SZ_32];
+    char prof_sites[CBM_SZ_32];
+    char prof_lost[CBM_SZ_32];
+    (void)snprintf(prof_live_kb, sizeof(prof_live_kb), "%zu", profile.live_bytes / CBM_SZ_1K);
+    (void)snprintf(prof_sites, sizeof(prof_sites), "%zu", profile.sites);
+    (void)snprintf(prof_lost, sizeof(prof_lost), "%zu",
+                   profile.site_table_full + profile.pointer_table_full);
+    char profile_path[CBM_SZ_1K];
+    if (cbm_safe_getenv("CBM_MEM_PROFILE_OUT", profile_path, sizeof(profile_path), NULL) != NULL) {
+        (void)cbm_mem_profile_dump(profile_path, tag ? tag : "?");
+    }
+    cbm_log_info("mem.census", "at", tag ? tag : "?",
+                 "prof_live_kb", prof_live_kb, "prof_sites", prof_sites, "prof_lost", prof_lost, "priv_kb", priv_kb, "crt_kb", crt_kb,
                  "crt_busy_kb", busy_kb, "mapped_kb", mapped_kb, "rss_kb", rss_kb, "biggest_kb",
                  biggest_kb, "regions", regions, "big_regions", big_regions, "heaps", heaps,
                  "decommit_calls", dc_calls, "decommit_fails", dc_fail, "decommit_err", dc_err,

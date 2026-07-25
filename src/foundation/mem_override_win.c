@@ -42,6 +42,7 @@
  * mimalloc is always safe.
  */
 #include "foundation/mem.h"
+#include "foundation/mem_profile.h"
 
 #include <mimalloc.h>
 #include <stddef.h>
@@ -69,11 +70,15 @@ static inline bool mem_override_is_ours(const void *block) {
 }
 
 void *__wrap_malloc(size_t size) {
-    return mi_malloc(size);
+    void *block = mi_malloc(size);
+    cbm_mem_profile_alloc(block, size);
+    return block;
 }
 
 void *__wrap_calloc(size_t count, size_t size) {
-    return mi_calloc(count, size);
+    void *block = mi_calloc(count, size);
+    cbm_mem_profile_alloc(block, count * size);
+    return block;
 }
 
 char *__wrap_strdup(const char *text) {
@@ -95,6 +100,7 @@ void __wrap_free(void *block) {
         return;
     }
     if (mem_override_is_ours(block)) {
+        cbm_mem_profile_free(block);
         mi_free(block);
         return;
     }
@@ -120,7 +126,10 @@ void *__wrap_realloc(void *block, size_t size) {
         return mi_malloc(size);
     }
     if (mem_override_is_ours(block)) {
-        return mi_realloc(block, size);
+        cbm_mem_profile_free(block);
+        void *grown = mi_realloc(block, size);
+        cbm_mem_profile_alloc(grown, size);
+        return grown;
     }
     /* A CRT block cannot be handed to mi_realloc, and the CRT's realloc must
      * not be asked to grow into mimalloc's space either. Copy across the
