@@ -37,6 +37,10 @@ def main():
     parser.add_argument("corpus")
     parser.add_argument("requests", type=int)
     parser.add_argument("--stderr", help="file for the server's stderr; never discard it")
+    parser.add_argument("--tool", default="search_graph",
+                        help="tool to repeat; varying it isolates which path leaks")
+    parser.add_argument("--skip-index", action="store_true",
+                        help="omit the initial index, to separate store setup from the loop")
     args = parser.parse_args()
 
     proc = subprocess.Popen(
@@ -56,19 +60,22 @@ def main():
                    "params": {"protocolVersion": "2024-11-05", "capabilities": {},
                               "clientInfo": {"name": "memlab", "version": "1"}}},
             "initialize")
-        indexed = rpc(proc, {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                             "params": {"name": "index_repository",
-                                        "arguments": {"path": args.corpus}}},
-                      "index_repository")
-        if "error" in indexed:
-            print(f"index failed: {indexed['error']}", file=sys.stderr)
-            return 3
+        if not args.skip_index:
+            indexed = rpc(proc, {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                 "params": {"name": "index_repository",
+                                            "arguments": {"path": args.corpus}}},
+                          "index_repository")
+            if "error" in indexed:
+                print(f"index failed: {indexed['error']}", file=sys.stderr)
+                return 3
 
         for i in range(2, args.requests + 2):
+            arguments = {"search_graph": {"name_pattern": ".*Widget.*", "limit": 10},
+                         "list_projects": {},
+                         "get_graph_schema": {},
+                         "search_code": {"pattern": "Widget"}}.get(args.tool, {})
             reply = rpc(proc, {"jsonrpc": "2.0", "id": i, "method": "tools/call",
-                               "params": {"name": "search_graph",
-                                          "arguments": {"name_pattern": ".*Widget.*",
-                                                        "limit": 10}}},
+                               "params": {"name": args.tool, "arguments": arguments}},
                         f"request {i}")
             served += 1
             if "error" in reply:
