@@ -21,6 +21,7 @@
 #include "foundation/constants.h"
 #include "mimalloc.h" // mi_malloc/mi_calloc/mi_realloc/mi_free/mi_usable_size — bind 3rd-party allocators (#424)
 #if defined(CBM_BIND_TS_ALLOCATOR) && CBM_BIND_TS_ALLOCATOR
+#include "foundation/mem_profile.h"
 #include "sqlite3.h" // sqlite3_mem_methods, sqlite3_config, SQLITE_CONFIG_MALLOC — bind sqlite to mimalloc
 #endif
 #include <stdint.h> // uint32_t, uint64_t, int64_t
@@ -262,14 +263,26 @@ static TSParser *get_thread_parser(const TSLanguage *ts_lang, CBMLanguage lang) 
  * (sqlite requires 8-byte-aligned roundup, and mimalloc honors that alignment).
  * Field order matches struct sqlite3_mem_methods exactly:
  * xMalloc, xFree, xRealloc, xSize, xRoundup, xInit, xShutdown, pAppData. */
+/* Profiled: these bindings bypass the malloc interposer entirely, so without a
+ * hook here the biggest per-request allocations in the process — SQLite's page
+ * cache and its query working set — are invisible to the attribution profile
+ * (#581). */
 static void *cbm_sqlite_malloc(int n) {
-    return mi_malloc((size_t)n);
+    void *block = mi_malloc((size_t)n);
+    cbm_mem_profile_alloc(block, (size_t)n);
+    return block;
 }
 static void cbm_sqlite_free(void *p) {
+    cbm_mem_profile_free(p);
     mi_free(p);
 }
 static void *cbm_sqlite_realloc(void *p, int n) {
-    return mi_realloc(p, (size_t)n);
+    if (p) {
+        cbm_mem_profile_free(p);
+    }
+    void *grown = mi_realloc(p, (size_t)n);
+    cbm_mem_profile_alloc(grown, (size_t)n);
+    return grown;
 }
 static int cbm_sqlite_size(void *p) {
     return (int)mi_usable_size(p);
@@ -277,6 +290,31 @@ static int cbm_sqlite_size(void *p) {
 static int cbm_sqlite_roundup(int n) {
     return (n + 7) & ~7; /* round up to 8-byte boundary */
 }
+/* Same reasoning as the sqlite bindings: tree-sitter allocates its parse trees
+ * through these, and they too skip the interposer. */
+static void *cbm_ts_malloc(size_t n) {
+    void *block = mi_malloc(n);
+    cbm_mem_profile_alloc(block, n);
+    return block;
+}
+static void *cbm_ts_calloc(size_t count, size_t size) {
+    void *block = mi_calloc(count, size);
+    cbm_mem_profile_alloc(block, count * size);
+    return block;
+}
+static void *cbm_ts_realloc(void *p, size_t n) {
+    if (p) {
+        cbm_mem_profile_free(p);
+    }
+    void *grown = mi_realloc(p, n);
+    cbm_mem_profile_alloc(grown, n);
+    return grown;
+}
+static void cbm_ts_free(void *p) {
+    cbm_mem_profile_free(p);
+    mi_free(p);
+}
+
 static int cbm_sqlite_meminit(void *appdata) {
     (void)appdata;
     return SQLITE_OK;
@@ -295,7 +333,7 @@ void cbm_alloc_init(void) {
     alloc_bound = 1;
 
     /* tree-sitter runtime (was previously bound in cbm_init; consolidated here). */
-    ts_set_allocator(mi_malloc, mi_calloc, mi_realloc, mi_free);
+    ts_set_allocator(cbm_ts_malloc, cbm_ts_calloc, cbm_ts_realloc, cbm_ts_free);
 
     /* sqlite3. SQLITE_CONFIG_MALLOC MUST run before sqlite3_initialize / the
      * first sqlite3_open* — otherwise sqlite3_config returns SQLITE_MISUSE
