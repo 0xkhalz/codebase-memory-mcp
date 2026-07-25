@@ -112,7 +112,7 @@ if command -v cygpath >/dev/null 2>&1 && ! command -v winepath >/dev/null 2>&1; 
     DRIVE_CORPUS="$(cygpath -w "$CORPUS")"
     DRIVE_STDERR="$(cygpath -w "$WORK/server-stderr.log")"
 fi
-python3 "$(dirname "$0")/memlab-drive.py" "$DRIVE_BINARY" "$DRIVE_CORPUS" "$REQUESTS" --tool "${MEMLAB_TOOL:-search_graph}" --stderr "$DRIVE_STDERR" > "$WORK/drive.out" 2>&1
+python3 "$(dirname "$0")/memlab-drive.py" "$DRIVE_BINARY" "$DRIVE_CORPUS" "$REQUESTS" --tool "${MEMLAB_TOOL:-search_graph}" --idle-seconds "${MEMLAB_IDLE:-0}" --stderr "$DRIVE_STDERR" > "$WORK/drive.out" 2>&1
 RC=$?
 # With CBM_CACHE_DIR set the process logs to its own file rather than stderr,
 # so fold that in or the census series is invisible.

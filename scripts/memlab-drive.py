@@ -11,6 +11,7 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 
 
 def rpc(proc, payload, timeout_note):
@@ -39,6 +40,8 @@ def main():
     parser.add_argument("--stderr", help="file for the server's stderr; never discard it")
     parser.add_argument("--tool", default="search_graph",
                         help="tool to repeat; varying it isolates which path leaks")
+    parser.add_argument("--idle-seconds", type=float, default=0.0,
+                        help="pause midway; separates per-request growth from per-second growth")
     parser.add_argument("--skip-index", action="store_true",
                         help="omit the initial index, to separate store setup from the loop")
     args = parser.parse_args()
@@ -69,7 +72,14 @@ def main():
                 print(f"index failed: {indexed['error']}", file=sys.stderr)
                 return 3
 
+        halfway = 2 + args.requests // 2
         for i in range(2, args.requests + 2):
+            if args.idle_seconds > 0 and i == halfway:
+                # Nothing is requested during this gap. Any commit growth across
+                # it belongs to a background thread, not the request path.
+                print(f"idle-start id={i}", flush=True)
+                time.sleep(args.idle_seconds)
+                print(f"idle-end id={i}", flush=True)
             arguments = {"search_graph": {"name_pattern": ".*Widget.*", "limit": 10},
                          "list_projects": {},
                          "get_graph_schema": {},
