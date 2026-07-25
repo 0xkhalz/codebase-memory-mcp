@@ -909,6 +909,17 @@ void cbm_mem_census_log(const char *tag) {
      * both from one place keeps the two views on the same sample. */
     cbm_mem_profile_totals_t profile;
     cbm_mem_profile_totals(&profile);
+    /* The allocator's OWN view, next to the OS view. If mimalloc's committed
+     * area tracks the process's private commit, the memory is the allocator's
+     * and it is holding pages against tiny live data; if it stays flat while
+     * private climbs, the growth is outside the allocator entirely and no
+     * allocator option will ever move it (thirteen of them did not). */
+    cbm_mem_map_t map;
+    (void)cbm_mem_map_collect(&map);
+    char map_live_kb[CBM_SZ_32];
+    char map_area_kb[CBM_SZ_32];
+    (void)snprintf(map_live_kb, sizeof(map_live_kb), "%zu", map.live_bytes / CBM_SZ_1K);
+    (void)snprintf(map_area_kb, sizeof(map_area_kb), "%zu", map.area_committed_bytes / CBM_SZ_1K);
     char prof_live_kb[CBM_SZ_32];
     char prof_sites[CBM_SZ_32];
     char prof_lost[CBM_SZ_32];
@@ -924,7 +935,7 @@ void cbm_mem_census_log(const char *tag) {
         (void)cbm_mem_profile_dump(profile_path, tag ? tag : "?");
     }
     cbm_log_info("mem.census", "at", tag ? tag : "?",
-                 "prof_live_kb", prof_live_kb, "prof_sites", prof_sites, "prof_total_kb", prof_total_kb, "prof_lost", prof_lost, "priv_kb", priv_kb, "crt_kb", crt_kb,
+                 "prof_live_kb", prof_live_kb, "mi_area_kb", map_area_kb, "mi_live_kb", map_live_kb, "prof_sites", prof_sites, "prof_total_kb", prof_total_kb, "prof_lost", prof_lost, "priv_kb", priv_kb, "crt_kb", crt_kb,
                  "crt_busy_kb", busy_kb, "mapped_kb", mapped_kb, "rss_kb", rss_kb, "biggest_kb",
                  biggest_kb, "regions", regions, "big_regions", big_regions, "heaps", heaps,
                  "decommit_calls", dc_calls, "decommit_fails", dc_fail, "decommit_err", dc_err,
