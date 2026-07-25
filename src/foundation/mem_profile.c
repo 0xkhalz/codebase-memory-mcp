@@ -57,6 +57,14 @@ typedef struct {
     size_t site;
 } profile_pointer_t;
 
+/* The profiler runs INSIDE the allocator: every hook here is reached from
+ * malloc/free. Anything it calls that itself allocates — reading an env var,
+ * the logger, even a probe — re-enters the hook, which recurses until the stack
+ * dies (silently: the process produces no stdout, no stderr and no log) and
+ * would deadlock the non-recursive mutex on the way. This guard makes the
+ * profiler invisible to itself. */
+static _Thread_local bool g_profile_reentrant;
+
 static cbm_mutex_t g_profile_mutex;
 static profile_site_t g_sites[PROFILE_SITES];
 static profile_pointer_t g_pointers[PROFILE_POINTERS];
@@ -153,12 +161,18 @@ static size_t profile_pointer_slot(const void *block) {
 }
 
 void cbm_mem_profile_alloc(void *block, size_t size) {
-    if (!block || !cbm_mem_profile_enabled() || size < g_profile_min) {
+    if (!block || g_profile_reentrant) {
+        return;
+    }
+    g_profile_reentrant = true;
+    if (!cbm_mem_profile_enabled() || size < g_profile_min) {
+        g_profile_reentrant = false;
         return;
     }
     void *frames[PROFILE_FRAMES];
     int count = profile_capture(frames);
     if (count <= 0) {
+        g_profile_reentrant = false;
         return;
     }
     cbm_mutex_lock(&g_profile_mutex);
@@ -166,6 +180,7 @@ void cbm_mem_profile_alloc(void *block, size_t size) {
     if (site_index == SIZE_MAX) {
         g_totals.site_table_full++;
         cbm_mutex_unlock(&g_profile_mutex);
+        g_profile_reentrant = false;
         return;
     }
     size_t slot = profile_pointer_slot(block);
@@ -183,6 +198,7 @@ void cbm_mem_profile_alloc(void *block, size_t size) {
     if (!stored) {
         g_totals.pointer_table_full++;
         cbm_mutex_unlock(&g_profile_mutex);
+        g_profile_reentrant = false;
         return;
     }
     profile_site_t *site = &g_sites[site_index];
@@ -197,10 +213,16 @@ void cbm_mem_profile_alloc(void *block, size_t size) {
     g_totals.live_blocks++;
     g_totals.total_bytes += size;
     cbm_mutex_unlock(&g_profile_mutex);
+    g_profile_reentrant = false;
 }
 
 void cbm_mem_profile_free(void *block) {
-    if (!block || !cbm_mem_profile_enabled()) {
+    if (!block || g_profile_reentrant) {
+        return;
+    }
+    g_profile_reentrant = true;
+    if (!cbm_mem_profile_enabled()) {
+        g_profile_reentrant = false;
         return;
     }
     cbm_mutex_lock(&g_profile_mutex);
@@ -217,6 +239,7 @@ void cbm_mem_profile_free(void *block) {
             entry->size = 0;
             entry->site = 0;
             cbm_mutex_unlock(&g_profile_mutex);
+            g_profile_reentrant = false;
             return;
         }
         if (entry->block == NULL) {
@@ -229,6 +252,7 @@ void cbm_mem_profile_free(void *block) {
      * retained bytes. */
     g_totals.untracked_frees++;
     cbm_mutex_unlock(&g_profile_mutex);
+    g_profile_reentrant = false;
 }
 
 void cbm_mem_profile_totals(cbm_mem_profile_totals_t *out) {
