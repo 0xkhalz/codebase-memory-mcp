@@ -25,11 +25,34 @@ if [ ! -x "$BINARY" ]; then
 fi
 
 WORK=$(mktemp -d 2>/dev/null || mktemp -d -t memlab)
+
+# Native Windows: the server walks the full ancestor chain of both the binary
+# and the cache dir and refuses to start when any ancestor grants mutation to
+# untrusted SIDs. The repo checkout and the msys /tmp tree both carry such ACEs,
+# so the run has to happen from a stamped root under USERPROFILE — the same
+# reason soak-test.sh and the guard suites copy their binaries there.
+if [[ "$BINARY" == *.exe ]] && command -v cygpath >/dev/null 2>&1 &&
+    ! command -v winepath >/dev/null 2>&1; then
+    WIN_ROOT=$(mktemp -d "$(cygpath "$USERPROFILE")/cbm-memlab.XXXXXX")
+    WIN_ROOT_W="$(cygpath -w "$WIN_ROOT")"
+    ME="$(whoami | tr -d '\r')"
+    MSYS2_ARG_CONV_EXCL='*' icacls "$WIN_ROOT_W" /reset /Q >/dev/null 2>&1 || true
+    if ! MSYS2_ARG_CONV_EXCL='*' icacls "$WIN_ROOT_W" /inheritance:r \
+        /grant:r "${ME}:(OI)(CI)F" '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' \
+        /Q >/dev/null 2>&1; then
+        echo "FAIL: could not stamp $WIN_ROOT_W" >&2
+        exit 1
+    fi
+    cp "$BINARY" "$WIN_ROOT/codebase-memory-mcp.exe"
+    BINARY="$WIN_ROOT/codebase-memory-mcp.exe"
+    WORK="$WIN_ROOT"
+    MSYS2_ARG_CONV_EXCL='*' icacls "${WIN_ROOT_W}\\*" /reset /T /C /Q >/dev/null 2>&1 || true
+fi
 PROFILE_OUT="$PWD/memlab-${LABEL}.jsonl"
 RUN_LOG="$PWD/memlab-${LABEL}.log"
 rm -f "$PROFILE_OUT" "$RUN_LOG"
 
-cleanup() { rm -rf "$WORK" 2>/dev/null || true; }
+cleanup() { rm -rf "$WORK" 2>/dev/null || true; rm -rf "${WIN_ROOT:-}" 2>/dev/null || true; }
 trap cleanup EXIT
 
 # A fixed corpus: same file count and content on every platform, so a
