@@ -78,6 +78,13 @@ size_t cbm_mem_worker_budget(int num_workers);
 /* Return unused pages to the OS. Call between files to bound per-file peak. */
 void cbm_mem_collect(void);
 
+/* Bounded, rate-limited page return for a long-lived process's maintenance
+ * tick. No-op on POSIX, where every free already returns its pages
+ * (purge_delay=0); on Windows it trims the CRT heap, which otherwise keeps
+ * freed pages committed no matter which code path freed them (#581). Safe to
+ * call from a hot loop: at most one trim per second, process-wide. */
+void cbm_mem_collect_periodic(void);
+
 /* ── Memory map: where does the process's memory actually live? ──────
  *
  * A growth diagnostic that is honest about what it cannot see. Walking the

@@ -28,6 +28,7 @@
 #endif
 #include <windows.h>
 #include <psapi.h>
+#include <malloc.h>
 #elif defined(__APPLE__)
 #include <mach/mach.h>
 #else
@@ -333,6 +334,47 @@ size_t cbm_mem_worker_budget(int num_workers) {
 
 void cbm_mem_collect(void) {
     mi_collect(true);
+#ifdef _WIN32
+    /* mi_collect only returns pages the mimalloc heaps own. On Windows the
+     * static-CRT override does not capture every allocation — a heap walk of a
+     * process holding tens of megabytes reports zero live blocks — so those
+     * allocations are freed to the CRT heap instead, which keeps the pages
+     * committed rather than returning them. The purge_delay=0 configuration
+     * above therefore never applies to them, which is precisely why repeated
+     * request-scoped store open/close ratcheted committed memory on Windows
+     * only while POSIX stayed flat (#581). _heapmin asks the CRT to hand its
+     * unused pages back, which is the missing half of "return unused pages to
+     * the OS" on this platform. */
+    (void)_heapmin();
+#endif
+}
+
+void cbm_mem_collect_periodic(void) {
+#ifdef _WIN32
+    /* Platform parity, not whack-a-mole. On POSIX every free can return its
+     * pages immediately (purge_delay=0 above), so a long-lived process stays
+     * flat no matter which code path allocated. Windows has no equivalent for
+     * CRT-heap memory, so trimming only at one call site leaves every other
+     * path ratcheting — the residual growth #581 still showed after the
+     * request-scoped store churn was fixed. A bounded periodic trim gives the
+     * whole process the same "freed means returned" property.
+     *
+     * Rate-limited because _heapmin walks the heap: at most once per interval,
+     * driven from the server's existing idle/maintenance tick, so a busy
+     * request loop never pays it more than once per second. */
+    enum { MEM_TRIM_MIN_INTERVAL_MS = 1000 };
+    static atomic_llong last_trim_ms = ATOMIC_VAR_INIT(0);
+    long long now = (long long)cbm_now_ms();
+    long long previous = atomic_load_explicit(&last_trim_ms, memory_order_relaxed);
+    if (previous != 0 && now - previous < MEM_TRIM_MIN_INTERVAL_MS) {
+        return;
+    }
+    if (!atomic_compare_exchange_strong_explicit(&last_trim_ms, &previous, now,
+                                                 memory_order_acq_rel, memory_order_relaxed)) {
+        return; /* another thread is trimming this interval */
+    }
+    (void)_heapmin();
+#endif
 }
 
 /* ── Memory map (see mem.h for how to read the triple) ─────────────── */
