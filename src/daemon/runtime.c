@@ -1853,6 +1853,10 @@ static void *runtime_connection_worker(void *opaque) {
      * of live blocks). Collecting here hands the pages back while this thread
      * still owns them, which is the only point at which that is cheap (#581). */
     cbm_mem_collect();
+    /* Census AFTER the collect: this is the per-connection steady state, so a
+     * pool that climbs across these lines is holding memory the connection was
+     * supposed to have given back. */
+    cbm_mem_census_log("connection.exit");
     return NULL;
 }
 

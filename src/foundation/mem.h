@@ -233,12 +233,21 @@ typedef struct {
     size_t crt_heap_busy;      /* bytes in live allocations inside them */
     unsigned crt_heap_count;
     unsigned regions;
+    /* The single largest committed private region, and how many are >=1MiB.
+     * One enormous region means one reservation (allocator metadata, a pagemap)
+     * rather than many leaked blocks — a different bug with a different fix. */
+    size_t largest_private_region;
+    unsigned private_regions_1mb;
     bool heap_walk_ok; /* false → crt_* are unknown, not zero */
 } cbm_mem_win_census_t;
 
 /* Snapshot the OS-level region census. Returns false when unavailable
  * (non-Windows, or out is NULL). */
 bool cbm_mem_win_census(cbm_mem_win_census_t *out);
+
+/* Emit one census line tagged with the call site, so a growth series can be
+ * read straight out of the daemon log. No-op unless CBM_MEM_CENSUS=1. */
+void cbm_mem_census_log(const char *tag);
 
 /* Census logging gate: CBM_MEM_CENSUS=1. Off by default — HeapWalk locks each
  * CRT heap, so this is a diagnostic, never a hot-path metric. */

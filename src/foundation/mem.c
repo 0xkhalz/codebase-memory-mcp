@@ -744,6 +744,12 @@ bool cbm_mem_win_census(cbm_mem_win_census_t *out) {
             switch (mbi.Type) {
             case MEM_PRIVATE:
                 out->committed_private += mbi.RegionSize;
+                if (mbi.RegionSize > out->largest_private_region) {
+                    out->largest_private_region = mbi.RegionSize;
+                }
+                if (mbi.RegionSize >= (size_t)CBM_SZ_1K * CBM_SZ_1K) {
+                    out->private_regions_1mb++;
+                }
                 break;
             case MEM_MAPPED:
                 out->committed_mapped += mbi.RegionSize;
@@ -790,4 +796,39 @@ bool cbm_mem_win_census(cbm_mem_win_census_t *out) {
     }
     return true;
 #endif
+}
+
+void cbm_mem_census_log(const char *tag) {
+    if (!cbm_mem_census_enabled()) {
+        return;
+    }
+    cbm_mem_win_census_t census;
+    if (!cbm_mem_win_census(&census)) {
+        return;
+    }
+    /* Kilobytes throughout: the CRT heap measured 0 at megabyte resolution,
+     * which reads as "empty" when it may simply be small — a diagnostic that
+     * rounds its own evidence away is worse than none. */
+    char priv_kb[CBM_SZ_32];
+    char crt_kb[CBM_SZ_32];
+    char busy_kb[CBM_SZ_32];
+    char mapped_kb[CBM_SZ_32];
+    char rss_kb[CBM_SZ_32];
+    char biggest_kb[CBM_SZ_32];
+    char regions[CBM_SZ_32];
+    char big_regions[CBM_SZ_32];
+    char heaps[CBM_SZ_32];
+    (void)snprintf(priv_kb, sizeof(priv_kb), "%zu", census.committed_private / CBM_SZ_1K);
+    (void)snprintf(crt_kb, sizeof(crt_kb), "%zu", census.crt_heap_committed / CBM_SZ_1K);
+    (void)snprintf(busy_kb, sizeof(busy_kb), "%zu", census.crt_heap_busy / CBM_SZ_1K);
+    (void)snprintf(mapped_kb, sizeof(mapped_kb), "%zu", census.committed_mapped / CBM_SZ_1K);
+    (void)snprintf(rss_kb, sizeof(rss_kb), "%zu", cbm_mem_rss() / CBM_SZ_1K);
+    (void)snprintf(biggest_kb, sizeof(biggest_kb), "%zu",
+                   census.largest_private_region / CBM_SZ_1K);
+    (void)snprintf(regions, sizeof(regions), "%u", census.regions);
+    (void)snprintf(big_regions, sizeof(big_regions), "%u", census.private_regions_1mb);
+    (void)snprintf(heaps, sizeof(heaps), "%u", census.heap_walk_ok ? census.crt_heap_count : 0);
+    cbm_log_info("mem.census", "at", tag ? tag : "?", "priv_kb", priv_kb, "crt_kb", crt_kb,
+                 "crt_busy_kb", busy_kb, "mapped_kb", mapped_kb, "rss_kb", rss_kb, "biggest_kb",
+                 biggest_kb, "regions", regions, "big_regions", big_regions, "heaps", heaps);
 }
