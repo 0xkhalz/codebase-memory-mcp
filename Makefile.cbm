@@ -115,8 +115,9 @@ endif
 # macOS ld has no --wrap, so it stays census-only.
 IS_LINUX := $(shell uname -s 2>/dev/null | grep -q Linux && echo yes || echo no)
 MIMALLOC_WRAP_SYMS_POSIX := malloc calloc realloc free strdup
+MIMALLOC_WRAP_FLAGS_POSIX :=
 ifeq ($(IS_LINUX),yes)
-MIMALLOC_WRAP_FLAGS := $(foreach sym,$(MIMALLOC_WRAP_SYMS_POSIX),-Wl,--wrap=$(sym))
+MIMALLOC_WRAP_FLAGS_POSIX := $(foreach sym,$(MIMALLOC_WRAP_SYMS_POSIX),-Wl,--wrap=$(sym))
 endif
 ifeq ($(IS_MINGW),yes)
 WIN32_LIBS := -lws2_32 -lpsapi -lshell32 -ladvapi32 -Wl,--allow-multiple-definition -Wl,--stack,8388608 -static
@@ -127,7 +128,12 @@ ifeq ($(STATIC),1)
 STATIC_FLAGS := -static
 endif
 
-LDFLAGS = -lm -lstdc++ -lpthread -lz $(WIN32_LIBS) $(STATIC_FLAGS) $(MIMALLOC_WRAP_FLAGS)
+# The POSIX wrap shim exists only so the profiler can observe allocations. It
+# must never reach a sanitized build: the Linux/macOS test builds are CRT+ASan,
+# and redirecting malloc into mimalloc underneath ASan's own interception mixes
+# two allocators on the same pointers. Windows keeps its wrap flags everywhere,
+# because there the shim is what makes mimalloc own the allocations at all.
+LDFLAGS = -lm -lstdc++ -lpthread -lz $(WIN32_LIBS) $(STATIC_FLAGS) $(MIMALLOC_WRAP_FLAGS) $(MIMALLOC_WRAP_FLAGS_POSIX)
 LDFLAGS_TEST = -lm -lstdc++ -lpthread -lz $(SANITIZE) $(WIN32_LIBS) $(MIMALLOC_WRAP_FLAGS)
 LDFLAGS_TSAN = -lm -lstdc++ -lpthread -lz $(TSAN_SANITIZE) $(WIN32_LIBS) $(MIMALLOC_WRAP_FLAGS)
 
