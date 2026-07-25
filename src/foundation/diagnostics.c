@@ -124,6 +124,38 @@ static int count_open_fds(void) {
 
 /* ── Private output directory ────────────────────────────────────────────── */
 
+/* Capture the allocator's OWN accounting alongside the snapshot. This is the
+ * only measurement that separates "the allocator holds committed-but-free
+ * pages" (fragmentation / slice granularity) from "these blocks are still
+ * live" (a real leak) — opposite conclusions that process-level RSS and
+ * committed bytes cannot tell apart. Off unless CBM_MEM_STATS=1. */
+static void diag_stats_write(const char *text, void *arg) {
+    FILE *sink = arg;
+    if (sink && text) {
+        (void)fputs(text, sink);
+    }
+}
+
+static void diag_write_allocator_stats(void) {
+    char flag[CBM_SZ_16];
+    if (cbm_safe_getenv("CBM_MEM_STATS", flag, sizeof(flag), NULL) == NULL || flag[0] != '1') {
+        return;
+    }
+    char path[CBM_PATH_MAX];
+    int written = snprintf(path, sizeof(path), "%s/allocator-stats.txt", g_diag_directory_path);
+    if (written <= 0 || (size_t)written >= sizeof(path)) {
+        return;
+    }
+    FILE *sink = cbm_fopen(path, "wb");
+    if (!sink) {
+        return;
+    }
+    mi_stats_print_out(diag_stats_write, sink);
+    (void)fputs("\n--- options ---\n", sink);
+    mi_options_print_out(diag_stats_write, sink);
+    (void)fclose(sink);
+}
+
 static bool diag_set_output_paths(void) {
     int snapshot = snprintf(g_diag_path, sizeof(g_diag_path), "%s/%s", g_diag_directory_path,
                             DIAG_SNAPSHOT_NAME);
@@ -448,6 +480,8 @@ static void write_diagnostics(void) {
     /* Memory map: live allocator bytes on this thread's heap, a size-class
      * histogram, and the residual the walk does NOT account for. The residual
      * is what keeps this honest — see mem.h. */
+    diag_write_allocator_stats();
+
     cbm_mem_map_t map;
     (void)cbm_mem_map_collect(&map);
     size_t residual =
