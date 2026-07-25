@@ -9,6 +9,7 @@
 #include "mem.h"
 #include "platform.h"
 #include "log.h"
+#include "compat_fs.h"
 #include "compat_thread.h"
 #include "mem_profile.h"
 
@@ -837,6 +838,14 @@ extern size_t mi_cbm_decommit_last_error;
 extern size_t mi_cbm_decommit_bytes;
 #endif
 
+/* mi_stats_print_out hands us one chunk at a time; append each to the file. */
+static void mem_stats_writer(const char *text, void *arg) {
+    FILE *out = arg;
+    if (out && text) {
+        (void)fputs(text, out);
+    }
+}
+
 void cbm_mem_census_log(const char *tag) {
     if (!cbm_mem_census_enabled()) {
         return;
@@ -945,6 +954,18 @@ void cbm_mem_census_log(const char *tag) {
      * in. Emitted once at the end rather than per request: it is cumulative,
      * so only the final table carries the verdict. */
     if (tag && strcmp(tag, "connection.exit") == 0) {
+        /* Dump the allocator's own stats to a known path. The theap count is
+         * the question: if it tracks the request count, each request is
+         * getting a fresh thread-heap whose pages are abandoned on exit --
+         * invisible to mi_heap_visit, which only sees main and current. */
+        char stats_path[CBM_SZ_1K];
+        if (cbm_safe_getenv("CBM_MEM_STATS_OUT", stats_path, sizeof(stats_path), NULL) != NULL) {
+            FILE *stats = cbm_fopen(stats_path, "wb");
+            if (stats) {
+                mi_stats_print_out(mem_stats_writer, stats);
+                (void)fclose(stats);
+            }
+        }
         char phases[CBM_SZ_1K];
         if (cbm_mem_phase_report_json(phases, sizeof(phases)) > 0) {
             cbm_log_info("mem.phases", "table", phases);
