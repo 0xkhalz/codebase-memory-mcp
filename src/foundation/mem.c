@@ -816,9 +816,11 @@ void cbm_mem_census_log(const char *tag) {
         return;
     }
     cbm_mem_win_census_t census;
-    if (!cbm_mem_win_census(&census)) {
-        return;
-    }
+    /* A false return means the OS-region walk is unavailable (non-Windows), not
+     * that there is nothing to report: the allocation-site half is the whole
+     * point of the cross-platform comparison, so it still runs and the pool
+     * fields simply read zero. */
+    (void)cbm_mem_win_census(&census);
     /* Kilobytes throughout: the CRT heap measured 0 at megabyte resolution,
      * which reads as "empty" when it may simply be small — a diagnostic that
      * rounds its own evidence away is worse than none. */

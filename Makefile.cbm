@@ -109,6 +109,15 @@ MIMALLOC_WRAP_FLAGS :=
 ifeq ($(IS_MINGW),yes)
 MIMALLOC_WRAP_FLAGS := $(foreach sym,$(MIMALLOC_WRAP_SYMS),-Wl,--wrap=$(sym))
 endif
+# Linux wraps a smaller set for MEASUREMENT only (see mem_override_posix.c):
+# allocations already reach mimalloc here, but the profiler needs the same
+# observation point as Windows or the platform comparison is not like-for-like.
+# macOS ld has no --wrap, so it stays census-only.
+IS_LINUX := $(shell uname -s 2>/dev/null | grep -q Linux && echo yes || echo no)
+MIMALLOC_WRAP_SYMS_POSIX := malloc calloc realloc free strdup
+ifeq ($(IS_LINUX),yes)
+MIMALLOC_WRAP_FLAGS := $(foreach sym,$(MIMALLOC_WRAP_SYMS_POSIX),-Wl,--wrap=$(sym))
+endif
 ifeq ($(IS_MINGW),yes)
 WIN32_LIBS := -lws2_32 -lpsapi -lshell32 -ladvapi32 -Wl,--allow-multiple-definition -Wl,--stack,8388608 -static
 endif
@@ -141,6 +150,7 @@ FOUNDATION_SRCS = \
     src/foundation/compat_regex.c \
     src/foundation/mem.c \
     src/foundation/mem_profile.c \
+    src/foundation/mem_override_posix.c \
     src/foundation/diagnostics.c \
     src/foundation/profile.c \
     src/foundation/dump_verify.c \
