@@ -94,8 +94,20 @@ CXXFLAGS_TSAN = $(CXXFLAGS_COMMON) -g -O1 \
 # Auto-detected via compiler; no manual override needed.
 IS_MINGW := $(shell echo | $(CC) -dM -E - 2>/dev/null | grep -q 'define _WIN32 ' && echo yes || echo no)
 WIN32_LIBS :=
+# Route Windows allocations through mimalloc (#581). mimalloc's own static
+# override is gated on _MSC_VER, which clang/MinGW never defines, so it
+# compiled out and the CRT won the link: ordinary malloc went to the CRT heap,
+# which keeps freed pages committed, leaving every allocator tuning in
+# cbm_mem_init POSIX-only. --wrap redirects the same population of allocations
+# that link-order override captures on POSIX, so the purge configuration
+# finally applies here too. src/foundation/mem_override_win.c supplies the
+# wrappers; its deallocating paths check mi_is_in_heap_region so a CRT-owned
+# pointer can never reach mi_free (#424).
+MIMALLOC_WRAP_SYMS := malloc calloc realloc free strdup strndup _msize \
+                      _aligned_malloc _aligned_free
+MIMALLOC_WRAP_FLAGS := $(foreach sym,$(MIMALLOC_WRAP_SYMS),-Wl,--wrap=$(sym))
 ifeq ($(IS_MINGW),yes)
-WIN32_LIBS := -lws2_32 -lpsapi -lshell32 -ladvapi32 -Wl,--allow-multiple-definition -Wl,--stack,8388608 -static
+WIN32_LIBS := -lws2_32 -lpsapi -lshell32 -ladvapi32 -Wl,--allow-multiple-definition -Wl,--stack,8388608 -static $(MIMALLOC_WRAP_FLAGS)
 endif
 
 # STATIC=1 produces a fully static binary (for Alpine/musl portable builds)
@@ -110,6 +122,7 @@ LDFLAGS_TSAN = -lm -lstdc++ -lpthread -lz $(TSAN_SANITIZE) $(WIN32_LIBS)
 # ── Source files ─────────────────────────────────────────────────
 
 FOUNDATION_SRCS = \
+	src/foundation/mem_override_win.c \
     src/foundation/arena.c \
     src/foundation/hash_table.c \
     src/foundation/str_intern.c \

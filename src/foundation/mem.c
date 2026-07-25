@@ -212,6 +212,26 @@ void cbm_mem_init_with_cap(double ram_fraction, size_t hard_cap_bytes) {
      * spawn-fail degrade, embedders). */
     mi_option_set(mi_option_page_reclaim_on_free, 1);
 
+    /* Every option above is inert unless ordinary malloc actually reaches this
+     * allocator. That silently stopped being true on Windows — mimalloc's
+     * static override is gated on _MSC_VER, which clang/MinGW never defines —
+     * and nothing checked, so a long-lived daemon ratcheted committed memory
+     * for months (#581). Probe it once, out loud: a real malloc asked whether
+     * mimalloc owns it. Anything but true means the tuning here is decoration
+     * and freed pages will not come back. */
+    void *ownership_probe = malloc(CBM_SZ_64);
+    if (ownership_probe) {
+        bool owned = mi_is_in_heap_region(ownership_probe);
+        free(ownership_probe);
+        if (!owned) {
+            cbm_log_warn("mem.allocator.not_owned", "detail",
+                         "malloc is not served by mimalloc: purge/reclaim options "
+                         "have no effect and freed pages will stay committed");
+        } else {
+            cbm_log_info("mem.allocator.owned", "detail", "malloc is served by mimalloc");
+        }
+    }
+
     /* CBM_MEM_BUDGET_MB env override (memory analogue of CBM_WORKERS).
      * Lets users cap the budget directly without an enclosing cgroup —
      * useful on bare-metal hosts where cgroup memory limits are absent
