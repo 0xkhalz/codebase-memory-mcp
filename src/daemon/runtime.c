@@ -191,6 +191,15 @@ struct cbm_daemon_runtime_worker {
     cbm_mutex_t send_mutex;
     cbm_thread_t thread;
     bool thread_started;
+    /* The slot's thread is created once and then parked between connections.
+     * Creating a thread per connection made the allocator mint a fresh
+     * thread-heap each time, which advanced mimalloc's arena commit frontier
+     * and ratcheted Windows commit charge (#581); POSIX hid it because madvise
+     * drops the pages from RSS regardless. has_work is the handoff, guarded by
+     * service->mutex and signalled through work_ready. */
+    cbm_cond_t work_ready;
+    bool has_work;
+    bool pool_stop;
     bool in_use;
     bool joining;
     atomic_bool done;
@@ -1654,8 +1663,7 @@ static void runtime_worker_handle_activation_shutdown(cbm_daemon_runtime_worker_
     runtime_worker_finish(worker);
 }
 
-static void *runtime_connection_worker(void *opaque) {
-    cbm_daemon_runtime_worker_t *worker = opaque;
+static void runtime_connection_serve(cbm_daemon_runtime_worker_t *worker) {
     cbm_daemon_runtime_service_t *service = worker->service;
     cbm_daemon_frame_t frame = {0};
     uint8_t *payload = NULL;
@@ -1668,29 +1676,29 @@ static void *runtime_connection_worker(void *opaque) {
     if (received != 1 || frame.type != CBM_DAEMON_FRAME_REQUEST) {
         free(payload);
         runtime_worker_finish(worker);
-        return NULL;
+        return;
     }
     if (frame.flags == CBM_DAEMON_RUNTIME_OP_ACTIVATION_SHUTDOWN) {
         runtime_worker_handle_activation_shutdown(worker, payload, frame.length);
         free(payload);
-        return NULL;
+        return;
     }
     if (frame.flags == CBM_DAEMON_RUNTIME_OP_STATUS) {
         runtime_worker_handle_status(worker, payload, frame.length);
         free(payload);
-        return NULL;
+        return;
     }
     if (frame.flags == CBM_DAEMON_RUNTIME_OP_STOP) {
         runtime_worker_handle_stop(worker, payload, frame.length);
         free(payload);
-        return NULL;
+        return;
     }
     if (frame.flags != CBM_DAEMON_RUNTIME_OP_HELLO ||
         frame.length != CBM_DAEMON_RENDEZVOUS_REQUEST_SIZE ||
         !runtime_rendezvous_request_decode(payload, requested_version, requested_build)) {
         free(payload);
         runtime_worker_finish(worker);
-        return NULL;
+        return;
     }
     free(payload);
     payload = NULL;
@@ -1703,7 +1711,7 @@ static void *runtime_connection_worker(void *opaque) {
     if (hello_status != CBM_DAEMON_HELLO_COMPATIBLE) {
         if (hello_status == CBM_DAEMON_HELLO_INVALID) {
             runtime_worker_finish(worker);
-            return NULL;
+            return;
         }
         hello_result.status = CBM_DAEMON_RUNTIME_CONNECT_CONFLICT;
         hello_result.hello_status = hello_status;
@@ -1718,7 +1726,7 @@ static void *runtime_connection_worker(void *opaque) {
         }
         (void)runtime_send_hello_response(worker->connection, &hello_result);
         runtime_worker_finish(worker);
-        return NULL;
+        return;
     }
 
     bool peer_image_verified = runtime_process_image_reference_matches_process(
@@ -1736,7 +1744,7 @@ static void *runtime_connection_worker(void *opaque) {
         cbm_log_error("daemon.client_image_rejected", "reason",
                       peer_image_fingerprinted ? "fingerprint_mismatch" : "image_unverifiable");
         runtime_worker_finish(worker);
-        return NULL;
+        return;
     }
 
     cbm_daemon_client_id_t client_id = CBM_DAEMON_CLIENT_ID_INVALID;
@@ -1744,7 +1752,7 @@ static void *runtime_connection_worker(void *opaque) {
         runtime_result_rejected(&hello_result, "CBM daemon is stopping");
         (void)runtime_send_hello_response(worker->connection, &hello_result);
         runtime_worker_finish(worker);
-        return NULL;
+        return;
     }
     if (service->application.request) {
         worker->application_session = service->application.session_open(
@@ -1760,7 +1768,7 @@ static void *runtime_connection_worker(void *opaque) {
             worker->final_response_inflight = false;
             cbm_mutex_unlock(&service->mutex);
             runtime_worker_finish(worker);
-            return NULL;
+            return;
         }
         worker->application_session_opened = true;
     }
@@ -1779,7 +1787,7 @@ static void *runtime_connection_worker(void *opaque) {
         worker->final_response_inflight = false;
         cbm_mutex_unlock(&service->mutex);
         runtime_worker_finish(worker);
-        return NULL;
+        return;
     }
     hello_result.status = CBM_DAEMON_RUNTIME_CONNECT_ACCEPTED;
     hello_result.hello_status = CBM_DAEMON_HELLO_COMPATIBLE;
@@ -1788,7 +1796,7 @@ static void *runtime_connection_worker(void *opaque) {
     hello_result.authenticated_process_id = worker->peer_process_id;
     if (!runtime_send_hello_response(worker->connection, &hello_result)) {
         runtime_worker_finish(worker);
-        return NULL;
+        return;
     }
 
     bool keep_running = true;
@@ -1857,12 +1865,44 @@ static void *runtime_connection_worker(void *opaque) {
      * pool that climbs across these lines is holding memory the connection was
      * supposed to have given back. */
     cbm_mem_census_log("connection.exit");
+    return;
+}
+
+
+/* One persistent thread per pooled slot. It parks on work_ready between
+ * connections instead of being recreated, so the process keeps a constant set
+ * of allocator thread-heaps (#581). */
+static void *runtime_connection_worker(void *opaque) {
+    cbm_daemon_runtime_worker_t *worker = opaque;
+    cbm_daemon_runtime_service_t *service = worker->service;
+    for (;;) {
+        cbm_mutex_lock(&service->mutex);
+        while (!worker->has_work && !worker->pool_stop) {
+            cbm_cond_wait(&worker->work_ready, &service->mutex);
+        }
+        if (worker->pool_stop && !worker->has_work) {
+            cbm_mutex_unlock(&service->mutex);
+            break;
+        }
+        cbm_mutex_unlock(&service->mutex);
+
+        runtime_connection_serve(worker);
+
+        cbm_mutex_lock(&service->mutex);
+        worker->has_work = false;
+        cbm_mutex_unlock(&service->mutex);
+    }
+    /* Hand this thread's allocator pages back once, at the end of its life,
+     * rather than once per connection. */
+    cbm_mem_collect();
+    cbm_mem_census_log("pool.thread.exit");
     return NULL;
 }
 
 static void runtime_worker_reset_after_join(cbm_daemon_runtime_worker_t *worker) {
     free(worker->application_request);
-    worker->thread_started = false;
+    /* thread_started is deliberately NOT cleared: it now means "this slot's
+     * pooled thread exists", which stays true across connections. */
     worker->in_use = false;
     worker->joining = false;
     worker->connection = NULL;
@@ -1888,21 +1928,15 @@ static void runtime_reap_completed_workers(cbm_daemon_runtime_service_t *service
     for (size_t i = 0; i < service->worker_capacity; i++) {
         cbm_daemon_runtime_worker_t *worker = &service->workers[i];
         cbm_mutex_lock(&service->mutex);
+        /* The slot is reusable once serve() has finished AND its pooled thread
+         * has observed that (has_work cleared). The thread is not joined here —
+         * it parks for the next connection, which is the whole point of the
+         * pool. Threads are joined once, at service shutdown. */
         bool reap = worker->in_use && worker->thread_started && !worker->joining &&
+                    !worker->has_work &&
                     atomic_load_explicit(&worker->done, memory_order_acquire);
         if (reap) {
-            worker->joining = true;
-        }
-        cbm_mutex_unlock(&service->mutex);
-        if (!reap) {
-            continue;
-        }
-        int joined = cbm_thread_join(&worker->thread);
-        cbm_mutex_lock(&service->mutex);
-        if (joined == 0) {
             runtime_worker_reset_after_join(worker);
-        } else {
-            worker->joining = false;
         }
         cbm_mutex_unlock(&service->mutex);
     }
@@ -1961,10 +1995,18 @@ static void runtime_accept_connection(cbm_daemon_runtime_service_t *service,
         atomic_store_explicit(&worker->disconnecting, false, memory_order_release);
         atomic_store_explicit(&worker->application_thread_done, false, memory_order_release);
         service->active_connections++;
-        int created = cbm_thread_create(&worker->thread, RUNTIME_WORKER_STACK_SIZE,
+        /* Start this slot's thread the first time it is used, then reuse it. */
+        int created = 0;
+        if (!worker->thread_started) {
+            created = cbm_thread_create(&worker->thread, RUNTIME_WORKER_STACK_SIZE,
                                         runtime_connection_worker, worker);
+            if (created == 0) {
+                worker->thread_started = true;
+            }
+        }
         if (created == 0) {
-            worker->thread_started = true;
+            worker->has_work = true;
+            cbm_cond_signal(&worker->work_ready);
             cbm_mutex_unlock(&service->mutex);
             return;
         }
@@ -2206,6 +2248,9 @@ cbm_daemon_runtime_service_t *cbm_daemon_runtime_service_start_reserved(
     }
     for (size_t i = 0; i < service->worker_capacity; i++) {
         service->workers[i].service = service;
+        cbm_cond_init(&service->workers[i].work_ready);
+        service->workers[i].has_work = false;
+        service->workers[i].pool_stop = false;
         cbm_mutex_init(&service->workers[i].send_mutex);
         service->worker_mutexes_initialized++;
         atomic_init(&service->workers[i].done, false);
@@ -2417,13 +2462,26 @@ bool cbm_daemon_runtime_service_free(cbm_daemon_runtime_service_t *service) {
     }
     for (size_t i = 0; i < service->worker_capacity; i++) {
         cbm_daemon_runtime_worker_t *worker = &service->workers[i];
-        if (worker->thread_started) {
-            if (!atomic_load_explicit(&worker->done, memory_order_acquire) ||
-                cbm_thread_join(&worker->thread) != 0) {
-                return false;
-            }
-            runtime_worker_reset_after_join(worker);
+        if (!worker->thread_started) {
+            continue;
         }
+        /* Ask the parked thread to leave its loop, then join it once. A slot
+         * that is still serving a connection is not joinable yet — has_work is
+         * cleared only after serve() returns — so report not-yet-stopped and
+         * let the caller retry, exactly as the previous done-gate did. */
+        cbm_mutex_lock(&service->mutex);
+        bool busy = worker->has_work;
+        worker->pool_stop = true;
+        cbm_cond_signal(&worker->work_ready);
+        cbm_mutex_unlock(&service->mutex);
+        if (busy) {
+            return false;
+        }
+        if (cbm_thread_join(&worker->thread) != 0) {
+            return false;
+        }
+        worker->thread_started = false;
+        runtime_worker_reset_after_join(worker);
     }
     cbm_daemon_ipc_listener_close(service->listener);
     service->listener = NULL;
@@ -2438,6 +2496,7 @@ bool cbm_daemon_runtime_service_free(cbm_daemon_runtime_service_t *service) {
     free(service->conflict_log_path);
     for (size_t i = 0; i < service->worker_mutexes_initialized; i++) {
         cbm_mutex_destroy(&service->workers[i].send_mutex);
+        cbm_cond_destroy(&service->workers[i].work_ready);
     }
     free(service->workers);
     cbm_mutex_destroy(&service->mutex);

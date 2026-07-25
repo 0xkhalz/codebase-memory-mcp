@@ -63,6 +63,35 @@ void cbm_mutex_lock(cbm_mutex_t *m);
 void cbm_mutex_unlock(cbm_mutex_t *m);
 void cbm_mutex_destroy(cbm_mutex_t *m);
 
+/* ── Condition variable ───────────────────────────────────────── */
+
+/* Pairs with cbm_mutex_t. Windows CONDITION_VARIABLE works directly with the
+ * CRITICAL_SECTION the mutex wraps, so both platforms wait on the same lock the
+ * caller already holds — no second lock type and no lock-ordering rule. */
+
+#ifdef _WIN32
+
+typedef struct {
+    CONDITION_VARIABLE cv;
+} cbm_cond_t;
+
+#else
+
+typedef struct {
+    pthread_cond_t cv;
+} cbm_cond_t;
+
+#endif
+
+void cbm_cond_init(cbm_cond_t *c);
+/* Atomically releases the mutex and waits; reacquires it before returning.
+ * Spurious wakeups are permitted, so every caller must re-test its predicate
+ * in a loop. */
+void cbm_cond_wait(cbm_cond_t *c, cbm_mutex_t *m);
+void cbm_cond_signal(cbm_cond_t *c);
+void cbm_cond_broadcast(cbm_cond_t *c);
+void cbm_cond_destroy(cbm_cond_t *c);
+
 /* ── Aligned allocation ───────────────────────────────────────── */
 
 /* Allocate size bytes aligned to alignment boundary.
