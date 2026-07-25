@@ -125,6 +125,31 @@ static void check_pressure(size_t rss) {
     }
 }
 
+/* Allocator setup is not best-effort. A misconfigured allocator does not
+ * degrade gracefully — it grows without bound until the OS kills the process
+ * (#581 ran for months exactly this way, silently). So every step of the setup
+ * is VERIFIED and a failure is fatal here rather than a slow death later.
+ * There is deliberately no timeout or retry: these checks are synchronous, so
+ * "not true yet" and "never going to be true" are the same answer. */
+static void mem_setup_fatal(const char *what, const char *detail) {
+    cbm_log_error("mem.allocator.setup_failed", "check", what, "detail", detail);
+    /* Never continue with an allocator that cannot return memory: unbounded
+     * growth is a worse failure than refusing to start. */
+    abort();
+}
+
+/* Set an option and prove it took effect; a silently-ignored option is the
+ * failure mode that made #581 invisible. */
+static void mem_option_set_verified(mi_option_t option, long value, const char *name) {
+    mi_option_set(option, value);
+    if (mi_option_get(option) != value) {
+        char detail[CBM_SZ_128];
+        snprintf(detail, sizeof(detail), "%s did not take effect (wanted %ld, got %ld)", name,
+                 value, mi_option_get(option));
+        mem_setup_fatal("option", detail);
+    }
+}
+
 /* ── Public API ────────────────────────────────────────────────── */
 
 #define RAM_FRACTION_DEFAULT 0.5
@@ -222,8 +247,15 @@ void cbm_mem_init_with_cap(double ram_fraction, size_t hard_cap_bytes) {
      * here is what turns the options above from decoration into behaviour. */
     if (_mi_preloading()) {
         _mi_auto_process_init();
-        cbm_log_warn("mem.allocator.preloading_completed", "still_preloading",
-                     _mi_preloading() ? "true" : "false", "detail",
+        if (_mi_preloading()) {
+            /* Arena creation and every purge path stay disabled while this is
+             * set, so the process would grow until the OS killed it. Refuse. */
+            mem_setup_fatal("preloading",
+                            "allocator remained in preloading state after explicit process "
+                            "init: arena creation and purging are disabled, memory would "
+                            "never be returned to the OS");
+        }
+        cbm_log_warn("mem.allocator.preloading_completed", "still_preloading", "false", "detail",
                      "allocator was still preloading, so arena creation and purging were "
                      "disabled; process init completed explicitly");
     } else {
@@ -231,9 +263,9 @@ void cbm_mem_init_with_cap(double ram_fraction, size_t hard_cap_bytes) {
     }
 #endif
 
-    mi_option_set(mi_option_arena_eager_commit, 0);
-    mi_option_set(mi_option_purge_decommits, SKIP_ONE);
-    mi_option_set(mi_option_purge_delay, 0); /* immediate purge, no 1s delay */
+    mem_option_set_verified(mi_option_arena_eager_commit, 0, "arena_eager_commit");
+    mem_option_set_verified(mi_option_purge_decommits, SKIP_ONE, "purge_decommits");
+    mem_option_set_verified(mi_option_purge_delay, 0, "purge_delay"); /* immediate */
     /* v3 (#832): reclaim abandoned pages on ANY thread's free (=1), restoring the
      * v2 behaviour. mimalloc v3 defaults page_reclaim_on_free=0, so pages a worker
      * thread abandons at exit are NOT reclaimed when the main thread later frees
@@ -242,7 +274,7 @@ void cbm_mem_init_with_cap(double ram_fraction, size_t hard_cap_bytes) {
      * is the primary cure (the child returns 100% RSS on exit); this is the
      * in-process fallback for any path that stays in-process (kill switch,
      * spawn-fail degrade, embedders). */
-    mi_option_set(mi_option_page_reclaim_on_free, 1);
+    mem_option_set_verified(mi_option_page_reclaim_on_free, 1, "page_reclaim_on_free");
 
     /* Every option above is inert unless ordinary malloc actually reaches this
      * allocator. That silently stopped being true on Windows — mimalloc's
