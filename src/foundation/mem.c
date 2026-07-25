@@ -440,6 +440,18 @@ bool cbm_mem_map_collect(cbm_mem_map_t *out) {
     out->os_rss_bytes = current_rss ? current_rss : cbm_mem_rss();
     out->os_committed_bytes = current_commit;
 
+    /* Does plain malloc actually land in the allocator's regions? This single
+     * bit distinguishes "nothing is live" from "the allocator does not own
+     * this build's allocations", which are opposite conclusions from the same
+     * zero. Probe with a real malloc/free pair rather than inferring from
+     * build flags, because the Windows static-CRT override is defined at
+     * compile time yet can still fail to take effect at link time. */
+    void *probe = malloc(CBM_SZ_64);
+    if (probe) {
+        out->malloc_is_allocator_owned = mi_is_in_heap_region(probe);
+        free(probe);
+    }
+
     /* Walk areas only (visit_blocks=false): O(areas), safe on a live heap from
      * the diagnostics path. mi_heap_main() is the aggregate heap rather than
      * just this thread's, so coverage is wider than a per-thread walk — but it

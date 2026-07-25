@@ -111,6 +111,14 @@ void cbm_mem_collect_periodic(void);
 enum { CBM_MEM_MAP_BUCKETS = 8 };
 
 typedef struct {
+    /* Is plain malloc actually served by the configured allocator on this
+     * build? If false, every allocator tuning in cbm_mem_init (immediate
+     * purge, page reclaim, arena policy) is inert for ordinary allocations,
+     * the walk below sees nothing, and freed pages stay committed until the
+     * platform's own heap decides otherwise. Checked FIRST when reading a
+     * map: a false here explains a zero live_bytes, and is a platform-parity
+     * defect in its own right (#581 on Windows). */
+    bool malloc_is_allocator_owned;
     size_t os_committed_bytes;
     size_t os_rss_bytes;
     size_t live_bytes;
