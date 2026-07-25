@@ -101,7 +101,18 @@ mkdir -p "$CBM_CACHE_DIR"
 
 # Drive the MCP stdio path via the request/response driver (see its header for
 # why batching into a closed stdin does not work).
-python3 "$(dirname "$0")/memlab-drive.py" "$BINARY" "$CORPUS" "$REQUESTS" --stderr "$WORK/server-stderr.log" > "$WORK/drive.out" 2>&1
+# The VM's python3 is a NATIVE win32 build, so it cannot open msys paths like
+# /c/Users/... . Hand it Windows paths, or it starts nothing and the failure
+# looks like the server closing stdout.
+DRIVE_BINARY="$BINARY"
+DRIVE_CORPUS="$CORPUS"
+DRIVE_STDERR="$WORK/server-stderr.log"
+if command -v cygpath >/dev/null 2>&1 && ! command -v winepath >/dev/null 2>&1; then
+    DRIVE_BINARY="$(cygpath -w "$BINARY")"
+    DRIVE_CORPUS="$(cygpath -w "$CORPUS")"
+    DRIVE_STDERR="$(cygpath -w "$WORK/server-stderr.log")"
+fi
+python3 "$(dirname "$0")/memlab-drive.py" "$DRIVE_BINARY" "$DRIVE_CORPUS" "$REQUESTS" --stderr "$DRIVE_STDERR" > "$WORK/drive.out" 2>&1
 RC=$?
 # With CBM_CACHE_DIR set the process logs to its own file rather than stderr,
 # so fold that in or the census series is invisible.
