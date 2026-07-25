@@ -525,22 +525,20 @@ bool cbm_mem_map_collect(cbm_mem_map_t *out) {
         free(probe);
     }
 
-    /* Walk areas only (visit_blocks=false): O(areas), safe on a live heap from
-     * the diagnostics path. mi_heap_main() is the aggregate heap rather than
-     * just this thread's, so coverage is wider than a per-thread walk — but it
-     * is still not a guarantee of totality, which is exactly why the residual
-     * exists. A declined walk leaves live_bytes 0 so the residual owns the
-     * whole process: an unmeasured map must never read as an empty one.
-     * Abandoned pages (a known RSS-ratchet source, see cbm_mem_init) are
-     * folded in so they cannot hide from the map either. */
-    (void)mi_heap_visit_blocks(mi_heap_main(), false, mem_map_visit_area, out);
+    /* Walk only heaps this thread may safely read.
+     *
+     * mi_heap_main() is the process-wide aggregate: any other thread can be
+     * allocating into it while the walk runs, which is a data race by
+     * construction and TSan reports it as one (init.c:452 in mi_heap_main).
+     * A diagnostic must not introduce a race into the code it measures, so the
+     * aggregate walk is gone. What remains is safe by ownership: this thread's
+     * own theap, plus abandoned pages, which by definition have no owning
+     * thread left to race with.
+     *
+     * The cost is coverage -- other threads' live blocks are not attributed --
+     * and that is exactly what the residual in mem.h exists to carry. An
+     * unmeasured map must never read as an empty one. */
     (void)mi_heap_visit_abandoned_blocks(mi_heap_main(), false, mem_map_visit_area, out);
-    /* mimalloc v3 splits the aggregate heap (mi_heap_t) from the per-thread
-     * heap (mi_theap_t), and overridden malloc traffic lands in the latter --
-     * walking only mi_heap_main() reported live=0/blocks=0 on Windows for a
-     * process demonstrably holding tens of MB. Walk this thread's theap too.
-     * Coverage is still not total (other threads' theaps stay unreachable),
-     * which the residual continues to expose rather than hide. */
     (void)mi_theap_visit_blocks(mi_theap_get_default(), false, mem_map_visit_area, out);
     return true;
 }
