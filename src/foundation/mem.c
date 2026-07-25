@@ -9,6 +9,7 @@
 #include "mem.h"
 #include "platform.h"
 #include "log.h"
+#include "compat_thread.h"
 
 #include "foundation/constants.h"
 
@@ -415,4 +416,132 @@ bool cbm_mem_map_collect(cbm_mem_map_t *out) {
      * which the residual continues to expose rather than hide. */
     (void)mi_theap_visit_blocks(mi_theap_get_default(), false, mem_map_visit_area, out);
     return true;
+}
+
+/* ── Phase map (see mem.h for how to read it, and its limits) ──────── */
+
+enum { MEM_PHASE_SLOTS = 24 };
+
+typedef struct {
+    const char *label; /* static string, compared by pointer then by text */
+    int64_t bytes;
+    int64_t hits;
+} mem_phase_slot_t;
+
+static mem_phase_slot_t g_mem_phases[MEM_PHASE_SLOTS];
+static int g_mem_phase_count;
+static const char *g_mem_phase_open;
+static size_t g_mem_phase_baseline;
+static cbm_mutex_t g_mem_phase_mutex;
+static atomic_int g_mem_phase_enabled = ATOMIC_VAR_INIT(-1); /* -1 = undecided */
+
+static size_t mem_phase_committed(void) {
+    size_t elapsed_ms = 0;
+    size_t user_ms = 0;
+    size_t sys_ms = 0;
+    size_t rss = 0;
+    size_t peak_rss = 0;
+    size_t commit = 0;
+    size_t peak_commit = 0;
+    size_t faults = 0;
+    mi_process_info(&elapsed_ms, &user_ms, &sys_ms, &rss, &peak_rss, &commit, &peak_commit,
+                    &faults);
+    return commit;
+}
+
+static bool mem_phase_enabled(void) {
+    int state = atomic_load_explicit(&g_mem_phase_enabled, memory_order_acquire);
+    if (state >= 0) {
+        return state == 1;
+    }
+    char buf[CBM_SZ_16];
+    bool on = cbm_safe_getenv("CBM_MEM_PHASES", buf, sizeof(buf), NULL) != NULL && buf[0] == '1';
+    if (on) {
+        cbm_mutex_init(&g_mem_phase_mutex);
+    }
+    atomic_store_explicit(&g_mem_phase_enabled, on ? 1 : 0, memory_order_release);
+    return on;
+}
+
+void cbm_mem_phase_mark(const char *label) {
+    if (!mem_phase_enabled()) {
+        return;
+    }
+    size_t now = mem_phase_committed();
+    cbm_mutex_lock(&g_mem_phase_mutex);
+    if (g_mem_phase_open) {
+        int slot = -1;
+        for (int i = 0; i < g_mem_phase_count; i++) {
+            if (g_mem_phases[i].label == g_mem_phase_open ||
+                strcmp(g_mem_phases[i].label, g_mem_phase_open) == 0) {
+                slot = i;
+                break;
+            }
+        }
+        if (slot < 0 && g_mem_phase_count < MEM_PHASE_SLOTS) {
+            slot = g_mem_phase_count++;
+            g_mem_phases[slot].label = g_mem_phase_open;
+            g_mem_phases[slot].bytes = 0;
+            g_mem_phases[slot].hits = 0;
+        }
+        if (slot >= 0) {
+            g_mem_phases[slot].bytes += (int64_t)now - (int64_t)g_mem_phase_baseline;
+            g_mem_phases[slot].hits++;
+        }
+    }
+    g_mem_phase_open = label;
+    g_mem_phase_baseline = now;
+    cbm_mutex_unlock(&g_mem_phase_mutex);
+}
+
+void cbm_mem_phase_reset(void) {
+    if (!mem_phase_enabled()) {
+        return;
+    }
+    cbm_mutex_lock(&g_mem_phase_mutex);
+    memset(g_mem_phases, 0, sizeof(g_mem_phases));
+    g_mem_phase_count = 0;
+    g_mem_phase_open = NULL;
+    g_mem_phase_baseline = mem_phase_committed();
+    cbm_mutex_unlock(&g_mem_phase_mutex);
+}
+
+int cbm_mem_phase_report_json(char *out, size_t size) {
+    if (!out || size == 0) {
+        return 0;
+    }
+    out[0] = '\0';
+    if (!mem_phase_enabled()) {
+        return 0;
+    }
+    mem_phase_slot_t copy[MEM_PHASE_SLOTS];
+    int count = 0;
+    cbm_mutex_lock(&g_mem_phase_mutex);
+    count = g_mem_phase_count;
+    memcpy(copy, g_mem_phases, sizeof(copy));
+    cbm_mutex_unlock(&g_mem_phase_mutex);
+
+    /* Biggest retainer first — insertion sort, count <= MEM_PHASE_SLOTS. */
+    for (int i = 1; i < count; i++) {
+        mem_phase_slot_t key = copy[i];
+        int j = i - 1;
+        while (j >= 0 && copy[j].bytes < key.bytes) {
+            copy[j + 1] = copy[j];
+            j--;
+        }
+        copy[j + 1] = key;
+    }
+
+    int length = 0;
+    for (int i = 0; i < count && length >= 0 && (size_t)length < size; i++) {
+        int written = snprintf(out + length, size - (size_t)length,
+                               "%s{\"label\": \"%s\", \"bytes\": %lld, \"hits\": %lld}",
+                               i == 0 ? "" : ", ", copy[i].label ? copy[i].label : "?",
+                               (long long)copy[i].bytes, (long long)copy[i].hits);
+        if (written < 0) {
+            break;
+        }
+        length += written;
+    }
+    return length > 0 && (size_t)length < size ? length : 0;
 }

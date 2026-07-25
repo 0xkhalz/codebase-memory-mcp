@@ -125,4 +125,31 @@ size_t cbm_mem_map_bucket_limit(int bucket);
  * that the walk contributed nothing rather than reading 0 as "no leak". */
 bool cbm_mem_map_collect(cbm_mem_map_t *out);
 
+/* ── Phase map: WHICH code path does the memory stay in? ─────────────
+ *
+ * The allocator walk answers "how much and what size"; it cannot answer "who".
+ * When the growth does not route through the allocator at all — the Windows
+ * case in #581 — attribution has to come from the one metric that does see it:
+ * OS committed bytes. Marks bracket a critical path, and each mark attributes
+ * the committed-bytes delta since the previous mark to the previous label. Over
+ * many requests the label whose total climbs monotonically is where memory
+ * stays.
+ *
+ * Deliberately coarse and honest about it:
+ *   - OS committed is process-wide, so a concurrently-busy thread lands noise
+ *     in whichever label is open. Signal comes from ACCUMULATION over many
+ *     passes, never from a single delta.
+ *   - Marks must bracket the WHOLE path with no unlabelled gaps, or the leak
+ *     hides in the gap. Label the tail explicitly.
+ *   - Off unless CBM_MEM_PHASES=1, so the hot path pays one atomic load.
+ */
+void cbm_mem_phase_mark(const char *label);
+
+/* Drop all accumulated phase totals (call once at the start of a measurement). */
+void cbm_mem_phase_reset(void);
+
+/* Write the phase table as a JSON array of {label, bytes, hits}, biggest total
+ * first. Returns bytes written (0 when disabled or empty). */
+int cbm_mem_phase_report_json(char *out, size_t size);
+
 #endif /* CBM_MEM_H */

@@ -467,7 +467,14 @@ static void write_diagnostics(void) {
         bucket_length += written;
     }
 
-    char snapshot[CBM_SZ_2K];
+    /* Phase attribution: which bracketed code path the committed bytes stayed
+     * in. Empty unless CBM_MEM_PHASES=1. */
+    char phases[CBM_SZ_1K];
+    if (cbm_mem_phase_report_json(phases, sizeof(phases)) <= 0) {
+        phases[0] = '\0';
+    }
+
+    char snapshot[CBM_SZ_4K];
     int length = snprintf(snapshot, sizeof(snapshot),
                           "{\n"
                           "  \"uptime_s\": %ld,\n"
@@ -487,11 +494,12 @@ static void write_diagnostics(void) {
                           "  \"mem_area_committed_bytes\": %zu,\n"
                           "  \"mem_residual_bytes\": %zu,\n"
                           "  \"mem_buckets\": [%s],\n"
+                          "  \"mem_phases\": [%s],\n"
                           "  \"pid\": %d\n"
                           "}\n",
                           uptime, current_rss, peak_rss, current_commit, peak_commit, page_faults,
                           fds, qcount, qerrors, qtime, qavg, qmax, map.live_bytes, map.live_blocks,
-                          map.area_committed_bytes, residual, buckets, (int)getpid());
+                          map.area_committed_bytes, residual, buckets, phases, (int)getpid());
     if (length <= 0 || (size_t)length >= sizeof(snapshot) ||
         !diag_write_file(DIAG_SNAPSHOT_TMP_NAME, snapshot, (size_t)length, false) ||
         !diag_native_rename(DIAG_SNAPSHOT_TMP_NAME, DIAG_SNAPSHOT_NAME)) {
