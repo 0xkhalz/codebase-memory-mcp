@@ -32,6 +32,14 @@ size_t cbm_mem_profile_threshold(void);
 /* Record an allocation / release. Safe to call unconditionally: both return
  * immediately when profiling is off or the size is below the threshold. */
 void cbm_mem_profile_alloc(void *block, size_t size);
+
+/* Same, but with the caller's return address supplied by the hook itself.
+ * Required on Windows ARM64, where CaptureStackBackTrace returns nothing: a
+ * return address captured inside the capture helper names the helper, so every
+ * allocation collapses onto a handful of hook addresses and the attribution
+ * column becomes useless. Each hook must evaluate __builtin_return_address(0)
+ * in its OWN frame and pass it here. */
+void cbm_mem_profile_alloc_at(void *block, size_t size, void *caller);
 void cbm_mem_profile_free(void *block);
 
 typedef struct {

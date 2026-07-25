@@ -112,18 +112,22 @@ static uint64_t profile_hash(void *const *frames, int count) {
     return hash == 0 ? 1 : hash; /* 0 marks an empty slot */
 }
 
-static int profile_capture(void **frames) {
+static int profile_capture(void **frames, void *caller) {
 #ifdef _WIN32
     int captured = (int)CaptureStackBackTrace(PROFILE_SKIP_FRAMES, PROFILE_FRAMES, frames, NULL);
     if (captured > 0) {
         return captured;
     }
-    /* Fall back to the immediate return address rather than dropping the
-     * sample: one frame still separates call sites, and a coarse attribution
-     * beats an empty profile that looks like "nothing allocates". */
+    /* Fall back to the caller the hook supplied. Using a return address from
+     * THIS frame would name the profiler, not the allocating code. */
+    if (caller) {
+        frames[0] = caller;
+        return 1;
+    }
     frames[0] = __builtin_return_address(0);
     return frames[0] != NULL ? 1 : 0;
 #else
+    (void)caller;
     void *raw[PROFILE_FRAMES + PROFILE_SKIP_FRAMES];
     int got = backtrace(raw, PROFILE_FRAMES + PROFILE_SKIP_FRAMES);
     int count = got - PROFILE_SKIP_FRAMES;
@@ -169,6 +173,10 @@ static size_t profile_pointer_slot(const void *block) {
 }
 
 void cbm_mem_profile_alloc(void *block, size_t size) {
+    cbm_mem_profile_alloc_at(block, size, NULL);
+}
+
+void cbm_mem_profile_alloc_at(void *block, size_t size, void *caller) {
     if (!block || g_profile_reentrant) {
         return;
     }
@@ -178,7 +186,7 @@ void cbm_mem_profile_alloc(void *block, size_t size) {
         return;
     }
     void *frames[PROFILE_FRAMES];
-    int count = profile_capture(frames);
+    int count = profile_capture(frames, caller);
     if (count <= 0) {
         cbm_mutex_lock(&g_profile_mutex);
         g_totals.capture_failed++;

@@ -269,7 +269,7 @@ static TSParser *get_thread_parser(const TSLanguage *ts_lang, CBMLanguage lang) 
  * (#581). */
 static void *cbm_sqlite_malloc(int n) {
     void *block = mi_malloc((size_t)n);
-    cbm_mem_profile_alloc(block, (size_t)n);
+    cbm_mem_profile_alloc_at(block, (size_t)n, __builtin_return_address(0));
     return block;
 }
 static void cbm_sqlite_free(void *p) {
@@ -281,7 +281,7 @@ static void *cbm_sqlite_realloc(void *p, int n) {
         cbm_mem_profile_free(p);
     }
     void *grown = mi_realloc(p, (size_t)n);
-    cbm_mem_profile_alloc(grown, (size_t)n);
+    cbm_mem_profile_alloc_at(grown, (size_t)n, __builtin_return_address(0));
     return grown;
 }
 static int cbm_sqlite_size(void *p) {
@@ -294,12 +294,12 @@ static int cbm_sqlite_roundup(int n) {
  * through these, and they too skip the interposer. */
 static void *cbm_ts_malloc(size_t n) {
     void *block = mi_malloc(n);
-    cbm_mem_profile_alloc(block, n);
+    cbm_mem_profile_alloc_at(block, n, __builtin_return_address(0));
     return block;
 }
 static void *cbm_ts_calloc(size_t count, size_t size) {
     void *block = mi_calloc(count, size);
-    cbm_mem_profile_alloc(block, count * size);
+    cbm_mem_profile_alloc_at(block, count * size, __builtin_return_address(0));
     return block;
 }
 static void *cbm_ts_realloc(void *p, size_t n) {
@@ -307,7 +307,7 @@ static void *cbm_ts_realloc(void *p, size_t n) {
         cbm_mem_profile_free(p);
     }
     void *grown = mi_realloc(p, n);
-    cbm_mem_profile_alloc(grown, n);
+    cbm_mem_profile_alloc_at(grown, n, __builtin_return_address(0));
     return grown;
 }
 static void cbm_ts_free(void *p) {

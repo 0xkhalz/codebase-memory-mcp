@@ -71,13 +71,13 @@ static inline bool mem_override_is_ours(const void *block) {
 
 void *__wrap_malloc(size_t size) {
     void *block = mi_malloc(size);
-    cbm_mem_profile_alloc(block, size);
+    cbm_mem_profile_alloc_at(block, size, __builtin_return_address(0));
     return block;
 }
 
 void *__wrap_calloc(size_t count, size_t size) {
     void *block = mi_calloc(count, size);
-    cbm_mem_profile_alloc(block, count * size);
+    cbm_mem_profile_alloc_at(block, count * size, __builtin_return_address(0));
     return block;
 }
 
@@ -128,7 +128,7 @@ void *__wrap_realloc(void *block, size_t size) {
     if (mem_override_is_ours(block)) {
         cbm_mem_profile_free(block);
         void *grown = mi_realloc(block, size);
-        cbm_mem_profile_alloc(grown, size);
+        cbm_mem_profile_alloc_at(grown, size, __builtin_return_address(0));
         return grown;
     }
     /* A CRT block cannot be handed to mi_realloc, and the CRT's realloc must
