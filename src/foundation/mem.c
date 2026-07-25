@@ -765,6 +765,11 @@ bool cbm_mem_win_census(cbm_mem_win_census_t *out) {
                 } else {
                     out->private_large_bytes += mbi.RegionSize;
                     out->private_large_count++;
+                    if (out->large_tracked < 6) {
+                        out->large_base[out->large_tracked] = mbi.BaseAddress;
+                        out->large_size[out->large_tracked] = mbi.RegionSize;
+                        out->large_tracked++;
+                    }
                 }
                 if (mbi.RegionSize > out->largest_private_region) {
                     out->largest_private_region = mbi.RegionSize;
@@ -858,6 +863,7 @@ void cbm_mem_census_log(const char *tag) {
     char pmed[CBM_SZ_32];
     char plarge[CBM_SZ_32];
     char pcounts[CBM_SZ_64];
+    char large_map[CBM_SZ_256];
     char heaps[CBM_SZ_32];
     (void)snprintf(priv_kb, sizeof(priv_kb), "%zu", census.committed_private / CBM_SZ_1K);
     (void)snprintf(crt_kb, sizeof(crt_kb), "%zu", census.crt_heap_committed / CBM_SZ_1K);
@@ -874,6 +880,13 @@ void cbm_mem_census_log(const char *tag) {
     (void)snprintf(plarge, sizeof(plarge), "%zu", census.private_large_bytes / CBM_SZ_1K);
     (void)snprintf(pcounts, sizeof(pcounts), "%u/%u/%u", census.private_small_count,
                    census.private_medium_count, census.private_large_count);
+    large_map[0] = '\0';
+    for (unsigned r = 0; r < census.large_tracked; r++) {
+        char one[CBM_SZ_64];
+        (void)snprintf(one, sizeof(one), "%s%p:%zuM", r == 0 ? "" : ",", census.large_base[r],
+                       census.large_size[r] / ((size_t)CBM_SZ_1K * CBM_SZ_1K));
+        (void)strncat(large_map, one, sizeof(large_map) - strlen(large_map) - 1);
+    }
     (void)snprintf(heaps, sizeof(heaps), "%u", census.heap_walk_ok ? census.crt_heap_count : 0);
     char dc_calls[CBM_SZ_32];
     char dc_fail[CBM_SZ_32];
@@ -916,5 +929,5 @@ void cbm_mem_census_log(const char *tag) {
                  biggest_kb, "regions", regions, "big_regions", big_regions, "heaps", heaps,
                  "decommit_calls", dc_calls, "decommit_fails", dc_fail, "decommit_err", dc_err,
                  "decommit_mb", dc_mb, "biggest_base", base, "priv_small_kb", psmall, "priv_med_kb", pmed,
-                 "priv_large_kb", plarge, "priv_counts", pcounts);
+                 "priv_large_kb", plarge, "priv_counts", pcounts, "large_map", large_map);
 }

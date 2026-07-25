@@ -246,6 +246,13 @@ typedef struct {
     unsigned private_small_count;
     unsigned private_medium_count;
     unsigned private_large_count;
+    /* Identity, not just size: base and extent of the largest private regions,
+     * so they can be matched against the allocator's arena addresses instead of
+     * guessed at by toggling options one at a time. */
+    enum { CBM_MEM_TRACKED_REGIONS = 6 };
+    void *large_base[6];
+    size_t large_size[6];
+    unsigned large_tracked;
     size_t largest_private_region;
     unsigned private_regions_1mb;
     /* Base of that region: a base that stays put while the size climbs proves
