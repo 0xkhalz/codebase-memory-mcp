@@ -219,17 +219,35 @@ void cbm_mem_init_with_cap(double ram_fraction, size_t hard_cap_bytes) {
      * for months (#581). Probe it once, out loud: a real malloc asked whether
      * mimalloc owns it. Anything but true means the tuning here is decoration
      * and freed pages will not come back. */
-    void *ownership_probe = malloc(CBM_SZ_64);
-    if (ownership_probe) {
-        bool owned = mi_is_in_heap_region(ownership_probe);
-        free(ownership_probe);
-        if (!owned) {
-            cbm_log_warn("mem.allocator.not_owned", "detail",
-                         "malloc is not served by mimalloc: purge/reclaim options "
-                         "have no effect and freed pages will stay committed");
-        } else {
-            cbm_log_info("mem.allocator.owned", "detail", "malloc is served by mimalloc");
+    cbm_mem_ownership_audit_t audit;
+    cbm_mem_audit_ownership(&audit);
+    if (!audit.all_owned) {
+        /* Name the classes that escaped, because "not owned" is actionable
+         * only if you know WHICH sizes. A class listed here either bypasses
+         * the override or is misclassified by the routing predicate, and both
+         * mean freed pages will not come back. */
+        char classes[CBM_SZ_256];
+        int length = 0;
+        for (int i = 0; i < CBM_MEM_OWNERSHIP_CLASSES && length >= 0 &&
+                        (size_t)length < sizeof(classes);
+             i++) {
+            if (audit.allocated[i] && !audit.owned[i]) {
+                int written = snprintf(classes + length, sizeof(classes) - (size_t)length,
+                                       "%s%zu", length ? "," : "", audit.probe_bytes[i]);
+                if (written < 0) {
+                    break;
+                }
+                length += written;
+            }
         }
+        char owned_str[CBM_SZ_32];
+        snprintf(owned_str, sizeof(owned_str), "%d/%d", audit.owned_count, audit.probed_count);
+        cbm_log_warn("mem.allocator.not_owned", "owned_classes", owned_str, "unowned_bytes",
+                     length > 0 ? classes : "?", "detail",
+                     "allocations in these size classes are not allocator-owned: purge and "
+                     "reclaim options do not apply to them and freed pages stay committed");
+    } else {
+        cbm_log_info("mem.allocator.owned", "classes", "all");
     }
 
     /* CBM_MEM_BUDGET_MB env override (memory analogue of CBM_WORKERS).
@@ -448,6 +466,54 @@ bool cbm_mem_map_collect(cbm_mem_map_t *out) {
      * which the residual continues to expose rather than hide. */
     (void)mi_theap_visit_blocks(mi_theap_get_default(), false, mem_map_visit_area, out);
     return true;
+}
+
+/* ── Allocator ownership audit (see mem.h) ─────────────────────────── */
+
+static atomic_size_t g_foreign_pointers = ATOMIC_VAR_INIT(0);
+static atomic_size_t g_owned_pointers = ATOMIC_VAR_INIT(0);
+
+void cbm_mem_record_pointer_ownership(bool owned) {
+    atomic_fetch_add_explicit(owned ? &g_owned_pointers : &g_foreign_pointers, 1,
+                              memory_order_relaxed);
+}
+
+size_t cbm_mem_foreign_pointer_count(void) {
+    return atomic_load_explicit(&g_foreign_pointers, memory_order_relaxed);
+}
+
+size_t cbm_mem_owned_pointer_count(void) {
+    return atomic_load_explicit(&g_owned_pointers, memory_order_relaxed);
+}
+
+void cbm_mem_audit_ownership(cbm_mem_ownership_audit_t *out) {
+    if (!out) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    /* Span the classes an allocator treats differently: small (bins), page
+     * scale, medium, large, and past the point where allocators typically stop
+     * using their own pages and go to the OS directly — the class most likely
+     * to escape both an override and an ownership predicate. */
+    static const size_t PROBES[CBM_MEM_OWNERSHIP_CLASSES] = {
+        64, 4096, 65536, 262144, 1048576, 8388608,
+    };
+    for (int i = 0; i < CBM_MEM_OWNERSHIP_CLASSES; i++) {
+        out->probe_bytes[i] = PROBES[i];
+        void *block = malloc(PROBES[i]);
+        if (!block) {
+            continue;
+        }
+        ((char *)block)[0] = 1; /* touch it so it is really backed */
+        out->allocated[i] = true;
+        out->probed_count++;
+        out->owned[i] = mi_is_in_heap_region(block);
+        if (out->owned[i]) {
+            out->owned_count++;
+        }
+        free(block);
+    }
+    out->all_owned = out->probed_count > 0 && out->owned_count == out->probed_count;
 }
 
 /* ── Phase map (see mem.h for how to read it, and its limits) ──────── */

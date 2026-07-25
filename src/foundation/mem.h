@@ -133,6 +133,46 @@ size_t cbm_mem_map_bucket_limit(int bucket);
  * that the walk contributed nothing rather than reading 0 as "no leak". */
 bool cbm_mem_map_collect(cbm_mem_map_t *out);
 
+/* ── Allocator ownership audit ───────────────────────────────────────
+ *
+ * "Does the allocator own our memory" is not one question, it is one per size
+ * class. An override can capture small allocations while large or huge ones go
+ * elsewhere, and the predicate used to route frees can itself be wrong for a
+ * class — which silently hands real allocator blocks to the wrong deallocator.
+ * That is a leak at best and undefined behaviour at worst, so it has to be
+ * measured across the size range rather than probed once.
+ *
+ * Verified at startup and assertable in tests, so an unowned class is a loud
+ * failure instead of a slow ratchet nobody attributes for months (#581).
+ */
+enum { CBM_MEM_OWNERSHIP_CLASSES = 6 };
+
+typedef struct {
+    size_t probe_bytes[CBM_MEM_OWNERSHIP_CLASSES]; /* size probed per class */
+    bool owned[CBM_MEM_OWNERSHIP_CLASSES];         /* predicate said "ours" */
+    bool allocated[CBM_MEM_OWNERSHIP_CLASSES];     /* the probe itself worked */
+    int owned_count;
+    int probed_count;
+    bool all_owned; /* every successfully probed class came back owned */
+} cbm_mem_ownership_audit_t;
+
+/* Allocate one block per size class, ask the routing predicate whether the
+ * allocator owns it, then free it. Pure measurement: mutates no globals. */
+void cbm_mem_audit_ownership(cbm_mem_ownership_audit_t *out);
+
+/* Foreign-pointer accounting from the allocation interposer: how many pointers
+ * reaching our deallocators were classified as NOT allocator-owned. On a
+ * correctly wired build this stays at or near zero. A climbing count means
+ * either an un-intercepted allocation path or — as seen while landing the
+ * Windows interposer — a predicate misclassifying real allocator blocks.
+ * Either way it is a defect signal, which is why soak/smoke can gate on it.
+ * Both read zero on platforms with no interposer. */
+size_t cbm_mem_foreign_pointer_count(void);
+size_t cbm_mem_owned_pointer_count(void);
+
+/* Interposer hook: classify one pointer arriving at a deallocator. */
+void cbm_mem_record_pointer_ownership(bool owned);
+
 /* ── Phase map: WHICH code path does the memory stay in? ─────────────
  *
  * The allocator walk answers "how much and what size"; it cannot answer "who".
