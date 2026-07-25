@@ -238,6 +238,10 @@ typedef struct {
      * rather than many leaked blocks — a different bug with a different fix. */
     size_t largest_private_region;
     unsigned private_regions_1mb;
+    /* Base of that region: a base that stays put while the size climbs proves
+     * ONE allocation growing, and lets it be matched against the allocator's
+     * arena addresses to name the owner. */
+    void *largest_private_base;
     bool heap_walk_ok; /* false → crt_* are unknown, not zero */
 } cbm_mem_win_census_t;
 
