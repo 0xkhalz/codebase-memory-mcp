@@ -105,6 +105,11 @@ CENSUS=$(grep -c "mem.census" "$RUN_LOG" 2>/dev/null | head -1); CENSUS=${CENSUS
 SITES=$(grep -c '"site"' "$PROFILE_OUT" 2>/dev/null | head -1); SITES=${SITES:-0}
 
 echo "exit=$RC responses=$RESPONSES census_samples=$CENSUS profile_records=$SITES"
+if [ "$RESPONSES" -eq 0 ]; then
+    # A harness that hides why it failed is worse than no harness.
+    echo "--- driver output ---" >&2
+    cat "$WORK/drive.out" 2>/dev/null | tail -15 >&2
+fi
 if [ "$CENSUS" -eq 0 ]; then
     echo "WARN: no census samples — check CBM_MEM_CENSUS wiring" >&2
 fi
