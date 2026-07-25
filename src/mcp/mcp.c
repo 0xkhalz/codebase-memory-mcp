@@ -10419,14 +10419,6 @@ static void release_request_store(cbm_mcp_server_t *srv) {
     srv->store = NULL;
     free(srv->current_project);
     srv->current_project = NULL;
-    /* The close above frees a whole connection's worth of page cache and
-     * schema. Handing those pages back to the OS is what keeps a long-lived
-     * daemon flat across thousands of request-scoped stores (#581): without
-     * it, committed memory ratcheted ~2 MB per request on Windows, where freed
-     * CRT pages stay committed, while POSIX stayed flat because the allocator
-     * is configured to purge immediately. Placed here rather than inside
-     * cbm_store_close so only this request-scoped churn pays for it. */
-    cbm_mem_collect();
 }
 
 char *cbm_mcp_handle_tool(cbm_mcp_server_t *srv, const char *tool_name, const char *args_json) {
@@ -11138,7 +11130,6 @@ static int poll_for_input_unix(cbm_mcp_server_t *srv, int fd, FILE *in) {
         }
         if (pr == 0) {
             cbm_mcp_server_evict_idle(srv, STORE_IDLE_TIMEOUT_S);
-            cbm_mem_collect_periodic();
             return 0;
         }
         return SKIP_ONE;
@@ -11167,7 +11158,6 @@ static int poll_for_input_unix(cbm_mcp_server_t *srv, int fd, FILE *in) {
         }
         if (pr == 0) {
             cbm_mcp_server_evict_idle(srv, STORE_IDLE_TIMEOUT_S);
-            cbm_mem_collect_periodic();
             return 0;
         }
         return SKIP_ONE;
@@ -11211,7 +11201,6 @@ int cbm_mcp_server_run(cbm_mcp_server_t *srv, FILE *in, FILE *out) {
         }
         if (wr == WAIT_TIMEOUT) {
             cbm_mcp_server_evict_idle(srv, STORE_IDLE_TIMEOUT_S);
-            cbm_mem_collect_periodic();
             continue;
         }
 #else

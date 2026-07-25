@@ -475,32 +475,34 @@ static void write_diagnostics(void) {
     }
 
     char snapshot[CBM_SZ_4K];
-    int length = snprintf(snapshot, sizeof(snapshot),
-                          "{\n"
-                          "  \"uptime_s\": %ld,\n"
-                          "  \"rss_bytes\": %zu,\n"
-                          "  \"peak_rss_bytes\": %zu,\n"
-                          "  \"heap_committed_bytes\": %zu,\n"
-                          "  \"peak_committed_bytes\": %zu,\n"
-                          "  \"page_faults\": %zu,\n"
-                          "  \"fd_count\": %d,\n"
-                          "  \"query_count\": %d,\n"
-                          "  \"query_errors\": %d,\n"
-                          "  \"query_total_us\": %lld,\n"
-                          "  \"query_avg_us\": %lld,\n"
-                          "  \"query_max_us\": %lld,\n"
-                          "  \"mem_malloc_owned\": %s,\n"
-                          "  \"mem_live_bytes\": %zu,\n"
-                          "  \"mem_live_blocks\": %zu,\n"
-                          "  \"mem_area_committed_bytes\": %zu,\n"
-                          "  \"mem_residual_bytes\": %zu,\n"
-                          "  \"mem_buckets\": [%s],\n"
-                          "  \"mem_phases\": [%s],\n"
-                          "  \"pid\": %d\n"
-                          "}\n",
-                          uptime, current_rss, peak_rss, current_commit, peak_commit, page_faults,
-                          fds, qcount, qerrors, qtime, qavg, qmax, map.malloc_is_allocator_owned ? "true" : "false", map.live_bytes, map.live_blocks,
-                          map.area_committed_bytes, residual, buckets, phases, (int)getpid());
+    int length =
+        snprintf(snapshot, sizeof(snapshot),
+                 "{\n"
+                 "  \"uptime_s\": %ld,\n"
+                 "  \"rss_bytes\": %zu,\n"
+                 "  \"peak_rss_bytes\": %zu,\n"
+                 "  \"heap_committed_bytes\": %zu,\n"
+                 "  \"peak_committed_bytes\": %zu,\n"
+                 "  \"page_faults\": %zu,\n"
+                 "  \"fd_count\": %d,\n"
+                 "  \"query_count\": %d,\n"
+                 "  \"query_errors\": %d,\n"
+                 "  \"query_total_us\": %lld,\n"
+                 "  \"query_avg_us\": %lld,\n"
+                 "  \"query_max_us\": %lld,\n"
+                 "  \"mem_malloc_owned\": %s,\n"
+                 "  \"mem_live_bytes\": %zu,\n"
+                 "  \"mem_live_blocks\": %zu,\n"
+                 "  \"mem_area_committed_bytes\": %zu,\n"
+                 "  \"mem_residual_bytes\": %zu,\n"
+                 "  \"mem_buckets\": [%s],\n"
+                 "  \"mem_phases\": [%s],\n"
+                 "  \"pid\": %d\n"
+                 "}\n",
+                 uptime, current_rss, peak_rss, current_commit, peak_commit, page_faults, fds,
+                 qcount, qerrors, qtime, qavg, qmax,
+                 map.malloc_is_allocator_owned ? "true" : "false", map.live_bytes, map.live_blocks,
+                 map.area_committed_bytes, residual, buckets, phases, (int)getpid());
     if (length <= 0 || (size_t)length >= sizeof(snapshot) ||
         !diag_write_file(DIAG_SNAPSHOT_TMP_NAME, snapshot, (size_t)length, false) ||
         !diag_native_rename(DIAG_SNAPSHOT_TMP_NAME, DIAG_SNAPSHOT_NAME)) {
