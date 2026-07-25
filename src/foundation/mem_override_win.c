@@ -48,6 +48,7 @@
 #include <string.h>
 
 #ifdef _WIN32
+#include <malloc.h> /* _msize, _aligned_* */
 
 /* The originals, supplied by the linker because of --wrap. */
 void *__real_malloc(size_t size);
@@ -55,6 +56,11 @@ void *__real_calloc(size_t count, size_t size);
 void *__real_realloc(void *block, size_t size);
 void __real_free(void *block);
 char *__real_strdup(const char *text);
+size_t __real__msize(void *block);
+/* Wrappers must call __real_* for anything that is itself wrapped: a plain
+ * _msize() call inside this file is an undefined reference to _msize, so the
+ * linker would redirect it straight back into __wrap__msize -- infinite
+ * recursion rather than the CRT's answer. */
 
 /* True when mimalloc made this block, so it must be returned to mimalloc.
  * NULL is nobody's: callers handle it before asking. */
@@ -121,7 +127,7 @@ void *__wrap_realloc(void *block, size_t size) {
      * boundary once: allocate from mimalloc, move the smaller of the two
      * sizes, release the original to the CRT. mi_usable_size is unavailable
      * for a foreign block, so the CRT's own accounting bounds the copy. */
-    size_t old_size = _msize(block);
+    size_t old_size = __real__msize(block);
     void *moved = mi_malloc(size);
     if (!moved) {
         return NULL; /* original stays valid, as realloc requires */
@@ -135,7 +141,7 @@ size_t __wrap__msize(void *block) {
     if (block && mem_override_is_ours(block)) {
         return mi_usable_size(block);
     }
-    return block ? _msize(block) : 0;
+    return block ? __real__msize(block) : 0;
 }
 
 #endif /* _WIN32 */

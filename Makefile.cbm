@@ -105,9 +105,12 @@ WIN32_LIBS :=
 # pointer can never reach mi_free (#424).
 MIMALLOC_WRAP_SYMS := malloc calloc realloc free strdup strndup _msize \
                       _aligned_malloc _aligned_free
-MIMALLOC_WRAP_FLAGS := $(foreach sym,$(MIMALLOC_WRAP_SYMS),-Wl,--wrap=$(sym))
+MIMALLOC_WRAP_FLAGS :=
 ifeq ($(IS_MINGW),yes)
-WIN32_LIBS := -lws2_32 -lpsapi -lshell32 -ladvapi32 -Wl,--allow-multiple-definition -Wl,--stack,8388608 -static $(MIMALLOC_WRAP_FLAGS)
+MIMALLOC_WRAP_FLAGS := $(foreach sym,$(MIMALLOC_WRAP_SYMS),-Wl,--wrap=$(sym))
+endif
+ifeq ($(IS_MINGW),yes)
+WIN32_LIBS := -lws2_32 -lpsapi -lshell32 -ladvapi32 -Wl,--allow-multiple-definition -Wl,--stack,8388608 -static
 endif
 
 # STATIC=1 produces a fully static binary (for Alpine/musl portable builds)
@@ -115,9 +118,9 @@ ifeq ($(STATIC),1)
 STATIC_FLAGS := -static
 endif
 
-LDFLAGS = -lm -lstdc++ -lpthread -lz $(WIN32_LIBS) $(STATIC_FLAGS)
-LDFLAGS_TEST = -lm -lstdc++ -lpthread -lz $(SANITIZE) $(WIN32_LIBS)
-LDFLAGS_TSAN = -lm -lstdc++ -lpthread -lz $(TSAN_SANITIZE) $(WIN32_LIBS)
+LDFLAGS = -lm -lstdc++ -lpthread -lz $(WIN32_LIBS) $(STATIC_FLAGS) $(MIMALLOC_WRAP_FLAGS)
+LDFLAGS_TEST = -lm -lstdc++ -lpthread -lz $(SANITIZE) $(WIN32_LIBS) $(MIMALLOC_WRAP_FLAGS)
+LDFLAGS_TSAN = -lm -lstdc++ -lpthread -lz $(TSAN_SANITIZE) $(WIN32_LIBS) $(MIMALLOC_WRAP_FLAGS)
 
 # ── Source files ─────────────────────────────────────────────────
 
