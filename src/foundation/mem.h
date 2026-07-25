@@ -236,6 +236,16 @@ typedef struct {
     /* The single largest committed private region, and how many are >=1MiB.
      * One enormous region means one reservation (allocator metadata, a pagemap)
      * rather than many leaked blocks — a different bug with a different fix. */
+    /* Private commit split by region size. Growth invariant to every allocator
+     * option means the memory is not the allocator's; the size profile of what
+     * accumulates says what it IS — a swarm of small commits, mid-sized blocks,
+     * or thread-stack-sized reservations. */
+    size_t private_small_bytes;  /* regions < 64 KiB */
+    size_t private_medium_bytes; /* 64 KiB .. 1 MiB */
+    size_t private_large_bytes;  /* >= 1 MiB */
+    unsigned private_small_count;
+    unsigned private_medium_count;
+    unsigned private_large_count;
     size_t largest_private_region;
     unsigned private_regions_1mb;
     /* Base of that region: a base that stays put while the size climbs proves

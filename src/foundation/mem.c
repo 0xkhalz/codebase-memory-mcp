@@ -756,6 +756,16 @@ bool cbm_mem_win_census(cbm_mem_win_census_t *out) {
             switch (mbi.Type) {
             case MEM_PRIVATE:
                 out->committed_private += mbi.RegionSize;
+                if (mbi.RegionSize < (size_t)CBM_SZ_64K) {
+                    out->private_small_bytes += mbi.RegionSize;
+                    out->private_small_count++;
+                } else if (mbi.RegionSize < (size_t)CBM_SZ_1K * CBM_SZ_1K) {
+                    out->private_medium_bytes += mbi.RegionSize;
+                    out->private_medium_count++;
+                } else {
+                    out->private_large_bytes += mbi.RegionSize;
+                    out->private_large_count++;
+                }
                 if (mbi.RegionSize > out->largest_private_region) {
                     out->largest_private_region = mbi.RegionSize;
                     out->largest_private_base = mbi.BaseAddress;
@@ -844,6 +854,10 @@ void cbm_mem_census_log(const char *tag) {
     char regions[CBM_SZ_32];
     char base[CBM_SZ_32];
     char big_regions[CBM_SZ_32];
+    char psmall[CBM_SZ_32];
+    char pmed[CBM_SZ_32];
+    char plarge[CBM_SZ_32];
+    char pcounts[CBM_SZ_64];
     char heaps[CBM_SZ_32];
     (void)snprintf(priv_kb, sizeof(priv_kb), "%zu", census.committed_private / CBM_SZ_1K);
     (void)snprintf(crt_kb, sizeof(crt_kb), "%zu", census.crt_heap_committed / CBM_SZ_1K);
@@ -855,6 +869,11 @@ void cbm_mem_census_log(const char *tag) {
     (void)snprintf(regions, sizeof(regions), "%u", census.regions);
     (void)snprintf(base, sizeof(base), "%p", census.largest_private_base);
     (void)snprintf(big_regions, sizeof(big_regions), "%u", census.private_regions_1mb);
+    (void)snprintf(psmall, sizeof(psmall), "%zu", census.private_small_bytes / CBM_SZ_1K);
+    (void)snprintf(pmed, sizeof(pmed), "%zu", census.private_medium_bytes / CBM_SZ_1K);
+    (void)snprintf(plarge, sizeof(plarge), "%zu", census.private_large_bytes / CBM_SZ_1K);
+    (void)snprintf(pcounts, sizeof(pcounts), "%u/%u/%u", census.private_small_count,
+                   census.private_medium_count, census.private_large_count);
     (void)snprintf(heaps, sizeof(heaps), "%u", census.heap_walk_ok ? census.crt_heap_count : 0);
     char dc_calls[CBM_SZ_32];
     char dc_fail[CBM_SZ_32];
@@ -896,5 +915,6 @@ void cbm_mem_census_log(const char *tag) {
                  "crt_busy_kb", busy_kb, "mapped_kb", mapped_kb, "rss_kb", rss_kb, "biggest_kb",
                  biggest_kb, "regions", regions, "big_regions", big_regions, "heaps", heaps,
                  "decommit_calls", dc_calls, "decommit_fails", dc_fail, "decommit_err", dc_err,
-                 "decommit_mb", dc_mb, "biggest_base", base);
+                 "decommit_mb", dc_mb, "biggest_base", base, "priv_small_kb", psmall, "priv_med_kb", pmed,
+                 "priv_large_kb", plarge, "priv_counts", pcounts);
 }
