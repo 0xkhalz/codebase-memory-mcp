@@ -9,6 +9,7 @@
 #include "foundation/compat.h"
 #include "foundation/compat_thread.h"
 #include "foundation/log.h"
+#include "foundation/mem.h"
 #include "foundation/platform.h"
 
 #include <limits.h>
@@ -1840,6 +1841,14 @@ static void *runtime_connection_worker(void *opaque) {
     }
     free(payload);
     runtime_worker_finish(worker);
+    /* Return this thread's allocator pages before it exits. Each connection
+     * runs on its own thread, so a busy daemon accumulates one thread-heap per
+     * connection — 202 of them in a two-minute soak. Their pages are abandoned
+     * at thread exit and, measurably, never reclaimed (mimalloc reported
+     * reclaima/reclaimf = 0 while arena committed sat at 250 MB against 2.4 MiB
+     * of live blocks). Collecting here hands the pages back while this thread
+     * still owns them, which is the only point at which that is cheap (#581). */
+    cbm_mem_collect();
     return NULL;
 }
 
