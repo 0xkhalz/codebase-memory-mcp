@@ -350,6 +350,17 @@ void cbm_mem_init_with_cap(double ram_fraction, size_t hard_cap_bytes) {
     char ram_mb[CBM_SZ_32];
     snprintf(budget_mb, sizeof(budget_mb), "%zu", g_budget / MB_DIVISOR);
     snprintf(ram_mb, sizeof(ram_mb), "%zu", info.total_ram / MB_DIVISOR);
+    {
+        /* Report the profiler gate once. Without this, "no records" cannot be
+         * told apart from "never enabled" — and that ambiguity already cost
+         * three measurement rounds. */
+        char profile_threshold[CBM_SZ_32];
+        (void)snprintf(profile_threshold, sizeof(profile_threshold), "%zu",
+                       cbm_mem_profile_threshold());
+        cbm_log_info("mem.profile.gate", "enabled",
+                     cbm_mem_profile_enabled() ? "true" : "false", "threshold",
+                     profile_threshold);
+    }
     cbm_log_info("mem.init", "budget_mb", budget_mb, "total_ram_mb", ram_mb, "source",
                  resolved.source);
 }
