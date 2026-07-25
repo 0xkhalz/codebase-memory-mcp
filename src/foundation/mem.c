@@ -930,4 +930,13 @@ void cbm_mem_census_log(const char *tag) {
                  "decommit_calls", dc_calls, "decommit_fails", dc_fail, "decommit_err", dc_err,
                  "decommit_mb", dc_mb, "biggest_base", base, "priv_small_kb", psmall, "priv_med_kb", pmed,
                  "priv_large_kb", plarge, "priv_counts", pcounts, "large_map", large_map);
+    /* The phase table answers WHICH bracketed path the committed bytes stayed
+     * in. Emitted once at the end rather than per request: it is cumulative,
+     * so only the final table carries the verdict. */
+    if (tag && strcmp(tag, "connection.exit") == 0) {
+        char phases[CBM_SZ_1K];
+        if (cbm_mem_phase_report_json(phases, sizeof(phases)) > 0) {
+            cbm_log_info("mem.phases", "table", phases);
+        }
+    }
 }
