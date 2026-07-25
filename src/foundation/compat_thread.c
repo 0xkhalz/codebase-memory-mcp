@@ -7,6 +7,8 @@
 #include "foundation/constants.h"
 #include "foundation/compat_thread.h"
 
+#include "foundation/platform.h"
+
 #include <mimalloc.h> /* mi_thread_done at thread exit */
 
 #include <pthread.h>
@@ -26,6 +28,20 @@ typedef struct {
     void *arg;
 } win_thread_arg_t;
 
+/* CBM_MI_THREAD_DONE=0 disables the release, so one binary can demonstrate the
+ * behaviour with and without it. Causality has to be shown, not assumed. */
+static bool thread_release_heap_enabled(void) {
+    static int state = -1;
+    if (state < 0) {
+        char buf[CBM_SZ_16];
+        state = (cbm_safe_getenv("CBM_MI_THREAD_DONE", buf, sizeof(buf), NULL) != NULL &&
+                 buf[0] == '0')
+                    ? 0
+                    : 1;
+    }
+    return state == 1;
+}
+
 static DWORD WINAPI win_thread_wrapper(LPVOID lpParam) {
     win_thread_arg_t *a = (win_thread_arg_t *)lpParam;
     void *(*fn)(void *) = a->fn;
@@ -42,7 +58,9 @@ static DWORD WINAPI win_thread_wrapper(LPVOID lpParam) {
      * without bound (#581). The heaps are invisible to mi_heap_visit -- which
      * only sees the main and calling heaps -- which is why the growth looked
      * like it belonged to no allocator at all. */
-    mi_thread_done();
+    if (thread_release_heap_enabled()) {
+        mi_thread_done();
+    }
     return 0;
 }
 
