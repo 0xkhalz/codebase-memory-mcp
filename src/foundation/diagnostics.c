@@ -445,7 +445,29 @@ static void write_diagnostics(void) {
     long long qmax = atomic_load(&g_query_stats.max_us);
     long long qavg = qcount > 0 ? qtime / qcount : 0;
 
-    char snapshot[CBM_SZ_1K];
+    /* Memory map: live allocator bytes on this thread's heap, a size-class
+     * histogram, and the residual the walk does NOT account for. The residual
+     * is what keeps this honest — see mem.h. */
+    cbm_mem_map_t map;
+    (void)cbm_mem_map_collect(&map);
+    size_t residual =
+        map.os_committed_bytes > map.live_bytes ? map.os_committed_bytes - map.live_bytes : 0;
+    char buckets[CBM_SZ_512];
+    int bucket_length = 0;
+    for (int i = 0;
+         i < CBM_MEM_MAP_BUCKETS && bucket_length >= 0 && (size_t)bucket_length < sizeof(buckets);
+         i++) {
+        int written =
+            snprintf(buckets + bucket_length, sizeof(buckets) - (size_t)bucket_length,
+                     "%s{\"limit\": %zu, \"bytes\": %zu, \"blocks\": %zu}", i == 0 ? "" : ", ",
+                     cbm_mem_map_bucket_limit(i), map.bucket_bytes[i], map.bucket_blocks[i]);
+        if (written < 0) {
+            break;
+        }
+        bucket_length += written;
+    }
+
+    char snapshot[CBM_SZ_2K];
     int length = snprintf(snapshot, sizeof(snapshot),
                           "{\n"
                           "  \"uptime_s\": %ld,\n"
@@ -460,10 +482,16 @@ static void write_diagnostics(void) {
                           "  \"query_total_us\": %lld,\n"
                           "  \"query_avg_us\": %lld,\n"
                           "  \"query_max_us\": %lld,\n"
+                          "  \"mem_live_bytes\": %zu,\n"
+                          "  \"mem_live_blocks\": %zu,\n"
+                          "  \"mem_area_committed_bytes\": %zu,\n"
+                          "  \"mem_residual_bytes\": %zu,\n"
+                          "  \"mem_buckets\": [%s],\n"
                           "  \"pid\": %d\n"
                           "}\n",
                           uptime, current_rss, peak_rss, current_commit, peak_commit, page_faults,
-                          fds, qcount, qerrors, qtime, qavg, qmax, (int)getpid());
+                          fds, qcount, qerrors, qtime, qavg, qmax, map.live_bytes, map.live_blocks,
+                          map.area_committed_bytes, residual, buckets, (int)getpid());
     if (length <= 0 || (size_t)length >= sizeof(snapshot) ||
         !diag_write_file(DIAG_SNAPSHOT_TMP_NAME, snapshot, (size_t)length, false) ||
         !diag_native_rename(DIAG_SNAPSHOT_TMP_NAME, DIAG_SNAPSHOT_NAME)) {

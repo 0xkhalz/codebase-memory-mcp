@@ -78,4 +78,51 @@ size_t cbm_mem_worker_budget(int num_workers);
 /* Return unused pages to the OS. Call between files to bound per-file peak. */
 void cbm_mem_collect(void);
 
+/* ── Memory map: where does the process's memory actually live? ──────
+ *
+ * A growth diagnostic that is honest about what it cannot see. Walking the
+ * allocator reports live bytes for the CALLING thread's heap only, so a leak
+ * on another thread — or memory never routed through the allocator — would be
+ * invisible to a naive per-subsystem tally. Every consumer therefore gets
+ * three independent totals plus an explicit residual, so an incomplete map
+ * announces itself instead of looking balanced:
+ *
+ *   os_committed_bytes  what the OS charges the process
+ *   live_bytes          allocator blocks live on THIS thread's heap
+ *   residual            os_committed - live_bytes (other threads, allocator
+ *                       retention, or non-allocator memory)
+ *
+ * Reading the triple localises growth without guessing:
+ *   live grows                → leak on this thread's heap; buckets say which size
+ *   residual grows, live flat → another thread's heap, retention, or OS/CRT memory
+ *   both flat but RSS grows   → mapped files or stacks, not the heap
+ *
+ * The bucket histogram splits live bytes by size class, so a distinctive class
+ * ("thousands of 384-byte blocks appeared") identifies the allocation without
+ * per-callsite instrumentation.
+ */
+enum { CBM_MEM_MAP_BUCKETS = 8 };
+
+typedef struct {
+    size_t os_committed_bytes;
+    size_t os_rss_bytes;
+    size_t live_bytes;
+    size_t live_blocks;
+    size_t area_committed_bytes;
+    size_t area_reserved_bytes;
+    /* Live bytes by size class: <=64, <=256, <=1K, <=4K, <=16K, <=64K, <=1M, rest */
+    size_t bucket_bytes[CBM_MEM_MAP_BUCKETS];
+    size_t bucket_blocks[CBM_MEM_MAP_BUCKETS];
+} cbm_mem_map_t;
+
+/* Inclusive upper bound of each size class; the last bucket is open-ended and
+ * reports 0. */
+size_t cbm_mem_map_bucket_limit(int bucket);
+
+/* Snapshot the current memory map. Returns false only when out is NULL. If the
+ * allocator declines the walk, the OS totals are still filled and live_bytes
+ * stays 0, so the residual carries the whole process and the caller can SEE
+ * that the walk contributed nothing rather than reading 0 as "no leak". */
+bool cbm_mem_map_collect(cbm_mem_map_t *out);
+
 #endif /* CBM_MEM_H */

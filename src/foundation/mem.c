@@ -333,3 +333,86 @@ size_t cbm_mem_worker_budget(int num_workers) {
 void cbm_mem_collect(void) {
     mi_collect(true);
 }
+
+/* ── Memory map (see mem.h for how to read the triple) ─────────────── */
+
+static const size_t MEM_MAP_BUCKET_LIMITS[CBM_MEM_MAP_BUCKETS] = {
+    64, 256, 1024, 4096, 16384, 65536, 1048576, 0, /* 0 = open-ended tail */
+};
+
+size_t cbm_mem_map_bucket_limit(int bucket) {
+    if (bucket < 0 || bucket >= CBM_MEM_MAP_BUCKETS) {
+        return 0;
+    }
+    return MEM_MAP_BUCKET_LIMITS[bucket];
+}
+
+static int mem_map_bucket_of(size_t block_size) {
+    for (int i = 0; i < CBM_MEM_MAP_BUCKETS - 1; i++) {
+        if (block_size <= MEM_MAP_BUCKET_LIMITS[i]) {
+            return i;
+        }
+    }
+    return CBM_MEM_MAP_BUCKETS - 1;
+}
+
+/* Area visitor: visit_blocks=false means one call per area, so `used` (live
+ * block count) x `block_size` is the live byte total without touching blocks. */
+static bool mem_map_visit_area(const mi_heap_t *heap, const mi_heap_area_t *area, void *block,
+                               size_t block_size, void *arg) {
+    (void)heap;
+    (void)block;
+    (void)block_size;
+    cbm_mem_map_t *map = arg;
+    if (!area || !map) {
+        return true;
+    }
+    size_t live = area->used * area->block_size;
+    int bucket = mem_map_bucket_of(area->block_size);
+    map->live_bytes += live;
+    map->live_blocks += area->used;
+    map->bucket_bytes[bucket] += live;
+    map->bucket_blocks[bucket] += area->used;
+    map->area_committed_bytes += area->committed;
+    map->area_reserved_bytes += area->reserved;
+    return true; /* keep walking */
+}
+
+bool cbm_mem_map_collect(cbm_mem_map_t *out) {
+    if (!out) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+
+    size_t elapsed_ms = 0;
+    size_t user_ms = 0;
+    size_t sys_ms = 0;
+    size_t current_rss = 0;
+    size_t peak_rss = 0;
+    size_t current_commit = 0;
+    size_t peak_commit = 0;
+    size_t page_faults = 0;
+    mi_process_info(&elapsed_ms, &user_ms, &sys_ms, &current_rss, &peak_rss, &current_commit,
+                    &peak_commit, &page_faults);
+    out->os_rss_bytes = current_rss ? current_rss : cbm_mem_rss();
+    out->os_committed_bytes = current_commit;
+
+    /* Walk areas only (visit_blocks=false): O(areas), safe on a live heap from
+     * the diagnostics path. mi_heap_main() is the aggregate heap rather than
+     * just this thread's, so coverage is wider than a per-thread walk — but it
+     * is still not a guarantee of totality, which is exactly why the residual
+     * exists. A declined walk leaves live_bytes 0 so the residual owns the
+     * whole process: an unmeasured map must never read as an empty one.
+     * Abandoned pages (a known RSS-ratchet source, see cbm_mem_init) are
+     * folded in so they cannot hide from the map either. */
+    (void)mi_heap_visit_blocks(mi_heap_main(), false, mem_map_visit_area, out);
+    (void)mi_heap_visit_abandoned_blocks(mi_heap_main(), false, mem_map_visit_area, out);
+    /* mimalloc v3 splits the aggregate heap (mi_heap_t) from the per-thread
+     * heap (mi_theap_t), and overridden malloc traffic lands in the latter --
+     * walking only mi_heap_main() reported live=0/blocks=0 on Windows for a
+     * process demonstrably holding tens of MB. Walk this thread's theap too.
+     * Coverage is still not total (other threads' theaps stay unreachable),
+     * which the residual continues to expose rather than hide. */
+    (void)mi_theap_visit_blocks(mi_theap_get_default(), false, mem_map_visit_area, out);
+    return true;
+}
