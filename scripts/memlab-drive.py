@@ -36,13 +36,16 @@ def main():
     parser.add_argument("binary")
     parser.add_argument("corpus")
     parser.add_argument("requests", type=int)
+    parser.add_argument("--stderr", help="file for the server's stderr; never discard it")
     args = parser.parse_args()
 
     proc = subprocess.Popen(
         [args.binary],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
+        # Never DEVNULL: when the server refuses to start, its stderr is the
+        # only thing that says why.
+        stderr=open(args.stderr, "w") if args.stderr else None,
         text=True,
         bufsize=1,
     )

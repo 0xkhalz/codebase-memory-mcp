@@ -85,7 +85,13 @@ done
 echo "=== memlab: binary=$BINARY requests=$REQUESTS label=$LABEL ==="
 echo "corpus: $(find "$CORPUS" -name '*.py' | wc -l | tr -d ' ') files"
 
-export CBM_CACHE_DIR="$WORK/cache"
+# The Windows binary needs a native path here; an msys /c/... path is not one.
+if command -v cygpath >/dev/null 2>&1 && ! command -v winepath >/dev/null 2>&1; then
+    mkdir -p "$WORK/cache"
+    export CBM_CACHE_DIR="$(cygpath -w "$WORK/cache")"
+else
+    export CBM_CACHE_DIR="$WORK/cache"
+fi
 export CBM_MEM_PROFILE=1
 export CBM_MEM_PROFILE_OUT="$PROFILE_OUT"
 export CBM_MEM_CENSUS=1
@@ -95,11 +101,12 @@ mkdir -p "$CBM_CACHE_DIR"
 
 # Drive the MCP stdio path via the request/response driver (see its header for
 # why batching into a closed stdin does not work).
-python3 "$(dirname "$0")/memlab-drive.py" "$BINARY" "$CORPUS" "$REQUESTS" > "$WORK/drive.out" 2>&1
+python3 "$(dirname "$0")/memlab-drive.py" "$BINARY" "$CORPUS" "$REQUESTS" --stderr "$WORK/server-stderr.log" > "$WORK/drive.out" 2>&1
 RC=$?
 # With CBM_CACHE_DIR set the process logs to its own file rather than stderr,
 # so fold that in or the census series is invisible.
-cat "$CBM_CACHE_DIR"/logs/*.log >> "$RUN_LOG" 2>/dev/null || true
+cat "$WORK"/cache/logs/*.log >> "$RUN_LOG" 2>/dev/null || true
+cat "$WORK/server-stderr.log" >> "$RUN_LOG" 2>/dev/null || true
 RESPONSES=$(sed -n "s/.*served=\\([0-9]*\\).*/\\1/p" "$WORK/drive.out" | head -1); RESPONSES=${RESPONSES:-0}
 CENSUS=$(grep -c "mem.census" "$RUN_LOG" 2>/dev/null | head -1); CENSUS=${CENSUS:-0}
 SITES=$(grep -c '"site"' "$PROFILE_OUT" 2>/dev/null | head -1); SITES=${SITES:-0}
