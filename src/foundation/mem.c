@@ -798,6 +798,17 @@ bool cbm_mem_win_census(cbm_mem_win_census_t *out) {
 #endif
 }
 
+#ifdef _WIN32
+/* Defined in the vendored allocator's Windows primitives (see the note there):
+ * how often a decommit was attempted, how often it failed, and the last error.
+ * A non-zero failure count means the allocator's "purged" accounting is
+ * fiction and the OS still charges us for those pages. */
+extern size_t mi_cbm_decommit_calls;
+extern size_t mi_cbm_decommit_failures;
+extern size_t mi_cbm_decommit_last_error;
+extern size_t mi_cbm_decommit_bytes;
+#endif
+
 void cbm_mem_census_log(const char *tag) {
     if (!cbm_mem_census_enabled()) {
         return;
@@ -828,7 +839,25 @@ void cbm_mem_census_log(const char *tag) {
     (void)snprintf(regions, sizeof(regions), "%u", census.regions);
     (void)snprintf(big_regions, sizeof(big_regions), "%u", census.private_regions_1mb);
     (void)snprintf(heaps, sizeof(heaps), "%u", census.heap_walk_ok ? census.crt_heap_count : 0);
+    char dc_calls[CBM_SZ_32];
+    char dc_fail[CBM_SZ_32];
+    char dc_err[CBM_SZ_32];
+    char dc_mb[CBM_SZ_32];
+#ifdef _WIN32
+    (void)snprintf(dc_calls, sizeof(dc_calls), "%zu", mi_cbm_decommit_calls);
+    (void)snprintf(dc_fail, sizeof(dc_fail), "%zu", mi_cbm_decommit_failures);
+    (void)snprintf(dc_err, sizeof(dc_err), "%zu", mi_cbm_decommit_last_error);
+    (void)snprintf(dc_mb, sizeof(dc_mb), "%zu",
+                   mi_cbm_decommit_bytes / ((size_t)CBM_SZ_1K * CBM_SZ_1K));
+#else
+    (void)snprintf(dc_calls, sizeof(dc_calls), "n/a");
+    (void)snprintf(dc_fail, sizeof(dc_fail), "n/a");
+    (void)snprintf(dc_err, sizeof(dc_err), "n/a");
+    (void)snprintf(dc_mb, sizeof(dc_mb), "n/a");
+#endif
     cbm_log_info("mem.census", "at", tag ? tag : "?", "priv_kb", priv_kb, "crt_kb", crt_kb,
                  "crt_busy_kb", busy_kb, "mapped_kb", mapped_kb, "rss_kb", rss_kb, "biggest_kb",
-                 biggest_kb, "regions", regions, "big_regions", big_regions, "heaps", heaps);
+                 biggest_kb, "regions", regions, "big_regions", big_regions, "heaps", heaps,
+                 "decommit_calls", dc_calls, "decommit_fails", dc_fail, "decommit_err", dc_err,
+                 "decommit_mb", dc_mb);
 }
