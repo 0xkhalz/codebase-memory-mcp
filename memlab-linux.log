@@ -1,0 +1,411 @@
+level=info msg=mem.allocator.owned classes=all
+level=info msg=mem.init budget_mb=3486 total_ram_mb=13945 source=ram_fraction
+level=info msg=daemon.start version=dev pid=349 cache_fingerprint=c61b7dd79e8d95be0da671fc14532699e785da5fbf527198d60324e4f766476d memory_budget_bytes=3655720960 physical_job_limit=4 worker_memory_budget_bytes=913930240
+level=info msg=watcher.start interval_ms=multi-sec
+level=info msg=mcp.request protocol=jsonrpc method=initialize status=ok duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=1 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23832 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=index_repository status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=1 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23848 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=1 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23848 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=1 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23848 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=2
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=1 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23852 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=1 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23852 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=1 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23852 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=1 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23852 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=1 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23856 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=1 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23856 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=1 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23856 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=update.available current=dev latest=v0.9.0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23968 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23976 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23976 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23976 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23976 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23980 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23980 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23980 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23980 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23984 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23984 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23984 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23984 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23988 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23988 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23988 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23988 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23992 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23992 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23992 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23992 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23996 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23996 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23996 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23996 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24000 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24000 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24000 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24000 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24004 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24004 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24004 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24004 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=1
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24008 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24008 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24008 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24008 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24012 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=1
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24012 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24012 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24012 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24016 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24016 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24016 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24016 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24020 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24020 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24020 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24020 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24024 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24024 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24024 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24024 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24028 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=1
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24028 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24028 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24028 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24032 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24032 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24032 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24032 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24036 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24036 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24036 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24036 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24040 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24040 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24040 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=1
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24040 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24044 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24044 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24044 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24044 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24048 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24048 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24048 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24048 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24052 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24052 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24052 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24052 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24056 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24056 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24056 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24056 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24060 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24060 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24060 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24060 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24064 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24064 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24064 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24064 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24068 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24068 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24068 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24068 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24072 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24072 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24072 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24072 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24076 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24076 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24076 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24076 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24080 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24080 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24080 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24080 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24084 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24084 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24084 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24084 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=1
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24088 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24088 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24088 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=1
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24088 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24092 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24092 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24092 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24092 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24096 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24096 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=1
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24096 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24096 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24100 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24100 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24100 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24100 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24104 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24104 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24104 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24104 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24108 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24108 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24108 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24108 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24112 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24112 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24112 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24112 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24116 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24116 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24116 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=1
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24116 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24120 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24120 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24120 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24120 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24124 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24124 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24124 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24124 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24128 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24128 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=1
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24128 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24128 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24132 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24132 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24132 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=2
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24132 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24136 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24136 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24136 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24136 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24140 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24140 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24140 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24140 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24144 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24144 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24144 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24144 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24148 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24148 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24148 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24148 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24152 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24152 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24152 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24152 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24156 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24156 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24156 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24156 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24160 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24160 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24160 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24160 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=1
+level=info msg=mem.census at=mcp.request prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=24164 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=warn msg=mcp.request protocol=jsonrpc method=tools/call tool=search_graph status=error duration_ms=0
+level=info msg=daemon.runtime_stopping reason=last_committed_client_disconnected
+level=info msg=mem.census at=connection.exit prof_live_kb=0 prof_sites=4 prof_lost=0 priv_kb=0 crt_kb=0 crt_busy_kb=0 mapped_kb=0 rss_kb=23868 biggest_kb=0 regions=0 big_regions=0 heaps=0 decommit_calls=n/a decommit_fails=n/a decommit_err=n/a decommit_mb=n/a biggest_base=(nil)
+level=info msg=daemon.lifetime_end reason=runtime_exited

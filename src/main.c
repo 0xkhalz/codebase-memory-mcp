@@ -14,7 +14,8 @@
  * per-account daemon. One-shot CLI tool calls run in an isolated local server
  * and never create or retain a daemon generation.
  */
-#include "cbm.h" // cbm_alloc_init — bind 3rd-party allocators to mimalloc before any sqlite/git init
+#include "cbm.h"
+#include "store/store.h" // cbm_alloc_init — bind 3rd-party allocators to mimalloc before any sqlite/git init
 #include "daemon/application.h"
 #include "daemon/bootstrap.h"
 #include "daemon/frontend.h"

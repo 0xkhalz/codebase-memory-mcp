@@ -3365,8 +3365,14 @@ static void emit_semantic_results_toon(cbm_sb_t *sb, const cbm_vector_result_t *
 }
 
 static char *handle_search_graph(cbm_mcp_server_t *srv, const char *args) {
+    /* Inner phase split: every tool leaks the same ~4 MB per request, so the
+     * retainer is in what the handlers share -- store resolution or the query
+     * itself. These marks separate the two. */
+    cbm_mem_phase_mark("handler.args");
     char *project = get_project_arg(args);
+    cbm_mem_phase_mark("handler.resolve_store");
     cbm_store_t *store = resolve_store(srv, project);
+    cbm_mem_phase_mark("handler.body");
     REQUIRE_STORE(store, project);
 
     char *not_indexed = verify_project_indexed(store, project);
@@ -10413,19 +10419,41 @@ static void release_request_store(cbm_mcp_server_t *srv) {
     srv->store = NULL;
     free(srv->current_project);
     srv->current_project = NULL;
+    /* The close above frees a connection's worth of page cache. Ask the
+     * allocator to hand those pages back now, which keeps a long-lived daemon
+     * flat across thousands of request-scoped stores (#581). This only became
+     * meaningful once the Windows interposer made the pages mimalloc's: an
+     * earlier attempt aimed at the CRT heap instead and could not release
+     * them. POSIX already purges on free, so this is a no-op there. */
+    cbm_mem_collect();
 }
 
 char *cbm_mcp_handle_tool(cbm_mcp_server_t *srv, const char *tool_name, const char *args_json) {
+    /* Phase marks bracket the WHOLE request with no unlabelled gap, so growth
+     * cannot hide between them (CBM_MEM_PHASES=1; see foundation/mem.h). The
+     * "idle" label owns everything outside a request, which is what makes a
+     * request-path retainer distinguishable from background growth. */
+    cbm_mem_phase_mark("request.scope_begin");
     bool request_scope = !srv || cbm_mcp_server_request_scope_begin(srv);
     if (!request_scope) {
         release_request_store(srv);
+        cbm_mem_phase_mark("idle");
         return cbm_mcp_text_result("request cancellation scope unavailable", true);
     }
+    cbm_mem_phase_mark("request.dispatch_tool");
     char *result = dispatch_tool(srv, tool_name, args_json);
+    cbm_mem_phase_mark("request.scope_end");
     if (srv) {
         cbm_mcp_server_request_scope_end(srv);
     }
+    cbm_mem_phase_mark("request.release_store");
     release_request_store(srv);
+    cbm_mem_phase_mark("idle");
+    /* One census per completed request, so growth can be attributed to a POOL
+     * rather than inferred from a process total (#581). Emitted after the
+     * request store is released, which is the point where a well-behaved
+     * request has given everything back. */
+    cbm_mem_census_log("mcp.request");
     return result;
 }
 

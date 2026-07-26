@@ -13,6 +13,7 @@
 #   win.sh test <suite...>         # run test-runner suites (native ARM64)
 #   win.sh guards                  # clean UI product build + Windows guards
 #   win.sh smoke-install           # real managed-install E2E (Phase 8 class)
+#   win.sh soak [minutes]          # native daemon endurance gate (default 10m)
 #   win.sh sh <command...>         # arbitrary command in CLANGARM64 env
 #   win.sh push-file <local> <vm>  # scp one file into the VM (WIP iteration)
 #   win.sh test-par                # full suite, parallel on all VM cores
@@ -62,6 +63,9 @@ vm() { local env="$1"; shift
 vm_cmd() { "${SSH[@]}" "$@"; } # plain cmd.exe (CI-shaped environment)
 
 cmd="${1:-status}"; shift || true
+if [ "$cmd" != "status" ]; then
+    cbm_vm_sync_windows_clock "${SSH[@]}"
+fi
 case "$cmd" in
 status)
     "${SSH[@]}" "echo VM_REACHABLE & ver"
@@ -137,6 +141,18 @@ smoke-install)
     # Real managed install E2E with FULL stderr visible — the exact class the
     # CI smoke Phase 8 exercises, isolated beneath a disposable profile root.
     vm clangarm64 "cd /c/cbm && bash test-infrastructure/vm/vm-smoke.sh"
+    ;;
+soak)
+    duration="${1:-10}"
+    case "$duration" in
+    ''|*[!0-9]*) echo "usage: win.sh soak [positive-minutes]" >&2; exit 2 ;;
+    esac
+    if [ "$duration" -le 0 ]; then
+        echo "usage: win.sh soak [positive-minutes]" >&2
+        exit 2
+    fi
+    vm clangarm64 "cd /c/cbm && CBM_VM_TEST_LOG=/tmp/win-soak.log bash \
+        test-infrastructure/vm/vm-run-tests.sh --soak '$duration'"
     ;;
 sh)
     vm clangarm64 "$*"
