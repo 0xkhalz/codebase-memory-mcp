@@ -18,7 +18,9 @@ seconds-fast local loop with full stderr/debugger visibility.
 |---|---|---|
 | `windows-bootstrap.ps1` | inside the VM, once | OpenSSH + host key + CI owner-policy mirror |
 | `provision-windows.sh`  | on the host | zero → fully-built, idempotent (disk-loss recovery) |
-| `win.sh`                | on the host | daily driver: build / test / guards / install-E2E / shell |
+| `win.sh`                | on the host | daily driver (`win.sh help`): routes every venue-grade command through the canonical leg scripts (`scripts/build.sh`, `scripts/test.sh`, `vm-smoke.sh`, `soak-legs.sh`) with clean-disk preflight |
+| `vm-run-tests.sh`       | inside the VM | provisioning wrapper (protected TEMP root + completion guard) around the canonical test/soak entries |
+| `vm-smoke.sh`           | inside the VM / CI msys2 | THE canonical Windows smoke (also run verbatim by PR CI and `_smoke.yml`) |
 
 Host-local config (never committed): `~/.claude/cbm-vm/config` with
 `CBM_VM_HOST=<ip>`, `CBM_VM_USER=<user>`, and the

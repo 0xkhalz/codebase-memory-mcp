@@ -11,10 +11,32 @@ set -euo pipefail
 # The explicit optional mode runs only version + agent config install/uninstall
 # checks (useful when validating installer-only changes).
 
-BINARY="${1:?usage: smoke-test.sh <binary-path> [--agent-config-only]}"
+case "${1:-}" in
+-h|--help)
+  cat <<'HELPEOF'
+Usage: scripts/smoke-test.sh <binary-path> [--agent-config-only]
+
+INTERNAL harness — do not call directly in a venue. The canonical entries are
+scripts/smoke-local.sh (unix) and test-infrastructure/vm/vm-smoke.sh (Windows):
+they stage the release fixture, start the fixture server, and sandbox
+HOME/TEMP/agent-config destinations. Called bare, the download/checksum/
+install-script phases (12-13) SKIP for lack of a fixture server, and the run
+mutates the REAL profile — the venue-parity contract forbids that in any venue.
+
+Arguments:
+  <binary-path>         product binary to smoke
+  --agent-config-only   only version + agent-config install/uninstall phases
+
+Environment (set by the wrappers): SMOKE_DOWNLOAD_URL, SMOKE_UPDATE_FIXTURE_DIR,
+SMOKE_TEMP_ROOT, SMOKE_ARCH, SMOKE_REQUIRE_UI (ui variant: Phase 15 skip => FAIL).
+HELPEOF
+  exit 0
+  ;;
+esac
+BINARY="${1:?smoke-test: missing <binary-path>. Please consult --help.}"
 SMOKE_MODE="${2:-}"
 if [ -n "$SMOKE_MODE" ] && [ "$SMOKE_MODE" != "--agent-config-only" ]; then
-  echo "usage: smoke-test.sh <binary-path> [--agent-config-only]" >&2
+  echo "smoke-test: unknown argument '$SMOKE_MODE'. Please consult --help." >&2
   exit 2
 fi
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
@@ -3314,6 +3336,21 @@ fi
 
 # ── Phase 15: UI HTTP server reachability ──
 # Only runs if the binary was built with embedded UI assets.
+#
+# SMOKE_REQUIRE_UI=1 (set by the wrappers for a -ui variant) makes the
+# no-assets outcome a FAILURE instead of a SKIP: a ui run that smoked a
+# standard binary under a ui name would otherwise pass green, and a skip that
+# cannot fail is not a gate.
+SMOKE_REQUIRE_UI="${SMOKE_REQUIRE_UI:-0}"
+smoke_ui_missing() {
+  if [ "$SMOKE_REQUIRE_UI" = "1" ]; then
+    echo "FAIL $1: SMOKE_REQUIRE_UI=1 but this binary serves no embedded UI assets"
+    kill "$UI_PID" 2>/dev/null || true
+    exit 1
+  fi
+  echo "SKIP $1: $2"
+}
+
 echo ""
 echo "=== Phase 15: UI HTTP server ==="
 
@@ -3340,7 +3377,7 @@ if [ "$UI_READY" -eq 1 ] || kill -0 "$UI_PID" 2>/dev/null; then
   if echo "$UI_BODY" | grep -qi "<html"; then
     echo "OK 15a: UI serves HTML at /"
   elif [ -z "$UI_BODY" ]; then
-    echo "SKIP 15a: UI not reachable (binary may not have embedded assets)"
+    smoke_ui_missing "15a" "UI not reachable (binary may not have embedded assets)"
   else
     echo "FAIL 15a: UI root did not return HTML"
     kill "$UI_PID" 2>/dev/null || true
@@ -3355,7 +3392,7 @@ if [ "$UI_READY" -eq 1 ] || kill -0 "$UI_PID" 2>/dev/null; then
   if echo "$RPC_BODY" | grep -q "jsonrpc"; then
     echo "OK 15b: /rpc returns JSON-RPC response"
   elif [ -z "$RPC_BODY" ]; then
-    echo "SKIP 15b: /rpc not reachable"
+    smoke_ui_missing "15b" "/rpc not reachable"
   else
     echo "FAIL 15b: /rpc did not return JSON-RPC"
     kill "$UI_PID" 2>/dev/null || true
@@ -3365,7 +3402,7 @@ if [ "$UI_READY" -eq 1 ] || kill -0 "$UI_PID" 2>/dev/null; then
   kill "$UI_PID" 2>/dev/null || true
   wait "$UI_PID" 2>/dev/null || true
 else
-  echo "SKIP Phase 15: binary exited immediately (no UI assets embedded)"
+  smoke_ui_missing "Phase 15" "binary exited immediately (no UI assets embedded)"
 fi
 rm -f "$UI_INPUT"
 

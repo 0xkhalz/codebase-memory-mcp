@@ -70,7 +70,9 @@ services:
     # seccomp profile — unconfined is safe here (the container runs only our own
     # test code). The no-randomize personality inherits to the make child.
     security_opt: ["seccomp=unconfined"]
-    entrypoint: ["setarch", "-R", "make", "-f", "Makefile.cbm", "test-tsan"]
+    # The TSan leg lives in the canonical test entry (scripts/test.sh --tsan),
+    # same as CI's tsan jobs; the no-randomize personality inherits through it.
+    entrypoint: ["setarch", "-R", "bash", "scripts/test.sh", "--tsan"]
     command: ["CC=gcc", "CXX=g++", "BUILD_DIR=build/linux-arm64-tsan"]
 
   test-tsan-amd64:
@@ -88,7 +90,8 @@ services:
       CCACHE_DIR: /root/.ccache
       CCACHE_MAXSIZE: 1500M
     security_opt: ["seccomp=unconfined"]
-    entrypoint: ["setarch", "-R", "make", "-f", "Makefile.cbm", "test-tsan"]
+    # Canonical test entry, TSan mode — same file as CI's tsan jobs.
+    entrypoint: ["setarch", "-R", "bash", "scripts/test.sh", "--tsan"]
     command: ["CC=gcc", "CXX=g++", "BUILD_DIR=build/linux-amd64-tsan"]
 
   # ── Linux production build (-O2 -Werror) ───────────────────
@@ -165,6 +168,24 @@ services:
         scripts/build.sh CC=gcc CXX=g++ BUILD_DIR=build/linux-amd64 &&
         scripts/smoke-local.sh ./build/linux-amd64/codebase-memory-mcp
 
+  # ── Soak (both CI legs) ────────────────────────────────────
+  # The sequence (quick + #581 query-leak) lives in the canonical entry
+  # scripts/soak-legs.sh — the same file _soak.yml and the Windows VM run.
+  # The local ladder previously had NO unix soak at all. Duration follows
+  # CBM_SOAK_MINUTES (default 10, matching the dry run).
+  soak:
+    build:
+      context: ..
+      dockerfile: test-infrastructure/Dockerfile
+    platform: linux/arm64
+    volumes:
+      - ..:/src
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        scripts/build.sh CC=gcc CXX=g++ BUILD_DIR=build/linux-arm64 &&
+        scripts/soak-legs.sh ./build/linux-arm64/codebase-memory-mcp ${CBM_SOAK_MINUTES:-10}
+
   # ── Windows smoke (cross-compile + Wine) ──────────────────
   smoke-windows:
     build:
@@ -216,7 +237,7 @@ services:
         scripts/build.sh CC=gcc CXX=g++ STATIC=1 BUILD_DIR=build/alpine &&
         file build/alpine/codebase-memory-mcp | grep -q "statically linked" &&
         echo "=== Verified: statically linked ===" &&
-        scripts/smoke-test.sh ./build/alpine/codebase-memory-mcp
+        scripts/smoke-local.sh ./build/alpine/codebase-memory-mcp
 
   # ── Lint ────────────────────────────────────────────────────
   lint:

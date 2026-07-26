@@ -16,8 +16,36 @@
 
 set -euo pipefail
 
-BINARY="${1:?Usage: soak-test.sh <binary> <duration_minutes>}"
-DURATION_MIN="${2:?Usage: soak-test.sh <binary> <duration_minutes>}"
+case "${1:-}" in
+-h|--help)
+  cat <<'HELPEOF'
+Usage: scripts/soak-test.sh <binary> <duration_minutes> [--skip-crash-test]
+
+INTERNAL harness — do not call directly in a venue. The canonical entry is
+scripts/soak-legs.sh, which runs the release-gating leg SEQUENCE (quick +
+query-leak) with a completion-summary guard per leg; the venue-parity contract
+forbids direct calls in any venue.
+
+Arguments:
+  <binary>            product binary to soak
+  <duration_minutes>  positive integer, per run
+  --skip-crash-test   skip the crash-recovery phase (query-leak leg sets this)
+
+Environment:
+  CBM_SOAK_MODE   default | query-leak (#581 detector: never reindex/mutate
+                  after the initial index, so RSS growth = query-path leak)
+  RESULTS_DIR     metrics output dir (default soak-results; soak-legs.sh owns
+                  this per leg)
+
+Pass/fail: RSS slope / ratio / ceiling analysis; prints
+"=== soak-test: PASSED ===" or "=== soak-test: FAILED ===" and exits 0/1.
+HELPEOF
+  exit 0
+  ;;
+esac
+
+BINARY="${1:?soak-test: missing <binary>. Please consult --help.}"
+DURATION_MIN="${2:?soak-test: missing <duration_minutes>. Please consult --help.}"
 SKIP_CRASH="${3:-}"
 BINARY=$(cd "$(dirname "$BINARY")" && pwd)/$(basename "$BINARY")
 

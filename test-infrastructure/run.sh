@@ -27,7 +27,8 @@
 #   ./test-infrastructure/run.sh all          # above + amd64 + Windows Wine smoke
 #   ./test-infrastructure/run.sh portable     # Alpine portable build + smoke only
 #   ./test-infrastructure/run.sh windows      # Windows cross-compile only
-#   ./test-infrastructure/run.sh soak-windows # native Windows VM, 10 min
+#   ./test-infrastructure/run.sh soak-linux   # arm64 soak: quick + query-leak
+#   ./test-infrastructure/run.sh soak-windows # native Windows VM, both legs
 #   ./test-infrastructure/run.sh test         # Linux arm64 test only (no perf)
 #   ./test-infrastructure/run.sh perf         # Linux arm64 perf/incremental only
 #   ./test-infrastructure/run.sh tsan         # Linux arm64 ThreadSanitizer race gate
@@ -57,6 +58,44 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 COMPOSE="docker compose -f $ROOT/test-infrastructure/docker-compose.yml"
 
+usage() {
+    cat <<'EOF'
+Usage: test-infrastructure/run.sh [leg]
+
+The Linux (and cross-compile) local-CI ladder, on Colima. Every leg runs the
+SAME canonical scripts CI runs (scripts/test.sh, build.sh, smoke-local.sh,
+soak-legs.sh) inside pinned containers; this wrapper only picks the container
+and platform. A clean-disk preflight (scripts/ci/preflight-docker.sh) runs
+first — CBM_SKIP_PREFLIGHT=1 skips it, CBM_PREFLIGHT_ARGS=--deep widens it.
+
+Legs:
+  full (default)  arm64: test + build + TSan + smoke + portable smoke
+                  + Windows mingw cross-compile check
+  all             full + amd64 legs + Windows cross-compile/Wine check
+  test|build|smoke|tsan          single arm64 legs
+  amd64|test-amd64|tsan-amd64    amd64 legs (tsan-amd64 needs real amd64 HW)
+  perf            arm64 incremental-perf leg (CBM_SKIP_PERF unset)
+  shell|shell-alpine             interactive debug shell inside the image
+  portable|portable-test         Alpine musl static build legs
+  soak-linux      both CI soak legs (quick + #581 query-leak) via
+                  scripts/soak-legs.sh; CBM_SOAK_MINUTES per leg (default 10)
+  soak-windows    delegates to the real-Windows VM (win.sh soak 10)
+
+Environment:
+  CBM_SOAK_MINUTES     soak-linux duration per leg (default 10)
+  CBM_LOCAL_CI_CPUS    opt-in CPU cap for smoke/soak starvation checks only
+                       (the regular suite always runs full-parallel)
+  CBM_SKIP_PREFLIGHT=1 / CBM_PREFLIGHT_ARGS=--deep   preflight controls
+  windows|smoke-windows          mingw cross-compile + Wine version check
+  lint            containerized cppcheck + clang-format (CI image)
+  -h, --help      This text.
+
+Real-Windows legs (test/guards/smoke-install/soak) live in
+test-infrastructure/vm/win.sh — Wine is a compile check only.
+EOF
+}
+case "${1:-}" in -h|--help) usage; exit 0 ;; esac
+
 print_real_windows_gate() {
     echo "=== Container/cross-compile legs passed ==="
     echo "=== Real-Windows gate remains: vm/win.sh sync, test, guards, smoke-install ==="
@@ -77,6 +116,17 @@ if ! docker compose version >/dev/null 2>&1; then
     echo "ERROR: docker compose plugin missing." >&2
     echo "  brew install docker-compose && ln -sf /opt/homebrew/opt/docker-compose/bin/docker-compose ~/.docker/cli-plugins/docker-compose" >&2
     exit 1
+fi
+
+# A GitHub runner starts every job on a fresh image with a known-free disk;
+# Colima is long-lived and accumulates exited containers and orphaned volumes.
+# Sweep that back to the runner's shape and assert free space before any leg,
+# so a disk that has quietly filled fails here rather than surfacing as a bogus
+# product failure deep inside an install path. CBM_PREFLIGHT_ARGS=--deep also
+# reclaims the build cache; CBM_SKIP_PREFLIGHT=1 opts out for a quick re-run.
+if [ "${CBM_SKIP_PREFLIGHT:-0}" != "1" ]; then
+    # shellcheck disable=SC2086  # deliberate word-splitting of opt-in flags
+    "$ROOT/scripts/ci/preflight-docker.sh" ${CBM_PREFLIGHT_ARGS:-}
 fi
 
 case "${1:-full}" in
@@ -122,6 +172,14 @@ case "${1:-full}" in
     smoke)
         echo "=== Linux arm64: smoke test (build + run all phases) ==="
         $COMPOSE run --rm smoke
+        ;;
+    soak-linux)
+        # Both CI legs (quick + #581 query-leak). Duration via CBM_SOAK_MINUTES,
+        # default 10 to match the dry run. Kept out of `full`/`all` for the same
+        # reason soak-windows is: it is a ~20-minute endurance gate, not part of
+        # the fast ladder.
+        echo "=== Linux arm64: soak (quick + query-leak, ${CBM_SOAK_MINUTES:-10}m each) ==="
+        $COMPOSE run --rm soak
         ;;
     portable)
         echo "=== Linux portable: Alpine static build + smoke ==="
@@ -176,7 +234,7 @@ case "${1:-full}" in
         $COMPOSE run --rm --entrypoint bash test-portable
         ;;
     *)
-        echo "Usage: $0 {full|test|perf|tsan|tsan-amd64|build|smoke|portable|portable-test|windows|smoke-windows|soak-windows|amd64|all|lint|shell|shell-alpine}"
-        exit 1
+        echo "run.sh: unknown leg '${1:-}'. Please consult --help." >&2
+        exit 2
         ;;
 esac

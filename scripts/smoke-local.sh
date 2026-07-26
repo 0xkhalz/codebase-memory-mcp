@@ -8,7 +8,46 @@ set -euo pipefail
 #   <binary>  product binary to smoke (e.g. build/c/codebase-memory-mcp)
 #   ui        optional: mirror the -ui variant asset naming
 
-BINARY="${1:?Usage: smoke-local.sh <binary> [ui]}"
+usage() {
+    cat <<'EOF'
+Usage: scripts/smoke-local.sh <binary> [standard|ui]
+
+The canonical unix smoke entry: identical in local CI, PR CI, dry run and
+release. Stages a complete release fixture (binary + LICENSE + install.sh +
+THIRD_PARTY_NOTICES.md), serves it on a kernel-assigned port, then runs
+scripts/smoke-test.sh (all phases, including the download/checksum/install/
+update E2E) inside a disposable HOME/XDG/TMPDIR sandbox with every agent-config
+destination override neutralized.
+
+Arguments:
+  <binary>     Product binary to smoke (e.g. build/c/codebase-memory-mcp).
+  ui           Mirror the -ui asset naming AND require the embedded UI:
+               Phase 15's "no assets" outcome becomes a FAILURE
+               (SMOKE_REQUIRE_UI=1), so a standard binary cannot pass a ui run.
+
+Environment:
+  CBM_SMOKE_ARTIFACT_DIR   Release mode: an EXTRACTED release artifact
+               directory. Sidecars (LICENSE, install.sh, THIRD_PARTY_NOTICES.md)
+               are validated and served from THERE instead of regenerated, so
+               the release venue smokes exactly the bytes it publishes; an
+               incomplete archive fails the smoke. Unset (default): sidecars
+               come from this checkout (local/PR mode).
+
+Callers: pr.yml pr-smoke (ubuntu/macos) · _smoke.yml smoke-unix +
+smoke-linux-portable (with CBM_SMOKE_ARTIFACT_DIR) · compose smoke services.
+Windows uses the sibling test-infrastructure/vm/vm-smoke.sh.
+EOF
+}
+case "${1:-}" in
+-h|--help) usage; exit 0 ;;
+-*) echo "smoke-local: unknown option '$1'. Please consult --help." >&2; exit 2 ;;
+esac
+if [ $# -gt 2 ]; then
+    echo "smoke-local: too many arguments. Please consult --help." >&2
+    exit 2
+fi
+
+BINARY="${1:?smoke-local: missing <binary> argument. Please consult --help.}"
 VARIANT="${2:-standard}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BINARY="$(cd "$(dirname "$BINARY")" && pwd)/$(basename "$BINARY")"
@@ -17,11 +56,29 @@ if [ ! -x "$BINARY" ]; then
     echo "smoke-local: binary is not executable: $BINARY" >&2
     exit 2
 fi
+# A ui run must be handed a binary that actually carries the embedded assets;
+# the suffix alone only renames the archive. SMOKE_REQUIRE_UI turns Phase 15's
+# documented "no embedded assets" SKIP into a failure, so asking for ui and
+# supplying a standard binary can no longer pass quietly.
 case "$VARIANT" in
-standard) SUFFIX="" ;;
-ui) SUFFIX="-ui" ;;
-*) echo "smoke-local: variant must be 'standard' or 'ui'" >&2; exit 2 ;;
+standard) SUFFIX="" ; REQUIRE_UI=0 ;;
+ui) SUFFIX="-ui" ; REQUIRE_UI=1 ;;
+*) echo "smoke-local: variant must be 'standard' or 'ui'. Please consult --help." >&2; exit 2 ;;
 esac
+
+# Unset (the local + PR default): synthesize the release sidecars from this
+# checkout. Set: take them from an EXTRACTED release artifact, so the release
+# venue serves the files it is about to publish rather than regenerated copies.
+ARTIFACT_DIR="${CBM_SMOKE_ARTIFACT_DIR:-}"
+if [ -n "$ARTIFACT_DIR" ]; then
+    ARTIFACT_DIR="$(cd "$ARTIFACT_DIR" && pwd)"
+    for required in LICENSE install.sh THIRD_PARTY_NOTICES.md; do
+        [ -s "$ARTIFACT_DIR/$required" ] || {
+            echo "smoke-local: release artifact is missing $required" >&2
+            exit 2
+        }
+    done
+fi
 
 case "$(uname -s)" in
 Darwin) OS=darwin ;;
@@ -65,8 +122,13 @@ trap cleanup EXIT
 mkdir -p "$FIXTURE_DIR" "$SMOKE_TEMP_DIR" "$SMOKE_HOME" "$SMOKE_XDG_CONFIG" \
     "$SMOKE_APPDATA" "$SMOKE_LOCALAPPDATA"
 cp "$BINARY" "$FIXTURE_DIR/codebase-memory-mcp"
-cp "$ROOT/LICENSE" "$ROOT/install.sh" "$FIXTURE_DIR/"
-"$ROOT/scripts/gen-third-party-notices.sh" "$FIXTURE_DIR/THIRD_PARTY_NOTICES.md"
+if [ -n "$ARTIFACT_DIR" ]; then
+    cp "$ARTIFACT_DIR/LICENSE" "$ARTIFACT_DIR/install.sh" \
+        "$ARTIFACT_DIR/THIRD_PARTY_NOTICES.md" "$FIXTURE_DIR/"
+else
+    cp "$ROOT/LICENSE" "$ROOT/install.sh" "$FIXTURE_DIR/"
+    "$ROOT/scripts/gen-third-party-notices.sh" "$FIXTURE_DIR/THIRD_PARTY_NOTICES.md"
+fi
 
 EXPECTED_ARTIFACT="codebase-memory-mcp${SUFFIX}-${OS}-${ARCH}.tar.gz"
 tar -czf "$FIXTURE_DIR/$EXPECTED_ARTIFACT" -C "$FIXTURE_DIR" \
@@ -158,4 +220,5 @@ env \
     SMOKE_DOWNLOAD_URL="http://127.0.0.1:$PORT" \
     SMOKE_UPDATE_FIXTURE_DIR="$FIXTURE_DIR" \
     SMOKE_ARCH="$ARCH" \
+    SMOKE_REQUIRE_UI="$REQUIRE_UI" \
     "$ROOT/scripts/smoke-test.sh" "$BINARY"
