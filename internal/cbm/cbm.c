@@ -21,7 +21,6 @@
 #include "foundation/constants.h"
 #include "mimalloc.h" // mi_malloc/mi_calloc/mi_realloc/mi_free/mi_usable_size — bind 3rd-party allocators (#424)
 #if defined(CBM_BIND_TS_ALLOCATOR) && CBM_BIND_TS_ALLOCATOR
-#include "foundation/mem_profile.h"
 #include "sqlite3.h" // sqlite3_mem_methods, sqlite3_config, SQLITE_CONFIG_MALLOC — bind sqlite to mimalloc
 #endif
 #include <stdint.h> // uint32_t, uint64_t, int64_t
@@ -269,19 +268,14 @@ static TSParser *get_thread_parser(const TSLanguage *ts_lang, CBMLanguage lang) 
  * (#581). */
 static void *cbm_sqlite_malloc(int n) {
     void *block = mi_malloc((size_t)n);
-    cbm_mem_profile_alloc_at(block, (size_t)n, __builtin_return_address(0));
     return block;
 }
 static void cbm_sqlite_free(void *p) {
-    cbm_mem_profile_free(p);
     mi_free(p);
 }
 static void *cbm_sqlite_realloc(void *p, int n) {
-    if (p) {
-        cbm_mem_profile_free(p);
-    }
+    if (p) {}
     void *grown = mi_realloc(p, (size_t)n);
-    cbm_mem_profile_alloc_at(grown, (size_t)n, __builtin_return_address(0));
     return grown;
 }
 static int cbm_sqlite_size(void *p) {
@@ -294,24 +288,18 @@ static int cbm_sqlite_roundup(int n) {
  * through these, and they too skip the interposer. */
 static void *cbm_ts_malloc(size_t n) {
     void *block = mi_malloc(n);
-    cbm_mem_profile_alloc_at(block, n, __builtin_return_address(0));
     return block;
 }
 static void *cbm_ts_calloc(size_t count, size_t size) {
     void *block = mi_calloc(count, size);
-    cbm_mem_profile_alloc_at(block, count * size, __builtin_return_address(0));
     return block;
 }
 static void *cbm_ts_realloc(void *p, size_t n) {
-    if (p) {
-        cbm_mem_profile_free(p);
-    }
+    if (p) {}
     void *grown = mi_realloc(p, n);
-    cbm_mem_profile_alloc_at(grown, n, __builtin_return_address(0));
     return grown;
 }
 static void cbm_ts_free(void *p) {
-    cbm_mem_profile_free(p);
     mi_free(p);
 }
 

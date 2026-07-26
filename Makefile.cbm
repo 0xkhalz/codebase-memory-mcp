@@ -133,7 +133,7 @@ endif
 # and redirecting malloc into mimalloc underneath ASan's own interception mixes
 # two allocators on the same pointers. Windows keeps its wrap flags everywhere,
 # because there the shim is what makes mimalloc own the allocations at all.
-LDFLAGS = -lm -lstdc++ -lpthread -lz $(WIN32_LIBS) $(STATIC_FLAGS) $(MIMALLOC_WRAP_FLAGS) $(MIMALLOC_WRAP_FLAGS_POSIX)
+LDFLAGS = -lm -lstdc++ -lpthread -lz $(WIN32_LIBS) $(STATIC_FLAGS) $(MIMALLOC_WRAP_FLAGS)
 LDFLAGS_TEST = -lm -lstdc++ -lpthread -lz $(SANITIZE) $(WIN32_LIBS) $(MIMALLOC_WRAP_FLAGS)
 LDFLAGS_TSAN = -lm -lstdc++ -lpthread -lz $(TSAN_SANITIZE) $(WIN32_LIBS) $(MIMALLOC_WRAP_FLAGS)
 
@@ -155,8 +155,6 @@ FOUNDATION_SRCS = \
     src/foundation/compat_fs.c \
     src/foundation/compat_regex.c \
     src/foundation/mem.c \
-    src/foundation/mem_profile.c \
-    src/foundation/mem_override_posix.c \
     src/foundation/diagnostics.c \
     src/foundation/profile.c \
     src/foundation/dump_verify.c \

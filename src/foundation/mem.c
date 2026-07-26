@@ -11,7 +11,6 @@
 #include "log.h"
 #include "compat_fs.h"
 #include "compat_thread.h"
-#include "mem_profile.h"
 
 #include "foundation/constants.h"
 
@@ -351,16 +350,6 @@ void cbm_mem_init_with_cap(double ram_fraction, size_t hard_cap_bytes) {
     char ram_mb[CBM_SZ_32];
     snprintf(budget_mb, sizeof(budget_mb), "%zu", g_budget / MB_DIVISOR);
     snprintf(ram_mb, sizeof(ram_mb), "%zu", info.total_ram / MB_DIVISOR);
-    {
-        /* Report the profiler gate once. Without this, "no records" cannot be
-         * told apart from "never enabled" — and that ambiguity already cost
-         * three measurement rounds. */
-        char profile_threshold[CBM_SZ_32];
-        (void)snprintf(profile_threshold, sizeof(profile_threshold), "%zu",
-                       cbm_mem_profile_threshold());
-        cbm_log_info("mem.profile.gate", "enabled", cbm_mem_profile_enabled() ? "true" : "false",
-                     "threshold", profile_threshold);
-    }
     cbm_log_info("mem.init", "budget_mb", budget_mb, "total_ram_mb", ram_mb, "source",
                  resolved.source);
 }
@@ -903,8 +892,6 @@ void cbm_mem_census_log(const char *tag) {
     /* Attribution alongside the pool totals: the census says which pool holds
      * the memory, the profile says which call sites put it there. Emitting
      * both from one place keeps the two views on the same sample. */
-    cbm_mem_profile_totals_t profile;
-    cbm_mem_profile_totals(&profile);
     /* The allocator's OWN view, next to the OS view. If mimalloc's committed
      * area tracks the process's private commit, the memory is the allocator's
      * and it is holding pages against tiny live data; if it stays flat while
@@ -916,26 +903,12 @@ void cbm_mem_census_log(const char *tag) {
     char map_area_kb[CBM_SZ_32];
     (void)snprintf(map_live_kb, sizeof(map_live_kb), "%zu", map.live_bytes / CBM_SZ_1K);
     (void)snprintf(map_area_kb, sizeof(map_area_kb), "%zu", map.area_committed_bytes / CBM_SZ_1K);
-    char prof_live_kb[CBM_SZ_32];
-    char prof_sites[CBM_SZ_32];
-    char prof_lost[CBM_SZ_32];
-    char prof_total_kb[CBM_SZ_32];
-    (void)snprintf(prof_live_kb, sizeof(prof_live_kb), "%zu", profile.live_bytes / CBM_SZ_1K);
-    (void)snprintf(prof_sites, sizeof(prof_sites), "%zu", profile.sites);
-    (void)snprintf(prof_total_kb, sizeof(prof_total_kb), "%zu", profile.total_bytes / CBM_SZ_1K);
-    (void)snprintf(prof_lost, sizeof(prof_lost), "%zu",
-                   profile.site_table_full + profile.pointer_table_full + profile.capture_failed);
-    char profile_path[CBM_SZ_1K];
-    if (cbm_safe_getenv("CBM_MEM_PROFILE_OUT", profile_path, sizeof(profile_path), NULL) != NULL) {
-        (void)cbm_mem_profile_dump(profile_path, tag ? tag : "?");
-    }
-    cbm_log_info("mem.census", "at", tag ? tag : "?", "prof_live_kb", prof_live_kb, "mi_area_kb",
-                 map_area_kb, "mi_live_kb", map_live_kb, "prof_sites", prof_sites, "prof_total_kb",
-                 prof_total_kb, "prof_lost", prof_lost, "priv_kb", priv_kb, "crt_kb", crt_kb,
-                 "crt_busy_kb", busy_kb, "mapped_kb", mapped_kb, "rss_kb", rss_kb, "biggest_kb",
-                 biggest_kb, "regions", regions, "big_regions", big_regions, "heaps", heaps,
-                 "biggest_base", base, "priv_small_kb", psmall, "priv_med_kb", pmed,
-                 "priv_large_kb", plarge, "priv_counts", pcounts, "large_map", large_map);
+    cbm_log_info("mem.census", "at", tag ? tag : "?", "mi_area_kb", map_area_kb, "mi_live_kb",
+                 map_live_kb, "priv_kb", priv_kb, "crt_kb", crt_kb, "crt_busy_kb", busy_kb,
+                 "mapped_kb", mapped_kb, "rss_kb", rss_kb, "biggest_kb", biggest_kb, "regions",
+                 regions, "big_regions", big_regions, "heaps", heaps, "biggest_base", base,
+                 "priv_small_kb", psmall, "priv_med_kb", pmed, "priv_large_kb", plarge,
+                 "priv_counts", pcounts, "large_map", large_map);
     /* The phase table answers WHICH bracketed path the committed bytes stayed
      * in. Emitted once at the end rather than per request: it is cumulative,
      * so only the final table carries the verdict. */
