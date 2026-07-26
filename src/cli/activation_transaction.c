@@ -1528,10 +1528,21 @@ cbm_activation_transaction_status_t cbm_activation_transaction_stage_file(
     bool durable = copied && total > 0 && activation_native_sync(staged);
     bool source_closed = activation_native_close(source);
     bool staged_closed = activation_native_close(staged);
+    bool directory_synced = activation_sync_directory(transaction);
     if (!copied || total == 0 || !durable || !source_closed || !staged_closed ||
-        !activation_sync_directory(transaction)) {
+        !directory_synced) {
+        /* Five different failures shared one branch: a short read/write, an
+         * EMPTY source, a failed fsync, a failed close, and a failed directory
+         * sync are not the same bug. Naming them is what turns a ten-minute
+         * guard run per hypothesis into one run that answers the question. */
         activation_failed_stage_cleanup(transaction);
-        activation_note_refusal("io-site-1529", 0UL);
+        activation_note_refusal(!copied          ? "stage-copy-read-or-write"
+                                : total == 0     ? "stage-source-empty"
+                                : !durable       ? "stage-fsync"
+                                : !source_closed ? "stage-source-close"
+                                : !staged_closed ? "stage-staged-close"
+                                                 : "stage-directory-sync",
+                                0UL);
         return CBM_ACTIVATION_TRANSACTION_IO;
     }
     *transaction_out = transaction;
