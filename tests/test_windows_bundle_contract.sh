@@ -191,12 +191,32 @@ archives = (
     "codebase-memory-mcp-windows-arm64.zip",
     "codebase-memory-mcp-ui-windows-arm64.zip",
 )
-for archive in archives:
-    archive_blocks = [block for block in build_blocks if archive in block]
-    require(bool(archive_blocks), f"_build.yml has no run block producing {archive}")
+# The five-file layout lives in the ONE canonical packaging entry; every venue
+# (release build and the local artifact-flow smoke lane) produces archives
+# through it, so the bundle layout is asserted where it is defined and cannot
+# fork per venue.
+package_release = read("scripts/package-release.sh")
+require(
+    all(name in package_release for name in windows_archive_names),
+    "package-release.sh must archive the exact official five-file Windows bundle",
+)
+for archive, call, ui in (
+    ("codebase-memory-mcp-windows-amd64.zip",
+     "scripts/package-release.sh windows amd64", False),
+    ("codebase-memory-mcp-ui-windows-amd64.zip",
+     "scripts/package-release.sh windows amd64 --variant ui", True),
+    ("codebase-memory-mcp-windows-arm64.zip",
+     "scripts/package-release.sh windows arm64", False),
+    ("codebase-memory-mcp-ui-windows-arm64.zip",
+     "scripts/package-release.sh windows arm64 --variant ui", True),
+):
+    # The packaging steps are single-line runs (invisible to yaml_run_blocks,
+    # which collects block scalars only), so associate archive -> call on the
+    # workflow text; the lookahead keeps a ui call from satisfying a std check.
+    pattern = re.escape(call) + ("" if ui else r"(?!\s+--variant)")
     require(
-        any(all(name in block for name in windows_archive_names) for block in archive_blocks),
-        f"{archive} must archive the exact official five-file Windows bundle",
+        re.search(pattern, build_workflow) is not None,
+        f"_build.yml must produce {archive} via the canonical packaging entry ('{call}')",
     )
 
 # install.ps1 must preserve the complete adjacent pair and enter the native

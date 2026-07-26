@@ -77,6 +77,8 @@ Legs:
   perf            arm64 incremental-perf leg (CBM_SKIP_PERF unset)
   shell|shell-alpine             interactive debug shell inside the image
   portable|portable-test         Alpine musl static build legs
+  smoke-artifact  arm64 artifact-flow smoke: package -> extract -> wrapper
+  glibc-floor     ubuntu-22.04 (glibc 2.35): portable smoke + dynamic refusal
   soak-linux      both CI soak legs (quick + #581 query-leak) via
                   scripts/soak-legs.sh; CBM_SOAK_MINUTES per leg (default 10)
   soak-windows    delegates to the real-Windows VM (win.sh soak 10)
@@ -140,6 +142,10 @@ case "${1:-full}" in
         $COMPOSE run --rm smoke
         echo "=== Linux portable: Alpine static build + smoke ==="
         $COMPOSE run --rm smoke-portable
+        echo "=== Linux arm64: artifact-flow smoke ==="
+        $COMPOSE run --rm smoke-artifact
+        echo "=== Linux glibc-floor (ubuntu-22.04): portable smoke + dynamic refusal ==="
+        $COMPOSE run --rm smoke-glibc-floor
         echo "=== Windows: cross-compile ==="
         $COMPOSE run --rm build-windows
         print_real_windows_gate
@@ -185,6 +191,16 @@ case "${1:-full}" in
         echo "=== Linux portable: Alpine static build + smoke ==="
         $COMPOSE run --rm smoke-portable
         ;;
+    smoke-artifact)
+        echo "=== Linux arm64: artifact-flow smoke (package -> extract -> wrapper) ==="
+        $COMPOSE run --rm smoke-artifact
+        ;;
+    glibc-floor)
+        echo "=== Linux glibc-floor (ubuntu-22.04): portable smoke + dynamic refusal ==="
+        $COMPOSE run --rm build
+        $COMPOSE run --rm build-portable
+        $COMPOSE run --rm smoke-glibc-floor
+        ;;
     portable-test)
         echo "=== Linux portable: Alpine test (ASan + LeakSan) ==="
         $COMPOSE run --rm -e CBM_SKIP_PERF=1 test-portable
@@ -213,6 +229,10 @@ case "${1:-full}" in
         # run it with `run.sh tsan-amd64` on real amd64. GitHub CI gates it.
         echo "=== Linux portable: Alpine static build + smoke ==="
         $COMPOSE run --rm smoke-portable
+        echo "=== Linux arm64: artifact-flow smoke ==="
+        $COMPOSE run --rm smoke-artifact
+        echo "=== Linux glibc-floor (ubuntu-22.04): portable smoke + dynamic refusal ==="
+        $COMPOSE run --rm smoke-glibc-floor
         echo "=== Linux amd64: test + build + smoke ==="
         $COMPOSE run --rm -e CBM_SKIP_PERF=1 test-amd64
         $COMPOSE run --rm build-amd64

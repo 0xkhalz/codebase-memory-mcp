@@ -47,7 +47,7 @@ failures: list[str] = []
 
 # ── The canonical leg entries (the ONLY product-exercising calls allowed) ──
 CANONICAL = re.compile(
-    r"scripts/(test|build|lint|clean|smoke-local|soak-legs|smoke-invariants)\.sh"
+    r"scripts/(test|build|lint|clean|smoke-local|soak-legs|smoke-invariants|package-release)\.sh"
     r"|test-infrastructure/vm/vm-smoke\.sh"
     r"|scripts/ci/[a-z0-9-]+\.(sh|ps1|py)"
     r"|scripts/security-[a-z0-9-]+\.sh"
@@ -247,11 +247,34 @@ REQUIRED = [
     ("_test.yml", r"scripts/ci/new-protected-temp-root\.ps1", "Windows tests use the shared temp root"),
     ("_test.yml", r"scripts/test\.sh", "the test legs run the canonical entry"),
     ("pr.yml", r"vm-smoke\.sh", "PR CI smokes through the shared wrapper"),
+    ("_build.yml", r"scripts/package-release\.sh",
+     "release archives are produced by the canonical packaging entry"),
+    ("_test.yml", r"scripts/ci/ensure-defender\.ps1",
+     "Windows test legs enable+verify Defender (venue parity)"),
+    ("_smoke.yml", r"scripts/ci/ensure-defender\.ps1",
+     "Windows release smoke enables+verifies Defender (venue parity)"),
+    ("_soak.yml", r"scripts/ci/ensure-defender\.ps1",
+     "Windows soak legs enable+verify Defender (venue parity)"),
+    ("pr.yml", r"scripts/ci/ensure-defender\.ps1",
+     "PR Windows smoke enables+verifies Defender (venue parity)"),
 ]
 for name, pattern, why in REQUIRED:
     path = workflows / name
     if path.exists() and not re.search(pattern, path.read_text()):
         failures.append(f"{name}: missing required `{pattern}` — {why}")
+
+# Defender-ON parity: EVERY Windows job in every venue workflow enables and
+# verifies real-time protection — a single job dropping the step must fail,
+# so the expectation is an exact per-file count, not mere presence.
+DEFENDER_STEPS = {"_test.yml": 2, "_soak.yml": 3, "_smoke.yml": 1, "pr.yml": 1}
+for name, expected in DEFENDER_STEPS.items():
+    path = workflows / name
+    if path.exists():
+        got = path.read_text().count("scripts/ci/ensure-defender.ps1")
+        if got != expected:
+            failures.append(
+                f"{name}: expected {expected} ensure-defender.ps1 step(s) "
+                f"(one per Windows job), found {got}")
 
 # ── Layer 4: the local venues route through the same entries ──
 compose = root / "test-infrastructure" / "docker-compose.yml"
@@ -280,6 +303,29 @@ for local in ["test-infrastructure/vm/win.sh",
             failures.append(
                 f"{local}:{number}: internal harness called directly — route "
                 f"through the canonical entries\n      {s}")
+
+# The parity lanes exist on the LOCAL venues too: artifact-flow smoke and the
+# glibc-floor leg in compose/run.sh, Defender preflight in the VM driver.
+LOCAL_REQUIRED = [
+    ("test-infrastructure/docker-compose.yml", r"scripts/ci/smoke-artifact\.sh",
+     "the local artifact-flow smoke lane exists"),
+    ("test-infrastructure/docker-compose.yml", r"Dockerfile\.glibc22",
+     "the glibc-floor venue exists"),
+    ("test-infrastructure/run.sh", r"smoke-artifact",
+     "run.sh exposes the artifact-flow smoke leg"),
+    ("test-infrastructure/run.sh", r"glibc-floor",
+     "run.sh exposes the glibc-floor leg"),
+    # Slash-agnostic: the VM driver invokes it via a Windows path
+    # (C:\cbm\scripts\ci\ensure-defender.ps1).
+    ("test-infrastructure/vm/win.sh", r"ensure-defender\.ps1",
+     "the VM preflight enforces Defender-ON parity"),
+    ("test-infrastructure/vm/win.sh", r"scripts/ci/smoke-artifact\.sh",
+     "the VM driver exposes the artifact-flow smoke lane"),
+]
+for local, pattern, why in LOCAL_REQUIRED:
+    path = root / local
+    if path.exists() and not re.search(pattern, path.read_text()):
+        failures.append(f"{local}: missing required `{pattern}` — {why}")
 
 if failures:
     print("VENUE PARITY CONTRACT VIOLATED — one harness, every venue:")
@@ -311,6 +357,8 @@ scripts/ci/preflight-docker.sh
 scripts/ci/require-all-green.sh
 scripts/ci/verify-shard-union.sh
 scripts/ci/generate-sbom.py
+scripts/package-release.sh
+scripts/ci/smoke-artifact.sh
 test-infrastructure/run.sh
 test-infrastructure/vm/vm-smoke.sh
 test-infrastructure/vm/vm-run-tests.sh

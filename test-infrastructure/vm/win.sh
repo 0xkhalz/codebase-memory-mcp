@@ -13,6 +13,7 @@
 #   win.sh test <suite...>         # run test-runner suites (native ARM64)
 #   win.sh guards                  # clean UI product build + Windows guards
 #   win.sh smoke-install           # real managed-install E2E (Phase 8 class)
+#   win.sh smoke-artifact          # release-archive flow (package+extract+smoke)
 #   win.sh soak [minutes]          # both CI soak legs: quick + #581 query-leak
 #   win.sh sh <command...>         # arbitrary command in CLANGARM64 env
 #   win.sh push-file <local> <vm>  # scp one file into the VM (WIP iteration)
@@ -48,6 +49,8 @@ Commands (venue-grade — canonical entries, preflight enforced):
   guards                 clean UI product build + Windows guard suite (CI shape)
   smoke-install          scripts/build.sh + vm-smoke.sh — exactly PR CI's
                          windows smoke job
+  smoke-artifact         package-release.sh → extract → vm-smoke.sh artifact
+                         mode — the release archive flow with local bytes
   soak [minutes]         both CI soak legs via scripts/soak-legs.sh (default 10)
 
 Sanitizer variants (documented iteration tools; direct-runner mode):
@@ -133,6 +136,11 @@ vm_preflight() {
     }
     vm_cmd "powershell -NoProfile -ExecutionPolicy Bypass -File \
 C:\\cbm\\scripts\\ci\\clean-test-residue.ps1 -MinFreeGB ${CBM_VM_MIN_FREE_GB:-14}"
+    # Defender parity: every Windows venue (this VM and the GitHub runners)
+    # tests with real-time protection ACTIVE — the same canonical script the
+    # CI jobs run, so a drifted-off Defender fails loudly, never silently.
+    vm_cmd "powershell -NoProfile -ExecutionPolicy Bypass -File \
+C:\\cbm\\scripts\\ci\\ensure-defender.ps1"
 }
 
 cmd="${1:-status}"; shift || true
@@ -231,6 +239,13 @@ smoke-install)
     # ccache keeps the rebuild to minutes — parity was the explicit user call
     # over incremental speed here.
     vm clangarm64 "cd /c/cbm && scripts/build.sh CC=clang CXX=clang++ && bash test-infrastructure/vm/vm-smoke.sh"
+    ;;
+smoke-artifact)
+    # The release-archive flow with local bytes: canonical build → the ONE
+    # package-release.sh → extract → vm-smoke.sh in artifact mode — the same
+    # sequence _build.yml + _smoke.yml run remotely, so archive-layout bugs
+    # surface here instead of in a release dry run.
+    vm clangarm64 "cd /c/cbm && bash scripts/ci/smoke-artifact.sh windows arm64 CC=clang CXX=clang++"
     ;;
 soak)
     duration="${1:-10}"
