@@ -1414,7 +1414,8 @@ def assert_uninstall_immediate_reinstall_safe(
     reinstall = install_managed(portable_payload, managed_dir, env)
     require(
         reinstall.returncode == 0,
-        "immediate managed reinstall failed: %s" % output_text(reinstall)[-800:],
+        "immediate managed reinstall failed: rc=%s output=%r"
+        % (reinstall.returncode, output_text(reinstall)[-800:]),
     )
     new_current, new_current_bytes, _ = find_and_validate_current(managed_dir)
     deadline = time.monotonic() + 30
