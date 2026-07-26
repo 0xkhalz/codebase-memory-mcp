@@ -535,10 +535,15 @@ bool cbm_mem_map_collect(cbm_mem_map_t *out) {
      * own theap, plus abandoned pages, which by definition have no owning
      * thread left to race with.
      *
-     * The cost is coverage -- other threads' live blocks are not attributed --
-     * and that is exactly what the residual in mem.h exists to carry. An
-     * unmeasured map must never read as an empty one. */
-    (void)mi_heap_visit_abandoned_blocks(mi_heap_main(), false, mem_map_visit_area, out);
+     * That includes mi_heap_main() itself: merely CALLING it reads the
+     * allocator's main-heap pointer, which a thread exiting concurrently
+     * rewrites from _mi_thread_done -> _mi_theap_default_set. TSan caught
+     * exactly that pairing on macOS, so the abandoned-page walk goes too --
+     * it could only be reached through mi_heap_main().
+     *
+     * The cost is coverage -- other threads' live blocks and abandoned pages
+     * are not attributed -- and that is exactly what the residual in mem.h
+     * exists to carry. An unmeasured map must never read as an empty one. */
     (void)mi_theap_visit_blocks(mi_theap_get_default(), false, mem_map_visit_area, out);
     return true;
 }
