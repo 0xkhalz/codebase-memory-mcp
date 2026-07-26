@@ -1566,24 +1566,8 @@ def main():
             source_launcher, source_payload, launcher, env, cache, work
         )
         assert_failed_uninstall_restores_state(launcher, managed_dir, env)
-        # Stage a FRESH portable pair: the earlier managed installs consume the
-        # launcher sitting beside work/portable-install's payload, and a managed
-        # install legitimately refuses a payload with no verified adjacent
-        # launcher ("managed install requires a verified adjacent
-        # codebase-memory-mcp.exe launcher"). Reusing the consumed pair made this
-        # guard fail on the product's correct behaviour rather than on the
-        # immediate-reinstall contract it exists to protect.
-        reinstall_dir = work / "portable-reinstall"
-        _, reinstall_payload = copy_portable_pair(
-            source_launcher, source_payload, reinstall_dir
-        )
-        # Copied files inherit Administrators ownership on runner images, and the
-        # launcher's exact-owner validators (correctly) require the current user
-        # -- so an unstamped pair is refused as unverified, which is the same
-        # error as having no adjacent launcher at all.
-        stamp_fixture_owner_current(reinstall_dir, env)
         assert_uninstall_immediate_reinstall_safe(
-            launcher, managed_dir, reinstall_payload, env
+            launcher, managed_dir, portable_payload, env
         )
         print("\nGREEN: permanent Windows launcher contract honored.")
         return 0
