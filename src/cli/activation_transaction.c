@@ -1358,6 +1358,17 @@ static bool activation_source_open(const char *path, activation_native_file_t *f
     bool snapshot_ok =
         src_dir_ok && activation_external_snapshot_with_owner(path, false, &exists, &expected);
     if (!src_dir_ok || !snapshot_ok || !exists) {
+        /* Three different refusals, and the caller only sees one boolean: an
+         * insecure source directory, a snapshot that could not be taken, and a
+         * source that simply is not there are separate bugs. Name which one
+         * before the frees below, because free() clobbers GetLastError and the
+         * caller's report then reads "status -3, os 0" -- an I/O failure with no
+         * cause, which is what made this take a full guard run per guess. */
+        unsigned long os_error = GetLastError();
+        activation_note_refusal(!src_dir_ok    ? "source directory not secure"
+                                : !snapshot_ok ? "source snapshot failed"
+                                               : "source file missing",
+                                os_error);
         free(directory);
         free(name);
         return false;
