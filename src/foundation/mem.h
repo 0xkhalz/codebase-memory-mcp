@@ -133,6 +133,18 @@ size_t cbm_mem_map_bucket_limit(int bucket);
  * that the walk contributed nothing rather than reading 0 as "no leak". */
 bool cbm_mem_map_collect(cbm_mem_map_t *out);
 
+/* OS totals only: fills os_rss_bytes / os_committed_bytes and leaves the
+ * allocator walk out entirely, so live_bytes stays 0 and the residual carries
+ * the whole process.
+ *
+ * Required for anything running on a background thread. Reading the
+ * allocator's per-thread bookkeeping (even just mi_theap_get_default) races a
+ * thread exiting concurrently, which rewrites it from _mi_thread_done ->
+ * _mi_theap_default_set; TSan reports that pairing directly. The walk is only
+ * safe where no other thread can be exiting -- tests and explicitly requested
+ * diagnostics -- so the periodic snapshot uses this instead. */
+bool cbm_mem_map_collect_os(cbm_mem_map_t *out);
+
 /* ── Allocator ownership audit ───────────────────────────────────────
  *
  * "Does the allocator own our memory" is not one question, it is one per size

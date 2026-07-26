@@ -497,7 +497,7 @@ static void write_diagnostics(void) {
     diag_write_allocator_stats();
 
     cbm_mem_map_t map;
-    (void)cbm_mem_map_collect(&map);
+    (void)cbm_mem_map_collect_os(&map);
     size_t residual =
         map.os_committed_bytes > map.live_bytes ? map.os_committed_bytes - map.live_bytes : 0;
     char buckets[CBM_SZ_512];

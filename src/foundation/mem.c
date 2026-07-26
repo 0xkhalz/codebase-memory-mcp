@@ -494,7 +494,17 @@ static bool mem_map_visit_area(const mi_heap_t *heap, const mi_heap_area_t *area
     return true; /* keep walking */
 }
 
+static bool mem_map_collect_impl(cbm_mem_map_t *out, bool walk_allocator);
+
+bool cbm_mem_map_collect_os(cbm_mem_map_t *out) {
+    return mem_map_collect_impl(out, false);
+}
+
 bool cbm_mem_map_collect(cbm_mem_map_t *out) {
+    return mem_map_collect_impl(out, true);
+}
+
+static bool mem_map_collect_impl(cbm_mem_map_t *out, bool walk_allocator) {
     if (!out) {
         return false;
     }
@@ -544,7 +554,9 @@ bool cbm_mem_map_collect(cbm_mem_map_t *out) {
      * The cost is coverage -- other threads' live blocks and abandoned pages
      * are not attributed -- and that is exactly what the residual in mem.h
      * exists to carry. An unmeasured map must never read as an empty one. */
-    (void)mi_theap_visit_blocks(mi_theap_get_default(), false, mem_map_visit_area, out);
+    if (walk_allocator) {
+        (void)mi_theap_visit_blocks(mi_theap_get_default(), false, mem_map_visit_area, out);
+    }
     return true;
 }
 
