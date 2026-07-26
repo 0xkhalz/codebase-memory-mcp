@@ -991,11 +991,9 @@ static cbm_activation_transaction_status_t activation_create_unique(
         free(candidate);
         free(name);
         if (created != ACTIVATION_CREATE_EXISTS) {
-            activation_note_refusal("io-site-994", 0UL);
             return CBM_ACTIVATION_TRANSACTION_IO;
         }
     }
-    activation_note_refusal("io-site-997", 0UL);
     return CBM_ACTIVATION_TRANSACTION_IO;
 }
 
@@ -1267,18 +1265,6 @@ static cbm_activation_transaction_status_t activation_transaction_prepare(
     if (!activation_directory_secure(transaction->directory_path, &transaction->directory_fd,
                                      &transaction->directory_identity)) {
 #endif
-        /* The one refusal on this path that said nothing: the caller reported
-         * "status -3, os 0" because destroy() below clobbers GetLastError and no
-         * note was set. Capture both before unwinding -- a target directory that
-         * fails the exact-owner rule is a completely different problem from an
-         * unreadable source, and telling them apart used to cost a full guard
-         * run per guess. */
-#ifdef _WIN32
-        unsigned long secure_os_error = (unsigned long)GetLastError();
-#else
-        unsigned long secure_os_error = 0UL;
-#endif
-        activation_note_refusal("target-directory-not-secure", secure_os_error);
         activation_transaction_destroy(transaction);
         return CBM_ACTIVATION_TRANSACTION_IO;
     }
@@ -1303,7 +1289,6 @@ static cbm_activation_transaction_status_t activation_transaction_prepare(
         if (!durable || !closed || !activation_sync_directory(transaction)) {
             (void)activation_discard_staged_assets(transaction);
             activation_transaction_destroy(transaction);
-            activation_note_refusal("io-site-1304", 0UL);
             return CBM_ACTIVATION_TRANSACTION_IO;
         }
     }
@@ -1347,7 +1332,6 @@ cbm_activation_transaction_status_t cbm_activation_transaction_stage_bytes(
     bool closed = activation_native_close(staged);
     if (!written || !durable || !closed || !activation_sync_directory(transaction)) {
         activation_failed_stage_cleanup(transaction);
-        activation_note_refusal("io-site-1347", 0UL);
         return CBM_ACTIVATION_TRANSACTION_IO;
     }
     *transaction_out = transaction;
@@ -1374,17 +1358,6 @@ static bool activation_source_open(const char *path, activation_native_file_t *f
     bool snapshot_ok =
         src_dir_ok && activation_external_snapshot_with_owner(path, false, &exists, &expected);
     if (!src_dir_ok || !snapshot_ok || !exists) {
-        /* Three different refusals, and the caller only sees one boolean: an
-         * insecure source directory, a snapshot that could not be taken, and a
-         * source that simply is not there are separate bugs. Name which one
-         * before the frees below, because free() clobbers GetLastError and the
-         * caller's report then reads "status -3, os 0" -- an I/O failure with no
-         * cause, which is what made this take a full guard run per guess. */
-        unsigned long os_error = GetLastError();
-        activation_note_refusal(!src_dir_ok    ? "source directory not secure"
-                                : !snapshot_ok ? "source snapshot failed"
-                                               : "source file missing",
-                                os_error);
         free(directory);
         free(name);
         return false;
@@ -1494,7 +1467,6 @@ cbm_activation_transaction_status_t cbm_activation_transaction_stage_file(
     activation_native_file_t source = ACTIVATION_INVALID_FILE;
     if (!activation_source_open(candidate_path, &source)) {
         activation_failed_stage_cleanup(transaction);
-        activation_note_refusal("io-site-1493", 0UL);
         return CBM_ACTIVATION_TRANSACTION_IO;
     }
     activation_native_file_t staged = ACTIVATION_INVALID_FILE;
@@ -1510,21 +1482,10 @@ cbm_activation_transaction_status_t cbm_activation_transaction_stage_file(
     unsigned char buffer[64U * 1024U];
     size_t total = 0;
     bool copied = true;
-    /* Captured AT the failure, not after: the cleanup and close calls below all
-     * clobber the thread's last error, which is why this path could only ever
-     * report "os 0". */
-    unsigned long copy_os_error = 0UL;
-    bool copy_failed_on_read = false;
     for (;;) {
         size_t amount = 0;
         if (!activation_native_read(source, buffer, sizeof(buffer), &amount)) {
             copied = false;
-            copy_failed_on_read = true;
-#ifdef _WIN32
-            copy_os_error = (unsigned long)GetLastError();
-#else
-            copy_os_error = (unsigned long)errno;
-#endif
             break;
         }
         if (amount == 0) {
@@ -1532,11 +1493,6 @@ cbm_activation_transaction_status_t cbm_activation_transaction_stage_file(
         }
         if (SIZE_MAX - total < amount || !activation_native_write_all(staged, buffer, amount)) {
             copied = false;
-#ifdef _WIN32
-            copy_os_error = (unsigned long)GetLastError();
-#else
-            copy_os_error = (unsigned long)errno;
-#endif
             break;
         }
         total += amount;
@@ -1544,27 +1500,9 @@ cbm_activation_transaction_status_t cbm_activation_transaction_stage_file(
     bool durable = copied && total > 0 && activation_native_sync(staged);
     bool source_closed = activation_native_close(source);
     bool staged_closed = activation_native_close(staged);
-    bool directory_synced = activation_sync_directory(transaction);
     if (!copied || total == 0 || !durable || !source_closed || !staged_closed ||
-        !directory_synced) {
-        /* Five different failures shared one branch: a short read/write, an
-         * EMPTY source, a failed fsync, a failed close, and a failed directory
-         * sync are not the same bug. Naming them is what turns a ten-minute
-         * guard run per hypothesis into one run that answers the question. */
+        !activation_sync_directory(transaction)) {
         activation_failed_stage_cleanup(transaction);
-        const char *why = "stage-directory-sync";
-        if (!copied) {
-            why = copy_failed_on_read ? "stage-copy-read" : "stage-copy-write";
-        } else if (total == 0) {
-            why = "stage-source-empty";
-        } else if (!durable) {
-            why = "stage-fsync";
-        } else if (!source_closed) {
-            why = "stage-source-close";
-        } else if (!staged_closed) {
-            why = "stage-staged-close";
-        }
-        activation_note_refusal(why, copy_os_error);
         return CBM_ACTIVATION_TRANSACTION_IO;
     }
     *transaction_out = transaction;
@@ -2012,7 +1950,6 @@ cbm_activation_transaction_status_t cbm_activation_transaction_commit(
         return CBM_ACTIVATION_TRANSACTION_INVALID_STATE;
     }
     if (!activation_target_still_original(transaction)) {
-        activation_note_refusal("io-site-1976", 0UL);
         return CBM_ACTIVATION_TRANSACTION_IO;
     }
     if (transaction->action == ACTIVATION_REPLACE) {
@@ -2022,7 +1959,6 @@ cbm_activation_transaction_status_t cbm_activation_transaction_commit(
                                      transaction->staged_name, &transaction->staged_identity,
                                      &staged_exists) ||
             !staged_exists) {
-            activation_note_refusal("io-site-1985", 0UL);
             return CBM_ACTIVATION_TRANSACTION_IO;
         }
     }
@@ -2031,7 +1967,6 @@ cbm_activation_transaction_status_t cbm_activation_transaction_commit(
             activation_publish_status_t published =
                 activation_publish_existing_replacement(transaction);
             if (published == ACTIVATION_PUBLISH_UNCHANGED_ERROR) {
-                activation_note_refusal("io-site-1993", 0UL);
                 return CBM_ACTIVATION_TRANSACTION_IO;
             }
             if (published == ACTIVATION_PUBLISH_CHANGED_ERROR) {
@@ -2051,7 +1986,6 @@ cbm_activation_transaction_status_t cbm_activation_transaction_commit(
                 !reservation_exists ||
                 !activation_rename(transaction, transaction->target_path, transaction->target_name,
                                    transaction->backup_path, transaction->backup_name, true)) {
-                activation_note_refusal("io-site-2012", 0UL);
                 return CBM_ACTIVATION_TRANSACTION_IO;
             }
             transaction->backup_identity = transaction->target_identity;
@@ -2065,7 +1999,6 @@ cbm_activation_transaction_status_t cbm_activation_transaction_commit(
         }
         activation_publish_status_t published = activation_publish_absent_replacement(transaction);
         if (published == ACTIVATION_PUBLISH_UNCHANGED_ERROR) {
-            activation_note_refusal("io-site-2025", 0UL);
             return CBM_ACTIVATION_TRANSACTION_IO;
         }
         if (published == ACTIVATION_PUBLISH_CHANGED_ERROR) {
@@ -2114,7 +2047,6 @@ cbm_activation_transaction_status_t cbm_activation_transaction_finalize(
         return CBM_ACTIVATION_TRANSACTION_INVALID_STATE;
     }
     if (!activation_directory_still_valid(transaction)) {
-        activation_note_refusal("io-site-2073", 0UL);
         return CBM_ACTIVATION_TRANSACTION_IO;
     }
     if (transaction->backup_contains_target) {
@@ -2122,7 +2054,6 @@ cbm_activation_transaction_status_t cbm_activation_transaction_finalize(
             transaction, transaction->backup_path, transaction->backup_name,
             &transaction->backup_identity, true);
         if (removed == ACTIVATION_UNLINK_ERROR) {
-            activation_note_refusal("io-site-2080", 0UL);
             return CBM_ACTIVATION_TRANSACTION_IO;
         }
         if (removed == ACTIVATION_UNLINK_DEFERRED) {
@@ -2134,7 +2065,6 @@ cbm_activation_transaction_status_t cbm_activation_transaction_finalize(
         transaction->backup_contains_target = false;
     }
     if (!activation_sync_directory(transaction)) {
-        activation_note_refusal("io-site-2091", 0UL);
         return CBM_ACTIVATION_TRANSACTION_IO;
     }
     transaction->state = ACTIVATION_FINALIZED;
