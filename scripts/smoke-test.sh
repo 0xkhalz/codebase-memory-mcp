@@ -568,7 +568,11 @@ fi
 if echo "$IM_ARR" | grep -qE '^semantic: [0-9]+'; then
   echo "OK B3: ARRAY flag (repeated --semantic-query) → semantic TOON table"
 else
-  echo "FAIL B3: repeated --semantic-query did not produce a semantic table"; echo "$IM_ARR" | head -c 300; exit 1
+  echo "FAIL B3: repeated --semantic-query did not produce a semantic table"; echo "$IM_ARR" | head -c 300
+  # Byte-exact post-mortem: an invisible control/invalid-UTF8 byte anywhere in
+  # the output makes BSD grep treat ALL of it as unmatchable binary, and the
+  # rendered log cannot show which byte — od can.
+  echo; echo "-- B3 first bytes (od) --"; echo "$IM_ARR" | od -c | head -6; exit 1
 fi
 
 # B4: STDIN — piped JSON resolves; this path must NOT emit a deprecation warning.
