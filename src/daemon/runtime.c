@@ -1248,10 +1248,6 @@ static void *runtime_application_worker(void *opaque) {
     if (!sent && !atomic_load_explicit(&worker->disconnecting, memory_order_acquire)) {
         cbm_daemon_ipc_connection_interrupt(worker->connection);
     }
-    /* Same reasoning as the connection worker: hand this thread's allocator
-     * pages back while it still owns them, since abandoned pages are not
-     * reclaimed in practice (#581). */
-    cbm_mem_collect();
     return NULL;
 }
 
@@ -1845,18 +1841,6 @@ static void *runtime_connection_worker(void *opaque) {
     }
     free(payload);
     runtime_worker_finish(worker);
-    /* Return this thread's allocator pages before it exits. Each connection
-     * runs on its own thread, so a busy daemon accumulates one thread-heap per
-     * connection — 202 of them in a two-minute soak. Their pages are abandoned
-     * at thread exit and, measurably, never reclaimed (mimalloc reported
-     * reclaima/reclaimf = 0 while arena committed sat at 250 MB against 2.4 MiB
-     * of live blocks). Collecting here hands the pages back while this thread
-     * still owns them, which is the only point at which that is cheap (#581). */
-    cbm_mem_collect();
-    /* Census AFTER the collect: this is the per-connection steady state, so a
-     * pool that climbs across these lines is holding memory the connection was
-     * supposed to have given back. */
-    cbm_mem_census_log("connection.exit");
     return NULL;
 }
 

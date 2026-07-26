@@ -1602,10 +1602,6 @@ static void *application_job_thread(void *opaque) {
         }
     }
     application_job_publish(job, &execution);
-    /* Same reasoning as the connection worker: hand this thread's allocator
-     * pages back while it still owns them, since abandoned pages are not
-     * reclaimed in practice (#581). */
-    cbm_mem_collect();
     return NULL;
 }
 
