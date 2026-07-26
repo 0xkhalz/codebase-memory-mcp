@@ -1706,9 +1706,6 @@ static int main_run_daemon_ctl(int argc, char **argv, const cbm_daemon_ipc_endpo
 int main(int argc, char **argv) {
     /* Must remain the first statement: see allocator binding contract above. */
     cbm_alloc_init();
-    /* Immediately after, and before anything can touch SQLite: the page-cache
-     * slab can only be installed ahead of sqlite3_initialize (#581). */
-    cbm_store_configure_pagecache();
 #ifndef _WIN32
     pid_t process_initial_ppid = getppid();
 #endif
