@@ -1265,6 +1265,18 @@ static cbm_activation_transaction_status_t activation_transaction_prepare(
     if (!activation_directory_secure(transaction->directory_path, &transaction->directory_fd,
                                      &transaction->directory_identity)) {
 #endif
+        /* The one refusal on this path that said nothing: the caller reported
+         * "status -3, os 0" because destroy() below clobbers GetLastError and no
+         * note was set. Capture both before unwinding -- a target directory that
+         * fails the exact-owner rule is a completely different problem from an
+         * unreadable source, and telling them apart used to cost a full guard
+         * run per guess. */
+#ifdef _WIN32
+        unsigned long secure_os_error = (unsigned long)GetLastError();
+#else
+        unsigned long secure_os_error = 0UL;
+#endif
+        activation_note_refusal("target-directory-not-secure", secure_os_error);
         activation_transaction_destroy(transaction);
         return CBM_ACTIVATION_TRANSACTION_IO;
     }
