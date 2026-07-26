@@ -991,9 +991,11 @@ static cbm_activation_transaction_status_t activation_create_unique(
         free(candidate);
         free(name);
         if (created != ACTIVATION_CREATE_EXISTS) {
+            activation_note_refusal("io-site-994", 0UL);
             return CBM_ACTIVATION_TRANSACTION_IO;
         }
     }
+    activation_note_refusal("io-site-997", 0UL);
     return CBM_ACTIVATION_TRANSACTION_IO;
 }
 
@@ -1301,6 +1303,7 @@ static cbm_activation_transaction_status_t activation_transaction_prepare(
         if (!durable || !closed || !activation_sync_directory(transaction)) {
             (void)activation_discard_staged_assets(transaction);
             activation_transaction_destroy(transaction);
+            activation_note_refusal("io-site-1304", 0UL);
             return CBM_ACTIVATION_TRANSACTION_IO;
         }
     }
@@ -1344,6 +1347,7 @@ cbm_activation_transaction_status_t cbm_activation_transaction_stage_bytes(
     bool closed = activation_native_close(staged);
     if (!written || !durable || !closed || !activation_sync_directory(transaction)) {
         activation_failed_stage_cleanup(transaction);
+        activation_note_refusal("io-site-1347", 0UL);
         return CBM_ACTIVATION_TRANSACTION_IO;
     }
     *transaction_out = transaction;
@@ -1490,6 +1494,7 @@ cbm_activation_transaction_status_t cbm_activation_transaction_stage_file(
     activation_native_file_t source = ACTIVATION_INVALID_FILE;
     if (!activation_source_open(candidate_path, &source)) {
         activation_failed_stage_cleanup(transaction);
+        activation_note_refusal("io-site-1493", 0UL);
         return CBM_ACTIVATION_TRANSACTION_IO;
     }
     activation_native_file_t staged = ACTIVATION_INVALID_FILE;
@@ -1526,6 +1531,7 @@ cbm_activation_transaction_status_t cbm_activation_transaction_stage_file(
     if (!copied || total == 0 || !durable || !source_closed || !staged_closed ||
         !activation_sync_directory(transaction)) {
         activation_failed_stage_cleanup(transaction);
+        activation_note_refusal("io-site-1529", 0UL);
         return CBM_ACTIVATION_TRANSACTION_IO;
     }
     *transaction_out = transaction;
@@ -1973,6 +1979,7 @@ cbm_activation_transaction_status_t cbm_activation_transaction_commit(
         return CBM_ACTIVATION_TRANSACTION_INVALID_STATE;
     }
     if (!activation_target_still_original(transaction)) {
+        activation_note_refusal("io-site-1976", 0UL);
         return CBM_ACTIVATION_TRANSACTION_IO;
     }
     if (transaction->action == ACTIVATION_REPLACE) {
@@ -1982,6 +1989,7 @@ cbm_activation_transaction_status_t cbm_activation_transaction_commit(
                                      transaction->staged_name, &transaction->staged_identity,
                                      &staged_exists) ||
             !staged_exists) {
+            activation_note_refusal("io-site-1985", 0UL);
             return CBM_ACTIVATION_TRANSACTION_IO;
         }
     }
@@ -1990,6 +1998,7 @@ cbm_activation_transaction_status_t cbm_activation_transaction_commit(
             activation_publish_status_t published =
                 activation_publish_existing_replacement(transaction);
             if (published == ACTIVATION_PUBLISH_UNCHANGED_ERROR) {
+                activation_note_refusal("io-site-1993", 0UL);
                 return CBM_ACTIVATION_TRANSACTION_IO;
             }
             if (published == ACTIVATION_PUBLISH_CHANGED_ERROR) {
@@ -2009,6 +2018,7 @@ cbm_activation_transaction_status_t cbm_activation_transaction_commit(
                 !reservation_exists ||
                 !activation_rename(transaction, transaction->target_path, transaction->target_name,
                                    transaction->backup_path, transaction->backup_name, true)) {
+                activation_note_refusal("io-site-2012", 0UL);
                 return CBM_ACTIVATION_TRANSACTION_IO;
             }
             transaction->backup_identity = transaction->target_identity;
@@ -2022,6 +2032,7 @@ cbm_activation_transaction_status_t cbm_activation_transaction_commit(
         }
         activation_publish_status_t published = activation_publish_absent_replacement(transaction);
         if (published == ACTIVATION_PUBLISH_UNCHANGED_ERROR) {
+            activation_note_refusal("io-site-2025", 0UL);
             return CBM_ACTIVATION_TRANSACTION_IO;
         }
         if (published == ACTIVATION_PUBLISH_CHANGED_ERROR) {
@@ -2070,6 +2081,7 @@ cbm_activation_transaction_status_t cbm_activation_transaction_finalize(
         return CBM_ACTIVATION_TRANSACTION_INVALID_STATE;
     }
     if (!activation_directory_still_valid(transaction)) {
+        activation_note_refusal("io-site-2073", 0UL);
         return CBM_ACTIVATION_TRANSACTION_IO;
     }
     if (transaction->backup_contains_target) {
@@ -2077,6 +2089,7 @@ cbm_activation_transaction_status_t cbm_activation_transaction_finalize(
             transaction, transaction->backup_path, transaction->backup_name,
             &transaction->backup_identity, true);
         if (removed == ACTIVATION_UNLINK_ERROR) {
+            activation_note_refusal("io-site-2080", 0UL);
             return CBM_ACTIVATION_TRANSACTION_IO;
         }
         if (removed == ACTIVATION_UNLINK_DEFERRED) {
@@ -2088,6 +2101,7 @@ cbm_activation_transaction_status_t cbm_activation_transaction_finalize(
         transaction->backup_contains_target = false;
     }
     if (!activation_sync_directory(transaction)) {
+        activation_note_refusal("io-site-2091", 0UL);
         return CBM_ACTIVATION_TRANSACTION_IO;
     }
     transaction->state = ACTIVATION_FINALIZED;
