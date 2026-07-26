@@ -2171,7 +2171,11 @@ TEST(pipeline_go_cross_package_call) {
  * `import Core`. This only resolves because Core's OWN Package.swift
  * self-registers "Core" -> Core/Sources/Core in the shared pkgmap, landing
  * App.swift's IMPORTS edge on that directory's Folder node -- proving real
- * cross-package resolution, mirroring repro_issue408.c/repro_issue56.c. */
+ * cross-package resolution. Asserts the EXACT provider node (the
+ * Core/Sources/Core Folder, found by its real QN, not a substring guess)
+ * and the exact edge (from App.swift's own file node to that provider) --
+ * stronger than repro_issue408.c/repro_issue56.c's own count/substring
+ * checks, which this test intentionally does not settle for. */
 TEST(pipeline_swift_cross_package_import) {
     const char *files[] = {
         "Core/Package.swift",
@@ -2213,24 +2217,46 @@ TEST(pipeline_swift_cross_package_import) {
     ASSERT_NOT_NULL(s);
     const char *proj = cbm_pipeline_project_name(p);
 
+    /* The exact provider node: the Folder for Core/Sources/Core, which is
+     * exactly what Core/Package.swift's OWN self-registration resolves to
+     * (see cbm_pkgmap_build: pkg name "Core" -> fqn_module(entry_rel)).
+     * cbm_pipeline_fqn_module and cbm_pipeline_fqn_folder agree on this
+     * path (no extension on any segment to strip), so this is the same QN
+     * the structural pass gave the real Folder node -- not a guess. */
+    char *provider_qn = cbm_pipeline_fqn_folder(proj, "Core/Sources/Core");
+    ASSERT_NOT_NULL(provider_qn);
+    cbm_node_t provider = {0};
+    ASSERT_EQ(cbm_store_find_node_by_qn(s, proj, provider_qn, &provider), CBM_STORE_OK);
+    ASSERT_STR_EQ(provider.label, "Folder");
+    free(provider_qn);
+
+    /* The exact importing file node: App/Sources/App/App.swift. */
+    char *importer_qn = cbm_pipeline_fqn_compute(proj, "App/Sources/App/App.swift", "__file__");
+    ASSERT_NOT_NULL(importer_qn);
+    cbm_node_t importer = {0};
+    ASSERT_EQ(cbm_store_find_node_by_qn(s, proj, importer_qn, &importer), CBM_STORE_OK);
+    free(importer_qn);
+
+    /* The IMPORTS edge must run from THAT importer to THAT provider --
+     * not merely "some edge lands on a QN containing Core" (a node named
+     * e.g. "AppCore" would have false-passed the old substring check). */
     cbm_edge_t *edges = NULL;
     int ec = 0;
-    ASSERT_EQ(cbm_store_find_edges_by_type(s, proj, "IMPORTS", &edges, &ec), CBM_STORE_OK);
+    ASSERT_EQ(cbm_store_find_edges_by_source_type(s, importer.id, "IMPORTS", &edges, &ec),
+             CBM_STORE_OK);
 
-    bool found_cross_package = false;
-    for (int i = 0; i < ec && !found_cross_package; i++) {
-        cbm_node_t tgt = {0};
-        if (cbm_store_find_node_by_id(s, edges[i].target_id, &tgt) == CBM_STORE_OK) {
-            if (tgt.qualified_name && strstr(tgt.qualified_name, "Core")) {
-                found_cross_package = true;
-            }
+    bool found_exact_edge = false;
+    for (int i = 0; i < ec; i++) {
+        if (edges[i].target_id == provider.id) {
+            found_exact_edge = true;
         }
-        cbm_node_free_fields(&tgt);
     }
-    ASSERT_TRUE(found_cross_package);
+    ASSERT_TRUE(found_exact_edge);
 
     if (edges)
         cbm_store_free_edges(edges, ec);
+    cbm_node_free_fields(&provider);
+    cbm_node_free_fields(&importer);
     cbm_store_close(s);
     cbm_pipeline_free(p);
     teardown_lang_repo();
@@ -5332,10 +5358,11 @@ static const char *pkg_entries_entry_for(const cbm_pkg_entries_t *e, const char 
  *
  * parse_package_swift is a literal pattern-extractor (mirrors
  * parse_cargo_toml), not a Swift evaluator. These call cbm_pkgmap_try_parse
- * directly, covering the five RED categories the maintainer asked for
- * (local path deps, remote identities, products, targets, target-name
- * deps) plus fail-closed ambiguous-name cases. See
- * pipeline_swift_cross_package_import above for the full end-to-end proof. */
+ * directly, covering the RED categories the maintainer asked for (local
+ * path deps, remote identities, products not aliasing, targets, target-name
+ * deps, literal + computed `path:`, and comment/string false positives)
+ * plus fail-closed ambiguous-name cases. See pipeline_swift_cross_package_import
+ * above for the full end-to-end proof. */
 
 TEST(pkgmap_swift_targets_registers_module) {
     static const char src[] =
@@ -5356,7 +5383,11 @@ TEST(pkgmap_swift_targets_registers_module) {
     PASS();
 }
 
-TEST(pkgmap_swift_products_registers_target_dir) {
+/* Products deliberately do NOT self-register a separate alias: a product
+ * name is not generally an importable module (SwiftPM lets it alias
+ * multiple targets, or none sharing its own name), so only the underlying
+ * target -- under its OWN name -- registers. */
+TEST(pkgmap_swift_products_do_not_register_alias) {
     static const char src[] =
         "let package = Package(\n"
         "    name: \"Core\",\n"
@@ -5368,12 +5399,103 @@ TEST(pkgmap_swift_products_registers_target_dir) {
     bool ok = cbm_pkgmap_try_parse("Package.swift", "Core/Package.swift", src,
                                    (int)strlen(src), &entries);
     ASSERT_TRUE(ok);
-    /* Product name resolves to the FIRST listed target's conventional dir. */
-    ASSERT_TRUE(pkg_entries_has_name(&entries, "CoreKit"));
-    ASSERT_STR_EQ(pkg_entries_entry_for(&entries, "CoreKit"), "Core/Sources/CoreImpl");
-    /* The underlying target is separately (and correctly) self-registered too. */
+    ASSERT_FALSE(pkg_entries_has_name(&entries, "CoreKit"));
     ASSERT_TRUE(pkg_entries_has_name(&entries, "CoreImpl"));
     ASSERT_STR_EQ(pkg_entries_entry_for(&entries, "CoreImpl"), "Core/Sources/CoreImpl");
+    ASSERT_EQ(entries.count, 1);
+    cbm_pkg_entries_free(&entries);
+    PASS();
+}
+
+/* Regression: a target whose `name:` is the LAST argument, immediately
+ * followed by the call's own closing ')' with no trailing comma, must still
+ * register. swift_quoted_literal's terminator check used to compare against
+ * `end` with a strict '<', but every caller passes the wrapping call's own
+ * ')' position AS `end` -- so the literal's closing quote landing exactly
+ * on that boundary was wrongly rejected as "unterminated". Every other
+ * fixture in this file happens to follow `name:` with `dependencies:` or a
+ * comma, so this specific shape was previously untested and unnoticed. */
+TEST(pkgmap_swift_target_name_immediately_before_close_paren) {
+    static const char src[] =
+        "let package = Package(\n"
+        "    name: \"Core\",\n"
+        "    targets: [.target(name: \"Core\")]\n"
+        ")\n";
+    cbm_pkg_entries_t entries;
+    cbm_pkg_entries_init(&entries);
+    bool ok = cbm_pkgmap_try_parse("Package.swift", "Core/Package.swift", src,
+                                   (int)strlen(src), &entries);
+    ASSERT_TRUE(ok);
+    ASSERT_TRUE(pkg_entries_has_name(&entries, "Core"));
+    ASSERT_STR_EQ(pkg_entries_entry_for(&entries, "Core"), "Core/Sources/Core");
+    ASSERT_EQ(entries.count, 1);
+    cbm_pkg_entries_free(&entries);
+    PASS();
+}
+
+/* A literal `path:` argument overrides the Sources/<name> convention. */
+TEST(pkgmap_swift_target_honors_literal_path) {
+    static const char src[] =
+        "let package = Package(\n"
+        "    name: \"Core\",\n"
+        "    targets: [.target(name: \"Core\", path: \"Vendor/CoreLegacy\")]\n"
+        ")\n";
+    cbm_pkg_entries_t entries;
+    cbm_pkg_entries_init(&entries);
+    bool ok = cbm_pkgmap_try_parse("Package.swift", "Core/Package.swift", src,
+                                   (int)strlen(src), &entries);
+    ASSERT_TRUE(ok);
+    ASSERT_TRUE(pkg_entries_has_name(&entries, "Core"));
+    ASSERT_STR_EQ(pkg_entries_entry_for(&entries, "Core"), "Core/Vendor/CoreLegacy");
+    cbm_pkg_entries_free(&entries);
+    PASS();
+}
+
+/* A `path:` argument that IS present but not a bare literal (computed) is
+ * unknowable -- SwiftPM would not use the Sources/<name> convention here,
+ * so guessing it anyway would mint a location likely to be wrong. Skip the
+ * target entirely (fail closed), even though its `name:` is a valid
+ * literal. */
+TEST(pkgmap_swift_target_computed_path_fails_closed) {
+    static const char src[] =
+        "let customPath = computePath()\n"
+        "let package = Package(\n"
+        "    name: \"Core\",\n"
+        "    targets: [.target(name: \"Core\", path: customPath)]\n"
+        ")\n";
+    cbm_pkg_entries_t entries;
+    cbm_pkg_entries_init(&entries);
+    bool ok = cbm_pkgmap_try_parse("Package.swift", "Core/Package.swift", src,
+                                   (int)strlen(src), &entries);
+    ASSERT_TRUE(ok);
+    ASSERT_EQ(entries.count, 0);
+    cbm_pkg_entries_free(&entries);
+    PASS();
+}
+
+/* A `.target(` spelled inside a `//` line comment, a nesting-aware
+ * slash-star block comment, or a string literal must never be mistaken for a live
+ * declaration -- the bug a raw strstr scan cannot avoid. Only the one real
+ * target registers. */
+TEST(pkgmap_swift_target_in_comment_or_string_not_registered) {
+    static const char src[] =
+        "// .target(name: \"Decoy\")\n"
+        "/* outer /* nested */ still a comment: .target(name: \"NestedDecoy\") */\n"
+        "let manifestSnippet = \".target(name: \\\"StringDecoy\\\")\"\n"
+        "let package = Package(\n"
+        "    name: \"App\",\n"
+        "    targets: [.target(name: \"App\", dependencies: [])]\n"
+        ")\n";
+    cbm_pkg_entries_t entries;
+    cbm_pkg_entries_init(&entries);
+    bool ok = cbm_pkgmap_try_parse("Package.swift", "App/Package.swift", src,
+                                   (int)strlen(src), &entries);
+    ASSERT_TRUE(ok);
+    ASSERT_TRUE(pkg_entries_has_name(&entries, "App"));
+    ASSERT_FALSE(pkg_entries_has_name(&entries, "Decoy"));
+    ASSERT_FALSE(pkg_entries_has_name(&entries, "NestedDecoy"));
+    ASSERT_FALSE(pkg_entries_has_name(&entries, "StringDecoy"));
+    ASSERT_EQ(entries.count, 1);
     cbm_pkg_entries_free(&entries);
     PASS();
 }
@@ -7720,7 +7842,11 @@ SUITE(pipeline) {
     RUN_TEST(envscan_non_url_values_skipped);
     /* SwiftPM Package.swift manifest resolution (issue #551 item 1) */
     RUN_TEST(pkgmap_swift_targets_registers_module);
-    RUN_TEST(pkgmap_swift_products_registers_target_dir);
+    RUN_TEST(pkgmap_swift_products_do_not_register_alias);
+    RUN_TEST(pkgmap_swift_target_name_immediately_before_close_paren);
+    RUN_TEST(pkgmap_swift_target_honors_literal_path);
+    RUN_TEST(pkgmap_swift_target_computed_path_fails_closed);
+    RUN_TEST(pkgmap_swift_target_in_comment_or_string_not_registered);
     RUN_TEST(pkgmap_swift_dependencies_do_not_leak_entries);
     RUN_TEST(pkgmap_swift_target_name_dependency_does_not_leak_entry);
     RUN_TEST(pkgmap_swift_ambiguous_target_name_fails_closed);

@@ -669,41 +669,119 @@ static void parse_gemspec(const char *source, int source_len, const char *rel_pa
  *
  * Package.swift is executable Swift, not declarative, so this is a
  * hand-rolled literal pattern-extractor (same spirit as parse_cargo_toml),
- * not a Swift evaluator: it locates `.target(...)` / `.library(...)` call
- * expressions by literal prefix and pulls only their quoted-string-literal
- * `name:` / `targets:` arguments. Anything computed or concatenated is
+ * not a Swift evaluator: it locates `.target(...)` call expressions via a
+ * comment/string-aware token scan and pulls only their quoted-string-literal
+ * `name:` / `path:` arguments. Anything computed or concatenated is
  * skipped, not guessed — fail-closed, like every other parser here.
  *
- * `.package(url:)` / `.package(path:)` dependencies, and target-to-target
- * dependency references, are NOT used to mint entries: mirroring
- * package.json/Cargo.toml, only a manifest's OWN products/targets are
- * self-registered — a dependency resolves because the DEPENDENCY's own
- * Package.swift registers itself when the repo-wide manifest walk
- * (cbm_pkgmap_scan_repo) reaches it, exactly like a JS workspace sibling's
- * package.json (see repro_issue408.c). */
+ * Only a manifest's OWN `.target(...)` declarations self-register — never
+ * `.library(...)` products (a product name is not generally an importable
+ * module: SwiftPM lets it alias multiple targets, or none sharing its
+ * name), and never `.package(url:)` / `.package(path:)` dependencies or
+ * target-to-target dependency references. A dependency resolves because
+ * the DEPENDENCY's own Package.swift registers itself when the repo-wide
+ * manifest walk (cbm_pkgmap_scan_repo) reaches it, exactly like a JS
+ * workspace sibling's package.json (see repro_issue408.c).
+ *
+ * Deliberately out of scope (matches the item-1 authorization): evaluating
+ * `#if`/`#endif` conditional-compilation blocks. A `.target(...)` inside
+ * one is scanned like any other — teaching the extractor which platform
+ * conditions are "active" would need a Swift semantic tier, which this PR
+ * was explicitly asked not to add. */
+
+/* One step of comment/string-aware scanning, shared by swift_find_code_token
+ * and swift_match_paren below. If `*pp` sits inside, or is entering, a `//`
+ * line comment, a nesting-aware slash-star block comment (continued across
+ * calls via `*block_depth`), or a "..." string literal (escape aware,
+ * tracked via `*in_str`), advances `*pp` past that one step and returns
+ * true. Otherwise leaves `*pp` untouched and returns false, so the caller
+ * handles the "real code" character itself (paren tracking, needle
+ * matching, ...). */
+static bool swift_skip_comment_or_string(const char **pp, const char *end, int *block_depth,
+                                         bool *in_str) {
+    const char *p = *pp;
+    if (*block_depth > 0) {
+        if (p + SKIP_ONE < end && p[0] == '/' && p[SKIP_ONE] == '*') {
+            (*block_depth)++;
+            *pp = p + PAIR_LEN;
+        } else if (p + SKIP_ONE < end && p[0] == '*' && p[SKIP_ONE] == '/') {
+            (*block_depth)--;
+            *pp = p + PAIR_LEN;
+        } else {
+            *pp = p + SKIP_ONE;
+        }
+        return true;
+    }
+    if (*in_str) {
+        if (*p == '\\' && p + SKIP_ONE < end) {
+            *pp = p + PAIR_LEN;
+        } else {
+            if (*p == '"') {
+                *in_str = false;
+            }
+            *pp = p + SKIP_ONE;
+        }
+        return true;
+    }
+    if (p + SKIP_ONE < end && p[0] == '/' && p[SKIP_ONE] == '/') {
+        while (p < end && *p != '\n') {
+            p++;
+        }
+        *pp = p;
+        return true;
+    }
+    if (p + SKIP_ONE < end && p[0] == '/' && p[SKIP_ONE] == '*') {
+        *block_depth = SKIP_ONE;
+        *pp = p + PAIR_LEN;
+        return true;
+    }
+    if (*p == '"') {
+        *in_str = true;
+        *pp = p + SKIP_ONE;
+        return true;
+    }
+    return false;
+}
+
+/* Scans [start, end) for the next occurrence of `needle` that is not inside
+ * a `//` line comment, a nesting-aware slash-star block comment, or a "..."
+ * string literal (backslash-escapes honored). This is the single source of
+ * truth for "real code" scanning below — a `.target(`, `name:`, or `path:`
+ * spelled inside a comment or a string constant must never be mistaken for
+ * a live declaration. Returns a pointer to the match, or NULL. */
+static const char *swift_find_code_token(const char *start, const char *end, const char *needle) {
+    size_t nlen = strlen(needle);
+    int block_depth = 0;
+    bool in_str = false;
+    const char *p = start;
+    while (p < end) {
+        if (swift_skip_comment_or_string(&p, end, &block_depth, &in_str)) {
+            continue;
+        }
+        if ((size_t)(end - p) >= nlen && memcmp(p, needle, nlen) == 0) {
+            return p;
+        }
+        p++;
+    }
+    return NULL;
+}
 
 /* Find the matching ')' for the '(' at `open`, scanning forward to `end`.
- * Tracks string-literal spans (with backslash-escape handling) so a ')' or
- * '(' inside a quoted argument value never perturbs the depth count.
+ * Delegates comment/string spans to swift_skip_comment_or_string — matching
+ * swift_find_code_token — so a ')', '(', or comment delimiter inside a
+ * quoted argument value or a comment never perturbs the depth count.
  * Returns NULL for an unbalanced/unterminated call — the caller treats
  * that span as unparseable and skips it (fail-closed). */
 static const char *swift_match_paren(const char *open, const char *end) {
     int depth = 0;
+    int block_depth = 0;
     bool in_str = false;
-    for (const char *p = open; p < end; p++) {
-        if (in_str) {
-            if (*p == '\\' && p + SKIP_ONE < end) {
-                p++;
-                continue;
-            }
-            if (*p == '"') {
-                in_str = false;
-            }
+    const char *p = open;
+    while (p < end) {
+        if (swift_skip_comment_or_string(&p, end, &block_depth, &in_str)) {
             continue;
         }
-        if (*p == '"') {
-            in_str = true;
-        } else if (*p == '(') {
+        if (*p == '(') {
             depth++;
         } else if (*p == ')') {
             depth--;
@@ -711,14 +789,19 @@ static const char *swift_match_paren(const char *open, const char *end) {
                 return p;
             }
         }
+        p++;
     }
     return NULL;
 }
 
 /* Extract a bare double-quoted string-literal value at `p` (after skipping
- * leading whitespace), requiring the closing quote be immediately followed
- * by a comma or `end` — rejects `name: "Foo" + suffix`-style concatenation,
- * which a plain quote-scan alone cannot tell apart from a true literal.
+ * leading whitespace and honoring backslash-escapes inside the literal),
+ * requiring the closing quote be immediately followed by a comma, or by
+ * `end` — rejects `name: "Foo" + suffix`-style concatenation, which a plain
+ * quote-scan alone cannot tell apart from a true literal. Every caller here
+ * passes the enclosing call's own closing ')' position as `end`, so landing
+ * exactly on it after the closing quote correctly means "immediately
+ * followed by the close-paren", not just "ran off the end of the buffer".
  * Returns heap string, or NULL (fail-closed). */
 static char *swift_quoted_literal(const char *p, const char *end) {
     while (p < end && (*p == ' ' || *p == '\t')) {
@@ -730,6 +813,10 @@ static char *swift_quoted_literal(const char *p, const char *end) {
     p++;
     const char *start = p;
     while (p < end && *p != '"' && *p != '\n') {
+        if (*p == '\\' && p + SKIP_ONE < end) {
+            p += PAIR_LEN;
+            continue;
+        }
         p++;
     }
     if (p >= end || *p != '"') {
@@ -740,90 +827,79 @@ static char *swift_quoted_literal(const char *p, const char *end) {
     while (p < end && (*p == ' ' || *p == '\t')) {
         p++;
     }
-    if (p < end && (*p == ',' || *p == ')')) {
+    if (p >= end || *p == ',') {
         return value;
     }
     free(value);
     return NULL;
 }
 
-/* Search [start, end) for `needle`, then extract the bare quoted-literal
- * argument immediately following it via swift_quoted_literal. Bounded to
- * `end` so a match can never leak past the enclosing call's own argument
- * list into a later, unrelated declaration. Returns heap string or NULL. */
-static char *swift_extract_after(const char *start, const char *end, const char *needle) {
-    size_t nlen = strlen(needle);
-    if (nlen == 0 || start + nlen > end) {
+/* Search [start, end) for `needle` via swift_find_code_token (skipping
+ * comments/strings), then extract the bare quoted-literal argument
+ * immediately following it via swift_quoted_literal. Bounded to `end` so a
+ * match can never leak past the enclosing call's own argument list into a
+ * later, unrelated declaration. When `out_found` is non-NULL, it is set to
+ * whether `needle` was located at all — independent of whether its value
+ * parsed as a bare literal — so callers can tell "argument absent" (fine,
+ * apply a default) apart from "argument present but not a literal"
+ * (unknowable, fail closed). Returns heap string or NULL. */
+static char *swift_extract_after(const char *start, const char *end, const char *needle,
+                                 bool *out_found) {
+    if (out_found) {
+        *out_found = false;
+    }
+    const char *hit = swift_find_code_token(start, end, needle);
+    if (!hit) {
         return NULL;
     }
-    for (const char *p = start; p + nlen <= end; p++) {
-        if (memcmp(p, needle, nlen) == 0) {
-            return swift_quoted_literal(p + nlen, end);
-        }
+    if (out_found) {
+        *out_found = true;
     }
-    return NULL;
+    return swift_quoted_literal(hit + strlen(needle), end);
 }
 
-/* Search [start, end) for `needle: [...]` and extract the FIRST array
- * element as a string literal (representative target of a product's
- * `targets:` list, mirroring import_candidate_symbol's first-member
- * convention elsewhere in this file). NULL (fail-closed) when the array is
- * absent, empty, or its first element is not a bare literal. */
-static char *swift_first_array_literal(const char *start, const char *end, const char *needle) {
-    size_t nlen = strlen(needle);
-    if (nlen == 0 || start + nlen > end) {
-        return NULL;
-    }
-    for (const char *p = start; p + nlen <= end; p++) {
-        if (memcmp(p, needle, nlen) != 0) {
-            continue;
-        }
-        const char *q = p + nlen;
-        while (q < end && (*q == ' ' || *q == '\t')) {
-            q++;
-        }
-        if (q >= end || *q != '[') {
-            return NULL;
-        }
-        q++; /* past '[' */
-        while (q < end && (*q == ' ' || *q == '\t' || *q == '\n')) {
-            q++;
-        }
-        if (q >= end || *q != '"') {
-            return NULL; /* first element isn't a bare literal */
-        }
-        return extract_quoted(q, end);
-    }
-    return NULL;
-}
-
-/* Register `entry_name` → the conventional `Sources/<target_name>` dir
- * (fixed-convention, same approach parse_cargo_toml takes for `src/lib`).
- * Both arguments are borrowed; caller retains ownership. */
-static void swift_register_target(const char *rel_path, const char *entry_name,
-                                  const char *target_name, cbm_pkg_entries_t *entries) {
-    if (!entry_name || !entry_name[0] || !target_name || !target_name[0]) {
+/* Register `target_name` → its resolved source directory: the literal
+ * `path:` argument the target declared, if any, else the conventional
+ * `Sources/<target_name>` (fixed-convention, same approach parse_cargo_toml
+ * takes for `src/lib`). `literal_path` is borrowed; caller retains
+ * ownership. */
+static void swift_register_target(const char *rel_path, const char *target_name,
+                                  const char *literal_path, cbm_pkg_entries_t *entries) {
+    if (!target_name || !target_name[0]) {
         return;
     }
-    char suffix[PKGMAP_PATH_BUF];
-    snprintf(suffix, sizeof(suffix), "Sources/%s", target_name);
+    char suffix_buf[PKGMAP_PATH_BUF];
+    const char *suffix;
+    if (literal_path && literal_path[0]) {
+        suffix = literal_path;
+    } else {
+        snprintf(suffix_buf, sizeof(suffix_buf), "Sources/%s", target_name);
+        suffix = suffix_buf;
+    }
     char *entry = build_entry_path(rel_path, suffix);
     if (entry) {
-        pkg_entries_push(entries, strdup(entry_name), entry);
+        pkg_entries_push(entries, strdup(target_name), entry);
     }
 }
 
-/* Scan for `.target(name: "Foo", ...)` declarations. Non-overlapping: the
- * scan resumes AFTER each matched close paren, so a
+/* Scan for `.target(name: "Foo", ...)` declarations, skipping any
+ * `.target(` spelling that falls inside a comment or string literal.
+ * Non-overlapping: the scan resumes AFTER each matched close paren, so a
  * `dependencies: [.target(name: "Bar")]` reference nested inside Foo's own
- * argument list is never re-visited as a second top-level target. */
+ * argument list is never re-visited as a second top-level target.
+ *
+ * A target with a `path:` argument that isn't a bare literal (computed,
+ * concatenated, ...) is skipped entirely, even though its `name:` may be a
+ * valid literal: SwiftPM would use the computed path, not the
+ * `Sources/<name>` convention, and guessing that convention anyway would
+ * mint a location that is not just unconfirmed but actively likely wrong. */
 static void swift_scan_targets(const char *source, const char *end, const char *rel_path,
                                cbm_pkg_entries_t *entries) {
     static const char prefix[] = ".target(";
     const char *cursor = source;
     while (cursor < end) {
-        const char *hit = strstr(cursor, prefix);
-        if (!hit || hit >= end) {
+        const char *hit = swift_find_code_token(cursor, end, prefix);
+        if (!hit) {
             return;
         }
         const char *open = hit + strlen(prefix) - SKIP_ONE;
@@ -831,52 +907,27 @@ static void swift_scan_targets(const char *source, const char *end, const char *
         if (!close) {
             return; /* unbalanced — nothing further here is trustworthy */
         }
-        char *name = swift_extract_after(open, close, "name:");
+        char *name = swift_extract_after(open, close, "name:", NULL);
         if (name) {
-            swift_register_target(rel_path, name, name, entries);
+            bool path_present = false;
+            char *literal_path = swift_extract_after(open, close, "path:", &path_present);
+            if (literal_path || !path_present) {
+                swift_register_target(rel_path, name, literal_path, entries);
+            }
+            free(literal_path);
             free(name);
         }
         cursor = close + SKIP_ONE;
     }
 }
 
-/* Scan for `.library(name: "Foo", targets: ["Bar", ...])` product
- * declarations. Registers the PRODUCT name against the first listed
- * target's conventional source directory; a product with a missing,
- * non-literal, or empty `targets:` array is skipped, not guessed. */
-static void swift_scan_products(const char *source, const char *end, const char *rel_path,
-                                cbm_pkg_entries_t *entries) {
-    static const char prefix[] = ".library(";
-    const char *cursor = source;
-    while (cursor < end) {
-        const char *hit = strstr(cursor, prefix);
-        if (!hit || hit >= end) {
-            return;
-        }
-        const char *open = hit + strlen(prefix) - SKIP_ONE;
-        const char *close = swift_match_paren(open, end);
-        if (!close) {
-            return;
-        }
-        char *product_name = swift_extract_after(open, close, "name:");
-        if (product_name) {
-            char *target_name = swift_first_array_literal(open, close, "targets:");
-            if (target_name) {
-                swift_register_target(rel_path, product_name, target_name, entries);
-                free(target_name);
-            }
-            free(product_name);
-        }
-        cursor = close + SKIP_ONE;
-    }
-}
-
-/* SwiftPM: Package.swift — library products + targets → Sources/<name> */
+/* SwiftPM: Package.swift — targets → Sources/<name> (or their literal
+ * `path:`). Products deliberately do not self-register: see the file
+ * comment above swift_find_code_token. */
 static void parse_package_swift(const char *source, int source_len, const char *rel_path,
                                 cbm_pkg_entries_t *entries) {
     const char *end = source + source_len;
     swift_scan_targets(source, end, rel_path, entries);
-    swift_scan_products(source, end, rel_path, entries);
 }
 
 /* ── Public: manifest detection + parsing ──────────────────────── */
