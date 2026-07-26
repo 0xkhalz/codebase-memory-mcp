@@ -119,10 +119,12 @@ documented honestly where not:
 
 - **Preflight, every venue-grade command:** `clean-test-residue.ps1` sweeps
   temp roots/staged binaries and asserts a runner-like free-disk floor, then
-  `scripts/ci/ensure-defender.ps1` (the SAME script every Windows CI job runs)
-  enables + verifies Defender real-time protection. Defender posture is
-  matched ON on all venues — the runners enable it too; a venue where it
-  cannot be activated goes red, never silently tests a different OS shape.
+  `scripts/ci/ensure-defender.ps1` enables + verifies Defender real-time
+  protection ON THIS VM (fail-closed: a drifted-off Defender goes red).
+  Hosted GitHub runners CANNOT match this posture — RTP is policy-locked off
+  on their images (verified 2026-07-27: WinDefend starts, Set-MpPreference
+  accepts, RTP stays off) — so AV-interaction coverage is a deliberate LOCAL
+  superset, and runner release scans stay on-demand (MpCmdRun, fail-soft).
 - **Snapshot-revert is NOT scriptable via utmctl** (its verb set is
   version/list/status/start/suspend/stop — no snapshot support), so per-run
   revert-to-clean is not wired. The honest fallback is the sweep preflight

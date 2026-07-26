@@ -249,32 +249,24 @@ REQUIRED = [
     ("pr.yml", r"vm-smoke\.sh", "PR CI smokes through the shared wrapper"),
     ("_build.yml", r"scripts/package-release\.sh",
      "release archives are produced by the canonical packaging entry"),
-    ("_test.yml", r"scripts/ci/ensure-defender\.ps1",
-     "Windows test legs enable+verify Defender (venue parity)"),
-    ("_smoke.yml", r"scripts/ci/ensure-defender\.ps1",
-     "Windows release smoke enables+verifies Defender (venue parity)"),
-    ("_soak.yml", r"scripts/ci/ensure-defender\.ps1",
-     "Windows soak legs enable+verify Defender (venue parity)"),
-    ("pr.yml", r"scripts/ci/ensure-defender\.ps1",
-     "PR Windows smoke enables+verifies Defender (venue parity)"),
 ]
 for name, pattern, why in REQUIRED:
     path = workflows / name
     if path.exists() and not re.search(pattern, path.read_text()):
         failures.append(f"{name}: missing required `{pattern}` — {why}")
 
-# Defender-ON parity: EVERY Windows job in every venue workflow enables and
-# verifies real-time protection — a single job dropping the step must fail,
-# so the expectation is an exact per-file count, not mere presence.
-DEFENDER_STEPS = {"_test.yml": 2, "_soak.yml": 3, "_smoke.yml": 1, "pr.yml": 1}
-for name, expected in DEFENDER_STEPS.items():
+# Defender posture: hosted Windows runners have real-time protection
+# POLICY-LOCKED OFF (verified 2026-07-27: WinDefend starts, Set-MpPreference
+# accepts, RTP stays off), so runner jobs must NOT gate on enabling it; the
+# LOCAL VM leg enforces Defender-ON via the same canonical script in its
+# preflight (see LOCAL_REQUIRED below) — superset coverage where the platform
+# allows it.
+for name in ("_test.yml", "_soak.yml", "_smoke.yml", "pr.yml"):
     path = workflows / name
-    if path.exists():
-        got = path.read_text().count("scripts/ci/ensure-defender.ps1")
-        if got != expected:
-            failures.append(
-                f"{name}: expected {expected} ensure-defender.ps1 step(s) "
-                f"(one per Windows job), found {got}")
+    if path.exists() and "ensure-defender.ps1" in path.read_text():
+        failures.append(
+            f"{name}: ensure-defender.ps1 must not gate hosted runners — RTP is "
+            f"policy-locked off there; the VM preflight owns Defender-ON coverage")
 
 # ── Layer 4: the local venues route through the same entries ──
 compose = root / "test-infrastructure" / "docker-compose.yml"

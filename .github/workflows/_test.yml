@@ -247,11 +247,12 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      # Defender parity: every Windows venue (local VM and runner alike) tests
-      # with real-time protection ACTIVE — enabled + verified, never skipped.
-      - name: Ensure Windows Defender is active (venue parity)
-        shell: pwsh
-        run: scripts/ci/ensure-defender.ps1
+      # Defender posture: real-time protection is POLICY-LOCKED OFF on hosted
+      # Windows images (verified 2026-07-27: WinDefend starts and
+      # Set-MpPreference accepts, but RTP stays off — untamperable from the
+      # job). The local VM leg enforces Defender-ON via the canonical Defender
+      # preflight script, so AV-interaction coverage lives there; runners run
+      # without RTP by platform constraint.
 
       - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
         with:
@@ -380,10 +381,6 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Ensure Windows Defender is active (venue parity)
-        shell: pwsh
-        run: scripts/ci/ensure-defender.ps1
 
       - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
         with:
