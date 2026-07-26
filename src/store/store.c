@@ -731,42 +731,12 @@ static cbm_store_t *store_open_internal(const char *path, bool in_memory, bool c
  * commit, which is the point: bounded beats unbounded.
  *
  * Must run before SQLite initialises, so it is done once on the first open. */
-enum {
-    STORE_PAGECACHE_SLOT_BYTES = 4096 + 256, /* page + pcache1 header slack */
-    STORE_PAGECACHE_SLOTS = 2048,            /* ~8.7 MiB, shared by all connections */
-};
-
-/* Must run before ANY sqlite3 call: SQLITE_CONFIG_PAGECACHE is refused once
- * sqlite3_initialize has run, and being refused is what left every request's
- * page cache coming from the general allocator (#581). Idempotent, so the
- * open paths can keep calling it as a backstop. */
-void cbm_store_configure_pagecache(void) {
-    static atomic_int configured = ATOMIC_VAR_INIT(0);
-    int expected = 0;
-    if (!atomic_compare_exchange_strong(&configured, &expected, 1)) {
-        return;
-    }
-    static char slab[STORE_PAGECACHE_SLOT_BYTES * STORE_PAGECACHE_SLOTS];
-    int rc = sqlite3_config(SQLITE_CONFIG_PAGECACHE, slab, STORE_PAGECACHE_SLOT_BYTES,
-                            STORE_PAGECACHE_SLOTS);
-    if (rc != SQLITE_OK) {
-        /* Fail loud rather than silently reverting to per-connection cache
-         * allocation, which is the behaviour that produced #581. Not fatal:
-         * the store still works, it just fragments — so say so clearly. */
-        cbm_log_warn("store.pagecache.config_failed", "rc",
-                     rc == SQLITE_MISUSE ? "misuse" : "error", "detail",
-                     "shared SQLite page-cache slab was refused (SQLite already initialised?); "
-                     "page cache will be served from the general allocator and may fragment");
-    }
-}
 
 cbm_store_t *cbm_store_open_memory(void) {
-    cbm_store_configure_pagecache();
     return store_open_internal(":memory:", true, true);
 }
 
 cbm_store_t *cbm_store_open_path(const char *db_path) {
-    cbm_store_configure_pagecache();
     if (!db_path) {
         return NULL;
     }
@@ -774,7 +744,6 @@ cbm_store_t *cbm_store_open_path(const char *db_path) {
 }
 
 cbm_store_t *cbm_store_open_path_existing(const char *db_path) {
-    cbm_store_configure_pagecache();
     if (!db_path) {
         return NULL;
     }
@@ -845,7 +814,6 @@ static bool build_immutable_uri(const char *path, char *out, size_t out_sz) {
 }
 
 cbm_store_t *cbm_store_open_path_query(const char *db_path) {
-    cbm_store_configure_pagecache();
     if (!db_path) {
         return NULL;
     }
