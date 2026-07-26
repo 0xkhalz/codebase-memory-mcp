@@ -272,12 +272,20 @@ require(
     and "vm-run-tests.sh --soak '$duration'" in windows_vm,
     "the Windows VM driver must route the native daemon soak through its protected-temp harness",
 )
+# The soak sequence and its completion guards moved into the ONE canonical
+# entry scripts/soak-legs.sh (venue parity: _soak.yml, compose and the VM all
+# run the same file); the VM wrapper supplies the protected temp root and
+# routes into it.
+soak_legs = read("scripts/soak-legs.sh")
 require(
     'if [ "$1" = "--soak" ]' in windows_vm_runner
-    and 'scripts/soak-test.sh "$binary" "$duration"' in windows_vm_runner
-    and "=== soak-test: PASSED ===" in windows_vm_runner,
-    "the Windows VM harness must run and completion-guard the native daemon soak under its "
-    "protected temp root",
+    and 'scripts/soak-legs.sh "$binary" "$duration"' in windows_vm_runner,
+    "the Windows VM harness must route the native daemon soak through the canonical soak "
+    "entry under its protected temp root",
+)
+require(
+    "grep -Fq '=== soak-test: PASSED ==='" in soak_legs,
+    "the canonical soak entry must completion-guard every leg on the soak summary",
 )
 require(
     pr_workflow.count("scripts/smoke-local.sh") >= 2,
