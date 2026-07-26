@@ -1178,8 +1178,21 @@ static int launcher_spawn_payload(const wchar_t *execution_path, const wchar_t *
     if (payload_ready && private_activation) {
         /* DELETE only, never GENERIC_WRITE: the payload is RUNNING from this
          * staged image, and the image section always denies write sharing
-         * (ERROR_SHARING_VIOLATION). */
-        private_file = launcher_open_regular(execution_path, GENERIC_READ | DELETE, true);
+         * (ERROR_SHARING_VIOLATION). First-touch antivirus scanners also hold
+         * a just-staged executable without FILE_SHARE_DELETE, so this
+         * DELETE-access open transiently collides as ERROR_SHARING_VIOLATION
+         * on cold images (observed on hosted-runner images) — the same scan
+         * window the staged rename above absorbs. Bounded backoff; every
+         * retry re-runs the full secure-open validation. */
+        for (DWORD wait_ms = 0U, waited_ms = 0U;; waited_ms += wait_ms) {
+            private_file = launcher_open_regular(execution_path, GENERIC_READ | DELETE, true);
+            if (private_file != INVALID_HANDLE_VALUE || GetLastError() != ERROR_SHARING_VIOLATION ||
+                waited_ms >= 2000U) {
+                break;
+            }
+            wait_ms = wait_ms == 0U ? 100U : (wait_ms < 1000U ? wait_ms * 2U : wait_ms);
+            Sleep(wait_ms);
+        }
         if (private_file == INVALID_HANDLE_VALUE) {
             /* Surfaced on the inherited stderr: the payload's generic
              * completion error cannot say WHICH launcher-side step refused. */

@@ -10,6 +10,7 @@
 #include "../src/foundation/log.h"
 #include "../src/foundation/platform.h" /* cbm_file_size */
 #include "../src/foundation/subprocess.h"
+#include "../src/mcp/compact_out.h"
 #include "test_framework.h"
 #include "test_helpers.h"
 #include <cli/cli.h>
@@ -548,6 +549,33 @@ static void mcp_replacing_mutation_guard_end(void *context, const char *project)
     if (replacement) {
         mcp_mutation_guard_probe_end(&replacement->guard, project);
     }
+}
+
+TEST(tree_cell_sanitizes_control_and_invalid_utf8) {
+    /* One raw control or invalid-UTF8 byte in a cell poisons LINE-ORIENTED
+     * consumers of the ENTIRE output (BSD grep treats all of it as
+     * unmatchable binary — the macos-15-intel release-smoke B3 class), so
+     * cell emission guarantees valid UTF-8: control bytes escape as \u00XX,
+     * invalid sequences become U+FFFD, and both force the quoted form. */
+    cbm_sb_t sb;
+    cbm_sb_init(&sb);
+    cbm_tree_cell_str(&sb,
+                      "evil\x01name\xff"
+                      "end",
+                      true);
+    char *out = cbm_sb_finish(&sb);
+    ASSERT_NOT_NULL(out);
+    ASSERT_STR_EQ(out, "\"evil\\u0001name\xEF\xBF\xBD"
+                       "end\"");
+    free(out);
+
+    cbm_sb_init(&sb);
+    cbm_tree_cell_str(&sb, "b\xC3\xA4r_ok", true);
+    out = cbm_sb_finish(&sb);
+    ASSERT_NOT_NULL(out);
+    ASSERT_STR_EQ(out, "b\xC3\xA4r_ok"); /* valid UTF-8 stays raw + unquoted */
+    free(out);
+    PASS();
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -9468,6 +9496,7 @@ SUITE(mcp) {
     RUN_TEST(jsonrpc_parse_request);
     RUN_TEST(jsonrpc_parse_notification);
     RUN_TEST(jsonrpc_parse_invalid);
+    RUN_TEST(tree_cell_sanitizes_control_and_invalid_utf8);
     RUN_TEST(jsonrpc_parse_tools_call);
     RUN_TEST(jsonrpc_parse_string_id_issue253);
     RUN_TEST(jsonrpc_format_response_string_id_issue253);
