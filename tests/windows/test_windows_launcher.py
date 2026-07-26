@@ -1573,9 +1573,15 @@ def main():
         # codebase-memory-mcp.exe launcher"). Reusing the consumed pair made this
         # guard fail on the product's correct behaviour rather than on the
         # immediate-reinstall contract it exists to protect.
+        reinstall_dir = work / "portable-reinstall"
         _, reinstall_payload = copy_portable_pair(
-            source_launcher, source_payload, work / "portable-reinstall"
+            source_launcher, source_payload, reinstall_dir
         )
+        # Copied files inherit Administrators ownership on runner images, and the
+        # launcher's exact-owner validators (correctly) require the current user
+        # -- so an unstamped pair is refused as unverified, which is the same
+        # error as having no adjacent launcher at all.
+        stamp_fixture_owner_current(reinstall_dir, env)
         assert_uninstall_immediate_reinstall_safe(
             launcher, managed_dir, reinstall_payload, env
         )
