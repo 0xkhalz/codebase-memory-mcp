@@ -1510,10 +1510,21 @@ cbm_activation_transaction_status_t cbm_activation_transaction_stage_file(
     unsigned char buffer[64U * 1024U];
     size_t total = 0;
     bool copied = true;
+    /* Captured AT the failure, not after: the cleanup and close calls below all
+     * clobber the thread's last error, which is why this path could only ever
+     * report "os 0". */
+    unsigned long copy_os_error = 0UL;
+    bool copy_failed_on_read = false;
     for (;;) {
         size_t amount = 0;
         if (!activation_native_read(source, buffer, sizeof(buffer), &amount)) {
             copied = false;
+            copy_failed_on_read = true;
+#ifdef _WIN32
+            copy_os_error = (unsigned long)GetLastError();
+#else
+            copy_os_error = (unsigned long)errno;
+#endif
             break;
         }
         if (amount == 0) {
@@ -1521,6 +1532,11 @@ cbm_activation_transaction_status_t cbm_activation_transaction_stage_file(
         }
         if (SIZE_MAX - total < amount || !activation_native_write_all(staged, buffer, amount)) {
             copied = false;
+#ifdef _WIN32
+            copy_os_error = (unsigned long)GetLastError();
+#else
+            copy_os_error = (unsigned long)errno;
+#endif
             break;
         }
         total += amount;
@@ -1536,13 +1552,19 @@ cbm_activation_transaction_status_t cbm_activation_transaction_stage_file(
          * sync are not the same bug. Naming them is what turns a ten-minute
          * guard run per hypothesis into one run that answers the question. */
         activation_failed_stage_cleanup(transaction);
-        activation_note_refusal(!copied          ? "stage-copy-read-or-write"
-                                : total == 0     ? "stage-source-empty"
-                                : !durable       ? "stage-fsync"
-                                : !source_closed ? "stage-source-close"
-                                : !staged_closed ? "stage-staged-close"
-                                                 : "stage-directory-sync",
-                                0UL);
+        const char *why = "stage-directory-sync";
+        if (!copied) {
+            why = copy_failed_on_read ? "stage-copy-read" : "stage-copy-write";
+        } else if (total == 0) {
+            why = "stage-source-empty";
+        } else if (!durable) {
+            why = "stage-fsync";
+        } else if (!source_closed) {
+            why = "stage-source-close";
+        } else if (!staged_closed) {
+            why = "stage-staged-close";
+        }
+        activation_note_refusal(why, copy_os_error);
         return CBM_ACTIVATION_TRANSACTION_IO;
     }
     *transaction_out = transaction;
