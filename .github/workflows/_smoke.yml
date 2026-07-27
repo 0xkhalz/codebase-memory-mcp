@@ -92,7 +92,12 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.setup-matrix.outputs.unix) }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    # 30, not 15: the unified smoke legitimately runs MORE (artifact mode,
+    # real download/update phases, a Phase 15 that actually executes), and
+    # v4's PASSING legs already took 12-14 min — v5 lost 13 green-path jobs
+    # to the 15-min wall (GitHub reports job timeouts as 'cancelled').
+    # Budget doctrine: the timeout sits above the worst case, twice over.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -168,7 +173,12 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.setup-matrix.outputs.windows) }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    # 30, not 15: the unified smoke legitimately runs MORE (artifact mode,
+    # real download/update phases, a Phase 15 that actually executes), and
+    # v4's PASSING legs already took 12-14 min — v5 lost 13 green-path jobs
+    # to the 15-min wall (GitHub reports job timeouts as 'cancelled').
+    # Budget doctrine: the timeout sits above the worst case, twice over.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -270,7 +280,12 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.setup-matrix.outputs.portable) }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
+    # 30, not 15: the unified smoke legitimately runs MORE (artifact mode,
+    # real download/update phases, a Phase 15 that actually executes), and
+    # v4's PASSING legs already took 12-14 min — v5 lost 13 green-path jobs
+    # to the 15-min wall (GitHub reports job timeouts as 'cancelled').
+    # Budget doctrine: the timeout sits above the worst case, twice over.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
