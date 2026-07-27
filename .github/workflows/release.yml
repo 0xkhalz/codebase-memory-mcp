@@ -153,6 +153,8 @@ jobs:
         with:
           tag_name: ${{ inputs.version }}
           draft: true
+          # Semver prerelease (v0.9.1-rc.1): never the "latest" release on GitHub.
+          prerelease: ${{ contains(inputs.version, '-') }}
           files: |
             *.tar.gz
             *.zip
@@ -303,7 +305,16 @@ jobs:
         working-directory: pkg/npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public --provenance
+          RELEASE_VERSION: ${{ inputs.version }}
+        # A prerelease must never become npm `latest` — plain `npm install`
+        # would serve the RC to everyone. Publish prereleases under the
+        # `next` dist-tag; testers opt in via `npm i codebase-memory-mcp@next`.
+        run: |
+          if [[ "$RELEASE_VERSION" == *-* ]]; then
+            npm publish --access public --provenance --tag next
+          else
+            npm publish --access public --provenance
+          fi
 
       # ── PyPI ─────────────────────────────────────────────────
       - name: Setup Python
@@ -340,7 +351,9 @@ jobs:
   # not touch npm/PyPI, so retries are safe.
   publish-mcp-registry:
     needs: [publish-registries]
-    if: ${{ !cancelled() && !failure() && needs.publish-registries.result == 'success' }}
+    # Skipped for prereleases: the MCP Registry has no channel concept, so an
+    # RC would present itself as the current version to every registry consumer.
+    if: ${{ !cancelled() && !failure() && needs.publish-registries.result == 'success' && !contains(inputs.version, '-') }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write   # GitHub OIDC auth to the MCP Registry
