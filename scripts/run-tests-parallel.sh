@@ -195,6 +195,22 @@ shard_filter < "$SER_FILE" > "$SER_FILE.shard" && mv "$SER_FILE.shard" "$SER_FIL
 SHARD_EXPECT="$LOGDIR/suites-shard.txt"
 cat "$PAR_FILE" "$SER_FILE" > "$SHARD_EXPECT"
 NSHARD=$(wc -l < "$SHARD_EXPECT" | tr -d ' ')
+
+# Machine-checkable manifest for CI's cross-shard completeness job: it
+# proves at runtime that the shards of one leg agree on N and on the full
+# suite list, and that the union of their slices IS that list — the guard
+# against a mis-plumbed CBM_TEST_SHARD (two jobs running the same slice
+# passes every per-shard check but silently drops a slice; only a
+# cross-shard view catches it). Written BEFORE any suite runs: the slice is
+# fully determined here, and a red run's manifest is exactly as load-bearing
+# as a green one's — CI uploads it if: always().
+{
+    echo "leg=${CBM_TEST_LEG:-local}"
+    echo "shard=${SHARD_INDEX}/${SHARD_TOTAL}"
+    echo "list_sha256=$(sort "$SUITES_FILE" | { sha256sum 2>/dev/null || shasum -a 256; } | awk '{print $1}')"
+    echo "--- slice ---"
+    cat "$SHARD_EXPECT"
+} > "$LOGDIR/shard-manifest.txt"
 echo "=== parallel test run: $NSHARD of $NSUITES suites (shard ${SHARD_INDEX}/${SHARD_TOTAL}, $(wc -l < "$SER_FILE" | tr -d ' ') serial-tail), $JOBS jobs ==="
 
 # Per-suite wall-clock ceilings make a wedged child fail loudly. The
@@ -254,20 +270,6 @@ done < "$SER_FILE"
 stamp_windows_build_dir pre-tail
 run_wave "$FLEX_FILE" "${CBM_TAIL_JOBS:-2}"
 run_wave "$EXCL_FILE" 1
-
-# Machine-checkable manifest for CI's cross-shard completeness job: it
-# proves at runtime that the shards of one leg agree on N and on the full
-# suite list, and that the union of their slices IS that list — the guard
-# against a mis-plumbed CBM_TEST_SHARD (two jobs running the same slice
-# passes every per-shard check but silently drops a slice; only a
-# cross-shard view catches it).
-{
-    echo "leg=${CBM_TEST_LEG:-local}"
-    echo "shard=${SHARD_INDEX}/${SHARD_TOTAL}"
-    echo "list_sha256=$(sort "$SUITES_FILE" | { sha256sum 2>/dev/null || shasum -a 256; } | awk '{print $1}')"
-    echo "--- slice ---"
-    cat "$SHARD_EXPECT"
-} > "$LOGDIR/shard-manifest.txt"
 
 # ── Union guard: every suite in this shard's slice produced exactly one
 # result. The slice is deterministic, so N green shard jobs = full coverage;

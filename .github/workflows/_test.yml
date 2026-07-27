@@ -154,7 +154,12 @@ jobs:
         with:
           name: shard-manifest-${{ matrix.os }}-${{ matrix.cc }}-${{ strategy.job-index }}
           path: build/c/test-logs/shard-manifest.txt
-          if-no-files-found: error
+          # The harness writes the manifest BEFORE any suite runs, so a
+          # missing file here means the job died before the harness started
+          # (contract step / build) — that failure is already the job's red;
+          # warn instead of stacking a second error on top of it. The
+          # shard-completeness job still gates the cross-shard union.
+          if-no-files-found: warn
 
       - name: Compiler cache (save)
         if: always() && (matrix.shard == null || startsWith(matrix.shard, '1/'))
@@ -330,7 +335,12 @@ jobs:
         with:
           name: shard-manifest-${{ matrix.os }}-${{ matrix.msystem }}-${{ strategy.job-index }}
           path: build/c/test-logs/shard-manifest.txt
-          if-no-files-found: error
+          # The harness writes the manifest BEFORE any suite runs, so a
+          # missing file here means the job died before the harness started
+          # (contract step / build) — that failure is already the job's red;
+          # warn instead of stacking a second error on top of it. The
+          # shard-completeness job still gates the cross-shard union.
+          if-no-files-found: warn
 
       # Shard 1 (or the unsharded job) saves the compiler cache; every shard
       # builds the identical runner, so one cache carries the full object set.
