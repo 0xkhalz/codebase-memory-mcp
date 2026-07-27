@@ -77,7 +77,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 run_leg() {
     local leg="$1"
     local log
-    log="$(mktemp "${TMPDIR:-/tmp}/cbm-soak-leg-XXXXXX.log")"
+    # No suffix after the X run: BSD mktemp substitutes only TRAILING X's, so
+    # a template like ...XXXXXX.log creates a near-literal file on macOS and
+    # every second run collides with the first run's leftover ("File exists").
+    log="$(mktemp "${TMPDIR:-/tmp}/cbm-soak-leg-XXXXXX")"
     echo "=== soak-legs: leg=${leg} binary=${BINARY} duration=${DURATION}m ==="
     local rc=0
     case "$leg" in
