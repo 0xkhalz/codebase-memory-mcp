@@ -31,6 +31,10 @@ enum {
 
     EXPORT_ANCESTOR_DEPTH = 4,
     FUNC_PARENT_CLIMB_LIMIT = 4, /* fun_expr -> term -> uni_term -> let_binding (Nickel) */
+    /* Nix header lambdas to descend before the file's body: `{ pkgs, ... }:` is one,
+     * the nixpkgs overlay `final: prev:` is two. Bounded so a pathological chain
+     * cannot spin. */
+    NIX_HEADER_HOP_MAX = 8,
     DECORATOR_SCAN_LIMIT = 3,
     C_RETURN_WALK_DEPTH = 5,
     VAR_RECURSION_LIMIT = 8,
@@ -188,6 +192,7 @@ static void extract_func_def(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec 
 static void extract_class_def(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec *spec);
 static void walk_defs(CBMExtractCtx *ctx, TSNode root, const CBMLangSpec *spec, int depth_unused);
 static void extract_variables(CBMExtractCtx *ctx, TSNode root, const CBMLangSpec *spec);
+static void extract_var_names(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec *spec);
 static void extract_class_variables(CBMExtractCtx *ctx, TSNode class_node, const CBMLangSpec *spec);
 static void extract_rust_impl(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec *spec);
 static void extract_class_methods(CBMExtractCtx *ctx, TSNode class_node, const char *class_qn,
@@ -4751,7 +4756,12 @@ static void extract_elixir_call(CBMExtractCtx *ctx, TSNode node, const CBMLangSp
 // --- Variable extraction ---
 
 // Helper to push a Variable definition
-static void push_var_def(CBMExtractCtx *ctx, const char *name, TSNode node) {
+/* `qn_name` is the name as it should appear in the qualified name, which differs
+ * from `name` only where a language scopes a variable below the module — Nix,
+ * whose binding names are attrpaths (`a.b.c = …` is name `c`, QN suffix `a.b.c`).
+ * Pass NULL to use `name` for both. */
+static void push_var_def_qn(CBMExtractCtx *ctx, const char *name, const char *qn_name,
+                            TSNode node) {
     if (!name || !name[0] || strcmp(name, "_") == 0) {
         return;
     }
@@ -4761,14 +4771,18 @@ static void push_var_def(CBMExtractCtx *ctx, const char *name, TSNode node) {
     def.name = name;
     /* Java/Go: directory-based module (package), so a Go package-level var in
      * myapp/db/conn.go is proj.myapp.db.Var, matching its siblings. */
-    def.qualified_name =
-        cbm_fqn_compute_source_lang(a, ctx->project, ctx->rel_path, name, ctx->language);
+    def.qualified_name = cbm_fqn_compute_source_lang(a, ctx->project, ctx->rel_path,
+                                                     qn_name ? qn_name : name, ctx->language);
     def.label = "Variable";
     def.file_path = ctx->rel_path;
     def.start_line = ts_node_start_point(node).row + TS_LINE_OFFSET;
     def.end_line = ts_node_end_point(node).row + TS_LINE_OFFSET;
     def.is_exported = cbm_is_exported(name, ctx->language);
     cbm_defs_push(&ctx->result->defs, a, def);
+}
+
+static void push_var_def(CBMExtractCtx *ctx, const char *name, TSNode node) {
+    push_var_def_qn(ctx, name, NULL, node);
 }
 
 // Helper: extract name from a declarator chain (C/C++/ObjC)
@@ -5447,10 +5461,94 @@ static void extract_vars_config(CBMExtractCtx *ctx, TSNode node, CBMArena *a, co
 
 /* ── Variable name extraction dispatcher ────────────────────────── */
 
+/* Nix: a module-level `binding` whose value is neither a lambda nor an attribute
+ * set. Both of those are already represented — a lambda-valued binding is minted
+ * as a Function by the def walk, and an attrset-valued one is a scope
+ * (is_namespace_scope_kind) — so minting either again here would double-count it.
+ *
+ * The name is the attrpath's leaf and the QN carries the whole path, matching how
+ * the def walk names functions; `services.nginx.enable = true` is name `enable`,
+ * QN proj.file.services.nginx.enable. */
+static void extract_vars_nix(CBMExtractCtx *ctx, TSNode node, CBMArena *a) {
+    if (strcmp(ts_node_type(node), "binding") != 0) {
+        return;
+    }
+    TSNode value = ts_node_child_by_field_name(node, TS_FIELD("expression"));
+    if (ts_node_is_null(value)) {
+        return;
+    }
+    if (strcmp(ts_node_type(value), "function_expression") == 0) {
+        return; /* already a Function */
+    }
+    if (cbm_nix_binding_is_attrset_scope(node)) {
+        return; /* a scope, not a value */
+    }
+    TSNode attrpath = ts_node_child_by_field_name(node, TS_FIELD("attrpath"));
+    TSNode leaf = cbm_nix_attrpath_last_attr(attrpath);
+    if (ts_node_is_null(leaf) || cbm_nix_attr_is_interpolated(leaf)) {
+        return;
+    }
+    char *name = cbm_node_text(a, leaf, ctx->source);
+    if (!name || !name[0]) {
+        return;
+    }
+    cbm_nix_strip_attr_quotes(name);
+    const char *scope = cbm_nix_attrpath_scope(a, attrpath, ctx->source);
+    const char *qn_name = scope ? cbm_arena_sprintf(a, "%s.%s", scope, name) : name;
+    push_var_def_qn(ctx, name, qn_name, node);
+}
+
+/* Mint every direct binding of one Nix binding container. */
+static void extract_nix_binding_set(CBMExtractCtx *ctx, TSNode set, const CBMLangSpec *spec) {
+    if (ts_node_is_null(set)) {
+        return;
+    }
+    uint32_t n = ts_node_named_child_count(set);
+    for (uint32_t i = 0; i < n; i++) {
+        TSNode child = ts_node_named_child(set, i);
+        if (strcmp(ts_node_type(child), "binding") == 0) {
+            extract_var_names(ctx, child, spec);
+        }
+    }
+}
+
+/* Walk past a Nix file's header lambda(s) to the container(s) holding its
+ * file-scope bindings, minting each. Handles the curried header (`final: prev:`)
+ * and both containers of a `let … in { … }` file: the let's own bindings are file
+ * scope in the same sense a C++ file-static is, and the returned attrset's are the
+ * exported surface. Anything deeper is nested and deliberately skipped. */
+static void extract_nix_module_vars(CBMExtractCtx *ctx, TSNode root, const CBMLangSpec *spec) {
+    TSNode cur = ts_node_named_child_count(root) > 0 ? ts_node_named_child(root, 0) : root;
+    /* Descend header lambdas: `{ pkgs, ... }: <body>`, `final: prev: <body>`. */
+    for (int hop = 0; hop < NIX_HEADER_HOP_MAX && !ts_node_is_null(cur) &&
+                      strcmp(ts_node_type(cur), "function_expression") == 0;
+         hop++) {
+        cur = ts_node_child_by_field_name(cur, TS_FIELD("body"));
+    }
+    if (ts_node_is_null(cur)) {
+        return;
+    }
+    if (strcmp(ts_node_type(cur), "let_expression") == 0) {
+        extract_nix_binding_set(ctx, cbm_find_child_by_kind(cur, "binding_set"), spec);
+        cur = ts_node_child_by_field_name(cur, TS_FIELD("body"));
+        if (ts_node_is_null(cur)) {
+            return;
+        }
+    }
+    const char *k = ts_node_type(cur);
+    if (strcmp(k, "attrset_expression") == 0 || strcmp(k, "rec_attrset_expression") == 0) {
+        extract_nix_binding_set(ctx, cbm_find_child_by_kind(cur, "binding_set"), spec);
+    }
+}
+
 static void extract_var_names(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec *spec) {
     (void)spec;
     CBMArena *a = ctx->arena;
     const char *kind = ts_node_type(node);
+    if (ctx->language == CBM_LANG_NIX) {
+        extract_vars_nix(ctx, node, a);
+        return;
+    }
 
     switch (ctx->language) {
     /* Mainstream + C-family + Rust */
@@ -5681,6 +5779,22 @@ static void extract_variables(CBMExtractCtx *ctx, TSNode root, const CBMLangSpec
     if (ctx->language == CBM_LANG_YAML || ctx->language == CBM_LANG_TOML ||
         ctx->language == CBM_LANG_INI || ctx->language == CBM_LANG_JSON) {
         walk_variables_iter(ctx, root, spec);
+        return;
+    }
+
+    /* Nix: the file's top level sits behind its header lambda(s), so the root's
+     * only child is a function_expression and the generic loop below would see
+     * nothing. Resolve past the header to the binding container(s) that actually
+     * constitute file scope, and mint only THEIR direct bindings.
+     *
+     * That bound is the point. Every Nix binding's parent is a binding_set at any
+     * depth, so admitting them all would mint a node per `enable = true` in a
+     * NixOS module's settings tree — the per-leaf flood the Helm values.yaml case
+     * above exists to avoid. C++ mints file-scope declarations and never locals;
+     * this is the same rule applied to a language whose file scope is behind a
+     * lambda. */
+    if (ctx->language == CBM_LANG_NIX) {
+        extract_nix_module_vars(ctx, root, spec);
         return;
     }
 
