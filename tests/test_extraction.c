@@ -53,6 +53,18 @@ static int __attribute__((unused)) has_import(CBMFileResult *r, const char *path
 }
 
 /* Count definitions with a given label. */
+/* Check for a definition with the given qualified name. Distinct from
+ * find_def_by_name, which returns the first match by NAME and so cannot tell two
+ * same-named definitions in different scopes apart — exactly the case that
+ * attrpath qualification exists to separate. */
+static int has_def_qn(CBMFileResult *r, const char *qn) {
+    for (int i = 0; i < r->defs.count; i++) {
+        if (r->defs.items[i].qualified_name && strcmp(r->defs.items[i].qualified_name, qn) == 0)
+            return 1;
+    }
+    return 0;
+}
+
 static int count_defs_with_label(CBMFileResult *r, const char *label) {
     int count = 0;
     for (int i = 0; i < r->defs.count; i++) {
@@ -1218,6 +1230,77 @@ TEST(nix_defs_survive_curried_header) {
     ASSERT_NOT_NULL(r);
     ASSERT_FALSE(r->has_error);
     ASSERT(has_def(r, "Function", "kappa"));
+    cbm_free_result(r);
+    PASS();
+}
+
+/* A Nix binding's name is a PATH, and the extractor previously took only its first
+ * segment. Convention here matches C++ namespaces — `ns::serialize` is name
+ * `serialize`, QN `proj.file.ns.serialize` — so a Nix binding is name = leaf
+ * segment, QN = enclosing scope + leaf. */
+TEST(nix_attrset_scope_disambiguates_leaf_names) {
+    CBMFileResult *r =
+        extract("{\n  setA = { dup = x: x + 1; };\n  setB = { dup = y: y + 2; };\n}\n",
+                CBM_LANG_NIX, "t", "collide.nix");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    /* Both survive. Unqualified, these shared one QN, so the second definition —
+     * and every CALLS edge sourced from it — was silently discarded at write. */
+    ASSERT(count_defs_with_label(r, "Function") == 2);
+    ASSERT(has_def_qn(r, "t.collide.setA.dup"));
+    ASSERT(has_def_qn(r, "t.collide.setB.dup"));
+    cbm_free_result(r);
+    PASS();
+}
+
+/* `a.b.fn = …` is sugar for `a = { b = { fn = …; }; }`. Both spellings must yield
+ * the same name and the same QN; the leading segments are scope, not name. */
+TEST(nix_dotted_attrpath_qualifies_like_nested) {
+    CBMFileResult *r = extract("{\n  wrap.deep.fn = z: z + 1;\n}\n", CBM_LANG_NIX, "t", "d.nix");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    ASSERT(has_def(r, "Function", "fn"));
+    ASSERT(has_def_qn(r, "t.d.wrap.deep.fn"));
+
+    CBMFileResult *n =
+        extract("{\n  wrap = { deep = { fn = z: z + 1; }; };\n}\n", CBM_LANG_NIX, "t", "d.nix");
+    ASSERT_NOT_NULL(n);
+    ASSERT_FALSE(n->has_error);
+    /* The equality that makes this a correctness fix rather than a preference. */
+    ASSERT(has_def_qn(n, "t.d.wrap.deep.fn"));
+    cbm_free_result(n);
+    cbm_free_result(r);
+    PASS();
+}
+
+/* A quoted segment is an ordinary name that merely needs quoting in source. The
+ * delimiters are not part of it, and leaving them in means every consumer keying
+ * on the name has to know to re-quote. */
+TEST(nix_quoted_attr_name_strips_quotes) {
+    CBMFileResult *r = extract("{\n  \"kebab-case\" = a: a;\n  svc.\"my.name\" = b: b;\n}\n",
+                               CBM_LANG_NIX, "t", "q.nix");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    ASSERT(has_def(r, "Function", "kebab-case"));
+    ASSERT_FALSE(has_def_any(r, "\"kebab-case\""));
+    ASSERT(has_def_qn(r, "t.q.kebab-case"));
+    /* A quoted segment may itself contain dots; they are part of the name, not
+     * path separators, but the QN is a dotted string either way. */
+    ASSERT(has_def(r, "Function", "my.name"));
+    cbm_free_result(r);
+    PASS();
+}
+
+/* `"${x}" = …` has no statically knowable name. Minting it produces a def named
+ * `"${x}"` that nothing can look up or resolve a call against, so mint nothing —
+ * the same call the Makefile dot-prefix guard makes. */
+TEST(nix_interpolated_attr_mints_no_def) {
+    CBMFileResult *r =
+        extract("{\n  \"${dynamic}\" = a: a;\n  fixed = b: b;\n}\n", CBM_LANG_NIX, "t", "i.nix");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    ASSERT(has_def(r, "Function", "fixed"));
+    ASSERT(count_defs_with_label(r, "Function") == 1);
     cbm_free_result(r);
     PASS();
 }
@@ -4986,6 +5069,10 @@ SUITE(extraction) {
     RUN_TEST(nix_defs_survive_function_header_let);
     RUN_TEST(nix_defs_survive_function_header_attrset);
     RUN_TEST(nix_defs_survive_curried_header);
+    RUN_TEST(nix_attrset_scope_disambiguates_leaf_names);
+    RUN_TEST(nix_dotted_attrpath_qualifies_like_nested);
+    RUN_TEST(nix_quoted_attr_name_strips_quotes);
+    RUN_TEST(nix_interpolated_attr_mints_no_def);
     RUN_TEST(nix_curried_lambda_mints_one_def);
     RUN_TEST(fortran_function);
 

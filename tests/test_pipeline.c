@@ -851,6 +851,61 @@ static bool cross_file_call_exists(cbm_store_t *s, const char *project, const ch
     return found;
 }
 
+/* Nix attrpath qualification, end to end. A call inside a scoped binding must
+ * source to the QUALIFIED definition.
+ *
+ * This has to be a pipeline test rather than an extraction one. Definition QNs
+ * (extract_defs.c) and call-scope QNs (extract_unified.c) are computed by two
+ * separate functions. If they disagree by even one segment, the CALLS edge names
+ * a source node that was never minted and is dropped at write — with no error,
+ * and with every extraction-level assertion still passing. Only the store sees it.
+ *
+ * Both callers below are scoped, one by an enclosing attrset and one by a dotted
+ * attrpath, so this covers both routes into the qualified name. */
+TEST(pipeline_nix_scoped_binding_calls_resolve) {
+    if (setup_test_repo() != 0) {
+        FAIL("failed to create temp dir");
+    }
+
+    char nix_path[512];
+    snprintf(nix_path, sizeof(nix_path), "%s/lib.nix", g_tmpdir);
+    FILE *nf = fopen(nix_path, "w");
+    if (!nf) {
+        teardown_test_repo();
+        FAIL("failed to write nix fixture");
+    }
+    fprintf(nf, "{ prelude }:\n"
+                "let\n"
+                "  nixTarget = t: t + 1;\n"
+                "in\n"
+                "{\n"
+                "  setA = { nixCaller = x: nixTarget x; };\n"
+                "  outer.inner.nixDeepCaller = y: nixTarget y;\n"
+                "}\n");
+    fclose(nf);
+
+    char nix_db[512];
+    snprintf(nix_db, sizeof(nix_db), "%s/test_nix_calls.db", g_tmpdir);
+
+    cbm_pipeline_t *np = cbm_pipeline_new(g_tmpdir, nix_db, CBM_MODE_FULL);
+    ASSERT_NOT_NULL(np);
+    ASSERT_EQ(cbm_pipeline_run(np), 0);
+
+    cbm_store_t *ns = cbm_store_open_path(nix_db);
+    ASSERT_NOT_NULL(ns);
+    const char *nix_project = cbm_pipeline_project_name(np);
+
+    /* Scoped by an enclosing attrset: the def QN is proj.lib.setA.nixCaller. */
+    ASSERT(cross_file_call_exists(ns, nix_project, "nixCaller", "nixTarget"));
+    /* Scoped by a dotted attrpath: proj.lib.outer.inner.nixDeepCaller. */
+    ASSERT(cross_file_call_exists(ns, nix_project, "nixDeepCaller", "nixTarget"));
+
+    cbm_store_close(ns);
+    cbm_pipeline_free(np);
+    teardown_test_repo();
+    PASS();
+}
+
 /* Regression: incremental re-index of an edited file must NOT drop inbound
  * cross-file CALLS edges whose source lives in an UNCHANGED file.
  *
@@ -7363,6 +7418,7 @@ SUITE(pipeline) {
     RUN_TEST(pipeline_complexity_transitive_loop_depth);
     /* Calls pass */
     RUN_TEST(pipeline_calls_resolution);
+    RUN_TEST(pipeline_nix_scoped_binding_calls_resolve);
     RUN_TEST(pipeline_incremental_preserves_cross_file_calls);
     RUN_TEST(pipeline_tsjs_receiver_suppresses_weak_method_edge);
     RUN_TEST(pipeline_tsjs_receiver_parallel_keeps_service_edges);
