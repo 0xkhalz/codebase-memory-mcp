@@ -201,7 +201,10 @@ jobs:
           # runner workspace is deliberately not a valid launcher bundle root.
           PROFILE_ROOT="$(cygpath -u "$USERPROFILE")"
           LAUNCH_DIR="$(mktemp -d "$PROFILE_ROOT/cbm-release-version.XXXXXX")"
-          trap 'rm -rf "$LAUNCH_DIR"' EXIT
+          # Best-effort cleanup with one retry: Windows holds the just-exited
+          # image's file busy for ~100ms (section teardown / first-touch AV),
+          # and a temp dir on an ephemeral runner must never fail the job.
+          trap 'rm -rf "$LAUNCH_DIR" 2>/dev/null || { sleep 2; rm -rf "$LAUNCH_DIR" 2>/dev/null || true; }' EXIT
           cp "$ARTIFACT_DIR/codebase-memory-mcp.exe" \
             "$ARTIFACT_DIR/codebase-memory-mcp.payload.exe" "$LAUNCH_DIR/"
           "$LAUNCH_DIR/codebase-memory-mcp.payload.exe" --version
@@ -231,7 +234,8 @@ jobs:
           scripts/security-strings.sh "$ARTIFACT_DIR/codebase-memory-mcp.payload.exe"
           PROFILE_ROOT="$(cygpath -u "$USERPROFILE")"
           SECURITY_DIR="$(mktemp -d "$PROFILE_ROOT/cbm-release-security.XXXXXX")"
-          trap 'rm -rf "$SECURITY_DIR"' EXIT
+          # Best-effort cleanup with one retry (see the version preflight).
+          trap 'rm -rf "$SECURITY_DIR" 2>/dev/null || { sleep 2; rm -rf "$SECURITY_DIR" 2>/dev/null || true; }' EXIT
           cp "$ARTIFACT_DIR/codebase-memory-mcp.exe" \
             "$ARTIFACT_DIR/codebase-memory-mcp.payload.exe" "$SECURITY_DIR/"
           TMPDIR="$SECURITY_DIR" \
