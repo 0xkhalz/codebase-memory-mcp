@@ -67,7 +67,14 @@ esac
 [ "$DURATION" -gt 0 ] || { echo "soak-legs: duration must be positive" >&2; exit 2; }
 # Windows builds produce <name>.exe; resolve it here so every venue passes the
 # same plain path and carries no per-platform binary-name logic of its own.
-if [ ! -x "$BINARY" ] && [ -x "${BINARY}.exe" ]; then
+# Resolve whenever the .exe EXISTS, not only when the plain name fails -x:
+# msys resolves the suffix-less name transparently (it IS -x), but soak-test
+# keys its native-Windows handling — cygpath'd CBM_CACHE_DIR, coproc stdio —
+# off the literal .exe suffix. A suffix-less native binary therefore received
+# a POSIX-form cache path, mis-rooting the daemon logs and silently disabling
+# diagnostics (both hosted-runner Windows soak legs; reproduced on the VM's
+# CLANG64 environment with a suffix-less invocation).
+if [[ "$BINARY" != *.exe ]] && [ -x "${BINARY}.exe" ]; then
     BINARY="${BINARY}.exe"
 fi
 [ -x "$BINARY" ] || { echo "soak-legs: binary '$BINARY' missing or not executable — build first" >&2; exit 2; }
