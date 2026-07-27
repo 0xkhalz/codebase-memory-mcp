@@ -3362,17 +3362,26 @@ echo "=== Phase 15: UI HTTP server ==="
 # port made the whole phase read as SKIP. The tiny TOCTOU window between
 # probe and bind is the residual risk, not the common case.
 UI_PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
-UI_INPUT=$(smoke_mktemp_file)
-"$BINARY" --port "$UI_PORT" < "$UI_INPUT" > /dev/null 2>&1 &
+# --ui=true is REQUIRED: the HTTP UI is a persisted, default-off setting, so
+# on any fresh profile (every CI runner, every smoke HOME) a bare --port
+# invocation can never serve — the probe then misread "UI disabled" as "no
+# embedded assets" on binaries that carry them (first exposed when the
+# ui-variant no-skip guard made Phase 15 mandatory). Stdin must be HELD OPEN:
+# the UI does not pin the process, so stdio EOF ends it cleanly (rc=0) before
+# the poll can see it serve — the drive-listing guard holds a pipe for the
+# same reason. Equals-form flags match that guard's proven invocation.
+sleep 300 | "$BINARY" --ui=true --port="$UI_PORT" > /dev/null 2>&1 &
 UI_PID=$!
 # Readiness poll instead of a fixed sleep: SKIP is legitimate ONLY when the
 # process exited (the documented no-embedded-assets case); a slow start on a
-# loaded runner must not masquerade as it.
+# loaded runner must not masquerade as it. The UI binds ~6s after launch even
+# on a fast host (measured against the release artifact), so the window
+# matches the drive-listing guard's 25s, not a 10s sprint.
 UI_READY=0
-for _ in $(seq 1 100); do
+for _ in $(seq 1 150); do
   if ! kill -0 "$UI_PID" 2>/dev/null; then break; fi
   if curl -sf "http://127.0.0.1:$UI_PORT/" -o /dev/null 2>/dev/null; then UI_READY=1; break; fi
-  sleep 0.1
+  sleep 0.2
 done
 
 if [ "$UI_READY" -eq 1 ] || kill -0 "$UI_PID" 2>/dev/null; then
@@ -3388,17 +3397,18 @@ if [ "$UI_READY" -eq 1 ] || kill -0 "$UI_PID" 2>/dev/null; then
     exit 1
   fi
 
-  # 15b: POST /rpc accepts JSON-RPC and returns JSON
-  RPC_BODY=$(curl -sf -X POST \
-    -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
-    "http://127.0.0.1:$UI_PORT/rpc" 2>/dev/null || echo "")
-  if echo "$RPC_BODY" | grep -q "jsonrpc"; then
-    echo "OK 15b: /rpc returns JSON-RPC response"
+  # 15b: the API surface answers — GET /api/ui-config is stateless and
+  # session-free, so it proves API reachability on any fresh profile. (The
+  # old probe POSTed an MCP initialize at /rpc, but the UI's /rpc speaks the
+  # UI's own narrow query protocol, not MCP — the probe asserted a request
+  # the endpoint never answered; protocol depth belongs to the UI guards.)
+  RPC_BODY=$(curl -sf "http://127.0.0.1:$UI_PORT/api/ui-config" 2>/dev/null || echo "")
+  if echo "$RPC_BODY" | grep -q "{"; then
+    echo "OK 15b: /api/ui-config returns JSON"
   elif [ -z "$RPC_BODY" ]; then
-    smoke_ui_missing "15b" "/rpc not reachable"
+    smoke_ui_missing "15b" "/api/ui-config not reachable"
   else
-    echo "FAIL 15b: /rpc did not return JSON-RPC"
+    echo "FAIL 15b: /api/ui-config did not return JSON"
     kill "$UI_PID" 2>/dev/null || true
     exit 1
   fi
@@ -3408,7 +3418,6 @@ if [ "$UI_READY" -eq 1 ] || kill -0 "$UI_PID" 2>/dev/null; then
 else
   smoke_ui_missing "Phase 15" "binary exited immediately (no UI assets embedded)"
 fi
-rm -f "$UI_INPUT"
 
 echo ""
 echo "=== Phase 16: stdio server leaves no orphan after shutdown ==="

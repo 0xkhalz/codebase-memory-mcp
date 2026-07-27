@@ -559,7 +559,13 @@ wait_for_daemon_stop() {
 wait_for_diagnostics_snapshot() {
     local after_count="${1:-0}"
     local previous_path="${2:-}"
-    local attempts=100
+    # 30s, not a 10s sprint: the first snapshot lands one diagnostics interval
+    # (5s) after start, and a cold 4-vCPU hosted runner mid-initial-index can
+    # push the first WRITE past 10s (observed: both Windows runner soak legs
+    # died right after 'server running' while the daemon's own log shows a
+    # perfectly healthy diagnostics.start — the VM's 18 cores never miss the
+    # window). Budget doctrine: the wait sits above the worst case.
+    local attempts=300
     while [ "$attempts" -gt 0 ]; do
         local current_count
         current_count=$(diagnostics_start_count)
