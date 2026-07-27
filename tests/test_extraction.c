@@ -1305,6 +1305,75 @@ TEST(nix_interpolated_attr_mints_no_def) {
     PASS();
 }
 
+/* Nix Variables. `nix_var_types` has always declared `binding`, but no Nix name
+ * resolver existed, so the count was unconditionally zero.
+ *
+ * Scope follows the rule every other language uses: extract_variables mints FILE
+ * scope and never locals — a C++ declaration inside a function body is not a
+ * Variable. For Nix, file scope is the `let` bindings and the returned attrset;
+ * anything in a deeper attrset is not. Without that bound a NixOS module's
+ * settings tree would mint a node per `enable = true`. */
+TEST(nix_module_level_bindings_mint_variables) {
+    CBMFileResult *r = extract("{ pkgs, lib, ... }:\n"
+                               "let\n"
+                               "  privateConst = 42;\n"
+                               "in\n"
+                               "{\n"
+                               "  exported = \"value\";\n"
+                               "  services.nginx.enable = true;\n"
+                               "}\n",
+                               CBM_LANG_NIX, "t", "mod.nix");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    /* A let binding is file scope in the same sense a C++ file-static is. */
+    ASSERT(has_def(r, "Variable", "privateConst"));
+    ASSERT(has_def(r, "Variable", "exported"));
+    /* The QN carries the attrpath, exactly as it does for functions. */
+    ASSERT(has_def(r, "Variable", "enable"));
+    ASSERT(has_def_qn(r, "t.mod.services.nginx.enable"));
+    cbm_free_result(r);
+    PASS();
+}
+
+/* The flood guard. Each absence assertion is paired with a positive one on the
+ * same predicate in the same result, so none can pass by extracting nothing. */
+TEST(nix_nested_bindings_are_not_module_level) {
+    CBMFileResult *r = extract("{ pkgs }:\n"
+                               "{\n"
+                               "  topLevel = 1;\n"
+                               "  deep = {\n"
+                               "    nested = {\n"
+                               "      shouldNotAppear = 2;\n"
+                               "    };\n"
+                               "  };\n"
+                               "}\n",
+                               CBM_LANG_NIX, "t", "deep.nix");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    ASSERT(has_def(r, "Variable", "topLevel")); /* positive control */
+    ASSERT_FALSE(has_def_any(r, "shouldNotAppear"));
+    /* `deep` is an attrset — a scope, not a value — so not a Variable either. */
+    ASSERT_FALSE(has_def(r, "Variable", "deep"));
+    ASSERT_FALSE(has_def(r, "Variable", "nested"));
+    cbm_free_result(r);
+    PASS();
+}
+
+/* A lambda-valued binding is already minted as a Function by the def walk. Minting
+ * it again here would double-count every helper in the ecosystem. */
+TEST(nix_lambda_binding_is_function_not_variable) {
+    CBMFileResult *r =
+        extract("{\n  fn = x: x + 1;\n  val = 7;\n}\n", CBM_LANG_NIX, "t", "mix.nix");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    ASSERT(has_def(r, "Function", "fn"));
+    ASSERT_FALSE(has_def(r, "Variable", "fn"));
+    ASSERT(has_def(r, "Variable", "val")); /* positive control */
+    ASSERT_FALSE(has_def(r, "Function", "val"));
+    cbm_free_result(r);
+    PASS();
+}
+
 /* Descending past the header must not mint a second def from a curried lambda's inner
  * arm: `iota = a: b: ...` is one named function, not two. The inner `b:` has a
  * function_expression parent, resolves no name, and must stay out. */
@@ -5073,6 +5142,9 @@ SUITE(extraction) {
     RUN_TEST(nix_dotted_attrpath_qualifies_like_nested);
     RUN_TEST(nix_quoted_attr_name_strips_quotes);
     RUN_TEST(nix_interpolated_attr_mints_no_def);
+    RUN_TEST(nix_module_level_bindings_mint_variables);
+    RUN_TEST(nix_nested_bindings_are_not_module_level);
+    RUN_TEST(nix_lambda_binding_is_function_not_variable);
     RUN_TEST(nix_curried_lambda_mints_one_def);
     RUN_TEST(fortran_function);
 
