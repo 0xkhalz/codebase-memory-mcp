@@ -191,12 +191,32 @@ archives = (
     "codebase-memory-mcp-windows-arm64.zip",
     "codebase-memory-mcp-ui-windows-arm64.zip",
 )
-for archive in archives:
-    archive_blocks = [block for block in build_blocks if archive in block]
-    require(bool(archive_blocks), f"_build.yml has no run block producing {archive}")
+# The five-file layout lives in the ONE canonical packaging entry; every venue
+# (release build and the local artifact-flow smoke lane) produces archives
+# through it, so the bundle layout is asserted where it is defined and cannot
+# fork per venue.
+package_release = read("scripts/package-release.sh")
+require(
+    all(name in package_release for name in windows_archive_names),
+    "package-release.sh must archive the exact official five-file Windows bundle",
+)
+for archive, call, ui in (
+    ("codebase-memory-mcp-windows-amd64.zip",
+     "scripts/package-release.sh windows amd64", False),
+    ("codebase-memory-mcp-ui-windows-amd64.zip",
+     "scripts/package-release.sh windows amd64 --variant ui", True),
+    ("codebase-memory-mcp-windows-arm64.zip",
+     "scripts/package-release.sh windows arm64", False),
+    ("codebase-memory-mcp-ui-windows-arm64.zip",
+     "scripts/package-release.sh windows arm64 --variant ui", True),
+):
+    # The packaging steps are single-line runs (invisible to yaml_run_blocks,
+    # which collects block scalars only), so associate archive -> call on the
+    # workflow text; the lookahead keeps a ui call from satisfying a std check.
+    pattern = re.escape(call) + ("" if ui else r"(?!\s+--variant)")
     require(
-        any(all(name in block for name in windows_archive_names) for block in archive_blocks),
-        f"{archive} must archive the exact official five-file Windows bundle",
+        re.search(pattern, build_workflow) is not None,
+        f"_build.yml must produce {archive} via the canonical packaging entry ('{call}')",
     )
 
 # install.ps1 must preserve the complete adjacent pair and enter the native
@@ -878,9 +898,18 @@ windows_match = re.search(
 )
 windows_smoke = windows_match.group(1) if windows_match else ""
 require(bool(windows_smoke), "_smoke.yml must contain the smoke-windows job")
+# The staging/execution behavior lives in the canonical wrapper now; the
+# workflow only provisions the artifact and calls it (venue-parity contract).
+vm_smoke = read("test-infrastructure/vm/vm-smoke.sh")
+smoke_local = read("scripts/smoke-local.sh")
 require(
-    'scripts/smoke-test.sh "$SMOKE_DIR/codebase-memory-mcp.exe"' in windows_smoke,
-    f"Windows release smoke must execute the canonical {launcher}",
+    'scripts/smoke-test.sh "$SMOKE_DIR/codebase-memory-mcp.exe"' in vm_smoke,
+    f"Windows smoke wrapper must execute the canonical {launcher}",
+)
+require(
+    "bash test-infrastructure/vm/vm-smoke.sh" in windows_smoke
+    and 'CBM_SMOKE_ARTIFACT_DIR="$(cygpath -u "$RUNNER_TEMP")/cbm-artifact"' in windows_smoke,
+    "Windows release smoke must call the canonical wrapper on the extracted artifact",
 )
 require(
     launcher in windows_smoke and payload in windows_smoke,
@@ -891,25 +920,19 @@ require(
     any("zip" in block and launcher in block and payload in block for block in smoke_blocks),
     "Windows artifact-server smoke archive must contain launcher and payload",
 )
-windows_release_smoke_blocks = [
-    re.sub(r"\s+", " ", re.sub(r"\\\s*\n\s*", " ", block)).strip()
-    for block in smoke_blocks
-    if 'scripts/smoke-test.sh "$SMOKE_DIR/codebase-memory-mcp.exe"' in block
-]
 require(
-    len(windows_release_smoke_blocks) == 1
-    and all(
-        needle in windows_release_smoke_blocks[0]
+    all(
+        needle in vm_smoke
         for needle in (
             'PROFILE_ROOT="$(cygpath -u "$USERPROFILE")"',
-            'SMOKE_DIR="$(mktemp -d "$PROFILE_ROOT/cbm-release-smoke.XXXXXX")"',
-            'cp codebase-memory-mcp.exe codebase-memory-mcp.payload.exe "$SMOKE_DIR/"',
-            'CBM_CACHE_DIR="$(cygpath -m "$SMOKE_DIR/cache")" '
-            'SMOKE_TEMP_ROOT="$SMOKE_DIR" '
-            'scripts/smoke-test.sh "$SMOKE_DIR/codebase-memory-mcp.exe"',
+            'SMOKE_DIR="$(mktemp -d "$PROFILE_ROOT/cbm-vm-smoke.XXXXXX")"',
+            'cp "$LAUNCHER_SRC" "$SMOKE_DIR/codebase-memory-mcp.exe"',
+            'cp "$PAYLOAD_SRC" "$SMOKE_DIR/codebase-memory-mcp.payload.exe"',
+            'CBM_CACHE_DIR="$(cygpath -m "$SMOKE_DIR/cache")"',
+            'SMOKE_TEMP_ROOT="$SMOKE_DIR"',
         )
     ),
-    "Windows release smoke must keep every launcher fixture beneath the current account profile",
+    "Windows smoke wrapper must keep every launcher fixture beneath the current account profile",
 )
 windows_release_version_blocks = [
     re.sub(r"\s+", " ", re.sub(r"\\\s*\n\s*", " ", block)).strip()
@@ -922,16 +945,31 @@ require(
         needle in windows_release_version_blocks[0]
         for needle in (
             'PROFILE_ROOT="$(cygpath -u "$USERPROFILE")"',
-            'cp codebase-memory-mcp.exe codebase-memory-mcp.payload.exe "$LAUNCH_DIR/"',
+            'cp "$ARTIFACT_DIR/codebase-memory-mcp.exe" "$ARTIFACT_DIR/codebase-memory-mcp.payload.exe" "$LAUNCH_DIR/"',
             '"$LAUNCH_DIR/codebase-memory-mcp.payload.exe" --version',
             '"$LAUNCH_DIR/codebase-memory-mcp.exe" --version',
         )
     ),
     "Windows release version checks must execute the pair beneath the current account profile",
 )
+# RUNNER_TEMP is legitimate ONLY for artifact provisioning/scanning; every
+# launcher fixture and execution must stay beneath the account profile.
+runner_temp_allowed = (
+    re.compile(r'ARTIFACT_DIR="\$\(cygpath -u "\$RUNNER_TEMP"\)/cbm-artifact"'),
+    re.compile(r'Join-Path \$env:RUNNER_TEMP "cbm-artifact"'),
+)
+runner_temp_lines = [
+    line.strip() for line in windows_smoke.splitlines() if "RUNNER_TEMP" in line
+]
 require(
-    "$RUNNER_TEMP" not in windows_smoke,
-    "Windows release smoke must not treat GitHub's shared RUNNER_TEMP ancestry as private",
+    bool(runner_temp_lines)
+    and all(
+        any(pattern.search(line) for pattern in runner_temp_allowed)
+        for line in runner_temp_lines
+    )
+    and 'mktemp -d "$RUNNER_TEMP' not in windows_smoke
+    and re.search(r'"\$RUNNER_TEMP[^"\n]*\.exe"', windows_smoke) is None,
+    "Windows release smoke may use RUNNER_TEMP only to provision/scan the artifact, never as a launcher root",
 )
 windows_release_security_blocks = [
     re.sub(r"\s+", " ", re.sub(r"\\\s*\n\s*", " ", block)).strip()
@@ -945,7 +983,7 @@ require(
         for needle in (
             'PROFILE_ROOT="$(cygpath -u "$USERPROFILE")"',
             'SECURITY_DIR="$(mktemp -d "$PROFILE_ROOT/cbm-release-security.XXXXXX")"',
-            'cp codebase-memory-mcp.exe codebase-memory-mcp.payload.exe "$SECURITY_DIR/"',
+            'cp "$ARTIFACT_DIR/codebase-memory-mcp.exe" "$ARTIFACT_DIR/codebase-memory-mcp.payload.exe" "$SECURITY_DIR/"',
             'TMPDIR="$SECURITY_DIR" '
             'scripts/security-install.sh "$SECURITY_DIR/codebase-memory-mcp.exe"',
         )
@@ -977,9 +1015,12 @@ require(
     "Phase 14 native update must use an explicit file:// fixture override",
 )
 require(
-    "'$env:TEMP=$args[0]; $env:TMP=$args[0]; & $args[1] $args[2]'" in smoke_script
-    and '"$WIN_HOME" "$WIN_SCRIPT" "--dir=$WIN_DIR"' in smoke_script,
-    "Windows install.ps1 smoke must set native TEMP/TMP inside PowerShell",
+    'HOME="$WIN_HOME" TEMP="$WIN_HOME" TMP="$WIN_HOME"' in smoke_script
+    and "MSYS2_ARG_CONV_EXCL='*'" in smoke_script
+    and "powershell.exe -NoProfile -ExecutionPolicy Bypass -File" in smoke_script
+    and '"$WIN_SCRIPT" "--dir=$WIN_DIR"' in smoke_script
+    and "& $args[1]" not in smoke_script,
+    "Windows install.ps1 smoke must pass native HOME/TEMP/TMP and execute the script directly",
 )
 require(
     'CBM_DOWNLOAD_URL="$SMOKE_DOWNLOAD_URL"' in smoke_script
@@ -987,11 +1028,30 @@ require(
     "installer and raw download smoke phases must retain loopback HTTP coverage",
 )
 require(
-    smoke_workflow.count("SMOKE_UPDATE_FIXTURE_DIR: /tmp/smoke-server") == 2,
-    "Unix and Windows release smoke must identify their local update fixture",
+    'SMOKE_UPDATE_FIXTURE_DIR="$FIXTURE_DIR"' in vm_smoke
+    and 'SMOKE_UPDATE_FIXTURE_DIR="$FIXTURE_DIR"' in smoke_local
+    and "scripts/smoke-local.sh" in smoke_workflow
+    and smoke_workflow.count("CBM_SMOKE_ARTIFACT_DIR") >= 2,
+    "Unix and Windows release smoke must identify their local update fixture via the canonical wrappers",
 )
 
 cli_source = read("src/cli/cli.c")
+probe_start = cli_source.find("cbm_json_mcp_probe_windows_command_path(")
+probe_end = cli_source.find("#endif", probe_start)
+safe_command_probe = (
+    cli_source[probe_start:probe_end]
+    if probe_start >= 0 and probe_end > probe_start
+    else ""
+)
+require(
+    "HANDLE *component_handles" in safe_command_probe
+    and "component_handle_count" in safe_command_probe
+    and "FILE_SHARE_WRITE" not in safe_command_probe
+    and "FILE_SHARE_DELETE" not in safe_command_probe
+    and "CloseHandle(component_handles[handle_index])" in safe_command_probe,
+    "Windows stale-command probing must retain validated ancestor handles and deny "
+    "write/delete sharing until the complete local path has been classified",
+)
 file_override_match = re.search(
     r"static bool cli_download_is_explicit_file_override\(.*?\n}\n",
     cli_source,
@@ -1028,9 +1088,10 @@ require(
     "native curl invocations must pin both initial and redirected protocols",
 )
 
-# PR smoke builds artifacts in-place rather than downloading a release archive.
-# It must therefore stage the build payload and permanent launcher under their
-# release names in a disposable directory, then exercise the canonical launcher.
+# PR smoke builds artifacts in-place, then delegates all release-name staging,
+# fixture packaging, and full launcher smoke semantics to the maintained native
+# Windows harness. Keeping those mechanics out of workflow YAML prevents the PR
+# and local-VM paths from silently drifting apart.
 pr_workflow = read(".github/workflows/pr.yml")
 pr_smoke_match = re.search(
     r"(?ms)^  pr-smoke:\s*(.*?)(?=^  [A-Za-z0-9_-]+:\s*$|\Z)",
@@ -1050,31 +1111,23 @@ require(
 if pr_windows_blocks:
     pr_windows_block = re.sub(r"\\\s*\n\s*", " ", pr_windows_blocks[0])
     pr_windows_block = re.sub(r"\s+", " ", pr_windows_block).strip()
-    staging_steps = (
-        'PROFILE_ROOT="$(cygpath -u "$USERPROFILE")"',
-        'SMOKE_DIR="$(mktemp -d "$PROFILE_ROOT/cbm-pr-smoke.XXXXXX")"',
-        'trap \'rm -rf "$SMOKE_DIR"\' EXIT',
-        'cp build/c/codebase-memory-mcp-launcher.exe '
-        '"$SMOKE_DIR/codebase-memory-mcp.exe"',
-        'cp build/c/codebase-memory-mcp.exe '
-        '"$SMOKE_DIR/codebase-memory-mcp.payload.exe"',
-        'CBM_CACHE_DIR="$(cygpath -m "$SMOKE_DIR/cache")" '
-        'SMOKE_TEMP_ROOT="$SMOKE_DIR" '
-        'scripts/smoke-test.sh "$SMOKE_DIR/codebase-memory-mcp.exe"',
-    )
-    positions = [pr_windows_block.find(step) for step in staging_steps]
     require(
-        all(position >= 0 for position in positions),
-        "Windows PR smoke must stage launcher and payload under release names "
-        "beneath the current account profile and invoke the canonical launcher",
+        "SMOKE_ARCH=amd64 bash test-infrastructure/vm/vm-smoke.sh"
+        in pr_windows_block,
+        "Windows PR smoke must invoke the maintained native harness with the "
+        "authoritative amd64 artifact architecture",
     )
     require(
-        all(left < right for left, right in zip(positions, positions[1:])),
-        "Windows PR smoke must create the temporary bundle before invoking it",
+        pr_windows_block.find("scripts/build.sh CC=clang CXX=clang++")
+        < pr_windows_block.find(
+            "SMOKE_ARCH=amd64 bash test-infrastructure/vm/vm-smoke.sh"
+        ),
+        "Windows PR smoke must build before invoking the maintained harness",
     )
     require(
-        pr_windows_block.count("scripts/smoke-test.sh") == 1,
-        "Windows PR smoke must invoke smoke-test exactly once through the launcher",
+        "scripts/smoke-test.sh" not in pr_windows_block
+        and "codebase-memory-mcp.payload.exe" not in pr_windows_block,
+        "Windows PR workflow must not duplicate vm-smoke staging or smoke-test logic",
     )
     require(
         "$RUNNER_TEMP" not in pr_windows_block,

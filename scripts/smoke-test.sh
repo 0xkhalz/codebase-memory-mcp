@@ -11,10 +11,32 @@ set -euo pipefail
 # The explicit optional mode runs only version + agent config install/uninstall
 # checks (useful when validating installer-only changes).
 
-BINARY="${1:?usage: smoke-test.sh <binary-path> [--agent-config-only]}"
+case "${1:-}" in
+-h|--help)
+  cat <<'HELPEOF'
+Usage: scripts/smoke-test.sh <binary-path> [--agent-config-only]
+
+INTERNAL harness — do not call directly in a venue. The canonical entries are
+scripts/smoke-local.sh (unix) and test-infrastructure/vm/vm-smoke.sh (Windows):
+they stage the release fixture, start the fixture server, and sandbox
+HOME/TEMP/agent-config destinations. Called bare, the download/checksum/
+install-script phases (12-13) SKIP for lack of a fixture server, and the run
+mutates the REAL profile — the venue-parity contract forbids that in any venue.
+
+Arguments:
+  <binary-path>         product binary to smoke
+  --agent-config-only   only version + agent-config install/uninstall phases
+
+Environment (set by the wrappers): SMOKE_DOWNLOAD_URL, SMOKE_UPDATE_FIXTURE_DIR,
+SMOKE_TEMP_ROOT, SMOKE_ARCH, SMOKE_REQUIRE_UI (ui variant: Phase 15 skip => FAIL).
+HELPEOF
+  exit 0
+  ;;
+esac
+BINARY="${1:?smoke-test: missing <binary-path>. Please consult --help.}"
 SMOKE_MODE="${2:-}"
 if [ -n "$SMOKE_MODE" ] && [ "$SMOKE_MODE" != "--agent-config-only" ]; then
-  echo "usage: smoke-test.sh <binary-path> [--agent-config-only]" >&2
+  echo "smoke-test: unknown argument '$SMOKE_MODE'. Please consult --help." >&2
   exit 2
 fi
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
@@ -546,7 +568,11 @@ fi
 if echo "$IM_ARR" | grep -qE '^semantic: [0-9]+'; then
   echo "OK B3: ARRAY flag (repeated --semantic-query) → semantic TOON table"
 else
-  echo "FAIL B3: repeated --semantic-query did not produce a semantic table"; echo "$IM_ARR" | head -c 300; exit 1
+  echo "FAIL B3: repeated --semantic-query did not produce a semantic table"; echo "$IM_ARR" | head -c 300
+  # Byte-exact post-mortem: an invisible control/invalid-UTF8 byte anywhere in
+  # the output makes BSD grep treat ALL of it as unmatchable binary, and the
+  # rendered log cannot show which byte — od can.
+  echo; echo "-- B3 first bytes (od) --"; echo "$IM_ARR" | od -c | head -6; exit 1
 fi
 
 # B4: STDIN — piped JSON resolves; this path must NOT emit a deprecation warning.
@@ -841,6 +867,26 @@ if ! echo "$INSTALL_OUT" | grep -qi 'dry-run'; then
   exit 1
 fi
 echo "OK: install --dry-run completed"
+
+# The Windows smoke redirects PATH writes to a pre-created GUID leaf. A
+# malformed seam must fail closed instead of silently falling back to the live
+# HKCU\Environment\Path.
+if [[ "$BINARY" == *.exe ]] &&
+   [ -n "${CBM_TEST_WINDOWS_USER_PATH_RUN_ID:-}" ]; then
+  if INVALID_PATH_OUT=$(
+    CBM_TEST_WINDOWS_USER_PATH_RUN_ID=invalid \
+      run_dryrun_env "$BINARY" install --dry-run -y 2>&1
+  ); then
+    echo "FAIL: invalid Windows PATH smoke seam fell back to the live registry"
+    exit 1
+  fi
+  if ! echo "$INVALID_PATH_OUT" | grep -qi 'PATH configuration failed'; then
+    echo "FAIL: invalid Windows PATH smoke seam did not fail at PATH configuration"
+    echo "$INVALID_PATH_OUT"
+    exit 1
+  fi
+  echo "OK: invalid Windows PATH smoke seam fails closed"
+fi
 
 # 6b: uninstall --dry-run -y
 echo "--- Phase 6b: uninstall --dry-run ---"
@@ -2871,8 +2917,13 @@ if [ -n "${SMOKE_DOWNLOAD_URL:-}" ]; then
   else
     cp "$BINARY" "$UPDATE_HOME/.local/bin/codebase-memory-mcp"
     chmod 755 "$UPDATE_HOME/.local/bin/codebase-memory-mcp"
+    mkdir -p "$UPDATE_HOME/retired-install"
+    cp "$BINARY" "$UPDATE_HOME/retired-install/codebase-memory-mcp"
+    chmod 755 "$UPDATE_HOME/retired-install/codebase-memory-mcp"
     if [ "$(uname -s)" = "Darwin" ]; then
       codesign --sign - --force "$UPDATE_HOME/.local/bin/codebase-memory-mcp" 2>/dev/null || true
+      codesign --sign - --force "$UPDATE_HOME/retired-install/codebase-memory-mcp" \
+        2>/dev/null || true
     fi
   fi
 
@@ -2888,14 +2939,30 @@ if [ -n "${SMOKE_DOWNLOAD_URL:-}" ]; then
       echo "FAIL 14a: managed Windows launcher missing after install"
       exit 1
     fi
+  else
+    RETIRED_DIR=$(cd "$UPDATE_HOME/retired-install" && pwd -P)
+    UPDATE_DRIVER="$RETIRED_DIR/codebase-memory-mcp"
   fi
 
-  # Pre-install agent config with a WRONG binary path (simulates stale config)
-  echo '{"mcpServers":{"codebase-memory-mcp":{"command":"/old/stale/path"}}}' > "$UPDATE_HOME/.claude.json"
+  # Pre-install agent config with positive prior-install identity. POSIX runs
+  # update from that exact retired CBM image, so refresh requires only string
+  # equality with OS-reported self identity and never probes config paths.
+  # Windows retains its fixed-drive missing-path classification coverage.
+  if [[ "$BINARY" == *.exe ]]; then
+    STALE_CMD="$UPDATE_HOME/retired-install/codebase-memory-mcp.exe"
+  else
+    STALE_CMD="$UPDATE_DRIVER"
+  fi
+  if command -v cygpath &>/dev/null; then
+    STALE_CMD=$(cygpath -m "$STALE_CMD")
+  fi
+  STALE_CMD="$STALE_CMD" python3 -c \
+    'import json, os; print(json.dumps({"mcpServers":{"codebase-memory-mcp":{"command":os.environ["STALE_CMD"]}}}))' \
+    > "$UPDATE_HOME/.claude.json"
 
   # 14a: Run actual update command (detect variant from available archive)
   UPDATE_VARIANT="--standard"
-  if curl -sf "$SMOKE_DOWNLOAD_URL/" 2>/dev/null | grep -q "ui-"; then
+  if curl --noproxy '*' -sf "$SMOKE_DOWNLOAD_URL/" 2>/dev/null | grep -q "ui-"; then
     UPDATE_VARIANT="--ui"
   fi
   HOME="$UPDATE_HOME" CBM_DOWNLOAD_URL="$UPDATE_DOWNLOAD_URL" \
@@ -2920,17 +2987,19 @@ if [ -n "${SMOKE_DOWNLOAD_URL:-}" ]; then
   fi
   echo "OK 14b: updated binary runs"
 
-  # 14c: Verify agent config was refreshed (stale path replaced)
+  # 14c: Verify agent config was refreshed to the exact installed binary.
   UPD_CMD=$(cat "$UPDATE_HOME/.claude.json" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('mcpServers',{}).get('codebase-memory-mcp',{}).get('command',''))" 2>/dev/null || echo "")
-  if [ "$UPD_CMD" = "/old/stale/path" ]; then
-    echo "FAIL 14c: agent config still has stale path after update"
+  EXPECTED_UPD_CMD="$UPD_BIN"
+  if command -v cygpath &>/dev/null; then
+    EXPECTED_UPD_CMD=$(cygpath -w "$UPD_BIN")
+  fi
+  if [ "$UPD_CMD" != "$EXPECTED_UPD_CMD" ]; then
+    echo "FAIL 14c: agent config does not point at the updated binary"
+    echo "  expected: $EXPECTED_UPD_CMD"
+    echo "  actual:   ${UPD_CMD:-<missing>}"
     exit 1
   fi
-  if [ -n "$UPD_CMD" ]; then
-    echo "OK 14c: agent config refreshed (path=$UPD_CMD)"
-  else
-    echo "OK 14c: agent config refreshed (no stale path)"
-  fi
+  echo "OK 14c: agent config refreshed (path=$UPD_CMD)"
 
   # ── 14d-f: Real uninstall with binary removal ──
   # First verify binary + configs exist
@@ -3038,14 +3107,15 @@ echo "--- Phase 12a: curl download ---"
 # var present on some runners (notably windows-11-arm) made curl fail to reach
 # 127.0.0.1 while the app's own downloader (WinHTTP) bypassed it. On failure,
 # surface curl's stderr instead of swallowing it so the reason is visible.
-if ! curl -fSL --noproxy '*' -o "$DL_DIR/$DL_ARCHIVE" "$SMOKE_DOWNLOAD_URL/$DL_ARCHIVE" 2>/tmp/cbm-curl12a.err; then
+CURL12_ERR="$DL_DIR/curl12a.err"
+if ! curl -fSL --noproxy '*' -o "$DL_DIR/$DL_ARCHIVE" "$SMOKE_DOWNLOAD_URL/$DL_ARCHIVE" 2>"$CURL12_ERR"; then
   # Try UI variant
-  if curl -fSL --noproxy '*' -o "$DL_DIR/$DL_ARCHIVE_UI" "$SMOKE_DOWNLOAD_URL/$DL_ARCHIVE_UI" 2>>/tmp/cbm-curl12a.err; then
+  if curl -fSL --noproxy '*' -o "$DL_DIR/$DL_ARCHIVE_UI" "$SMOKE_DOWNLOAD_URL/$DL_ARCHIVE_UI" 2>>"$CURL12_ERR"; then
     DL_ARCHIVE="$DL_ARCHIVE_UI"
   else
     echo "FAIL 12a: curl download failed (tried standard and ui variants)"
     echo "--- curl stderr (url: $SMOKE_DOWNLOAD_URL/$DL_ARCHIVE) ---"
-    cat /tmp/cbm-curl12a.err 2>/dev/null || true
+    cat "$CURL12_ERR" 2>/dev/null || true
     exit 1
   fi
 fi
@@ -3057,7 +3127,8 @@ echo "OK 12a: archive downloaded ($(wc -c < "$DL_DIR/$DL_ARCHIVE") bytes)"
 
 # 12b: checksum download
 echo "--- Phase 12b: checksum verification ---"
-if ! curl -fsSL -o "$DL_DIR/checksums.txt" "$SMOKE_DOWNLOAD_URL/checksums.txt"; then
+if ! curl --noproxy '*' -fsSL -o "$DL_DIR/checksums.txt" \
+  "$SMOKE_DOWNLOAD_URL/checksums.txt"; then
   echo "FAIL 12b: checksums.txt download failed"
   exit 1
 fi
@@ -3226,10 +3297,16 @@ elif [ -f "$REPO_ROOT/install.ps1" ] && command -v powershell.exe &>/dev/null; t
   # 13f: run install.ps1
   # Pass the known-correct arch: powershell runs under x64 emulation on ARM64, so
   # install.ps1's own detection can't tell it's arm64. DL_ARCH is authoritative here.
-  HOME="$PS1_TEST_HOME" CBM_DOWNLOAD_URL="$WIN_URL" CBM_ARCH="$DL_ARCH" \
-    powershell.exe -NoProfile -ExecutionPolicy ByPass -Command \
-      '$env:TEMP=$args[0]; $env:TMP=$args[0]; & $args[1] $args[2]' \
-      "$WIN_HOME" "$WIN_SCRIPT" "--dir=$WIN_DIR" 2>&1 || true
+  # Every path is already in native Windows form. Disable MSYS argv rewriting
+  # and invoke the script directly: powershell.exe -Command appends native argv
+  # to the command text instead of reliably exposing it through $args.
+  if ! HOME="$WIN_HOME" TEMP="$WIN_HOME" TMP="$WIN_HOME" \
+    CBM_DOWNLOAD_URL="$WIN_URL" CBM_ARCH="$DL_ARCH" MSYS2_ARG_CONV_EXCL='*' \
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File \
+      "$WIN_SCRIPT" "--dir=$WIN_DIR" 2>&1; then
+    echo "FAIL 13f: install.ps1 execution failed"
+    exit 1
+  fi
 
   # 13g: binary placed
   PS1_BIN="$PS1_TEST_DIR/codebase-memory-mcp.exe"
@@ -3263,6 +3340,21 @@ fi
 
 # ── Phase 15: UI HTTP server reachability ──
 # Only runs if the binary was built with embedded UI assets.
+#
+# SMOKE_REQUIRE_UI=1 (set by the wrappers for a -ui variant) makes the
+# no-assets outcome a FAILURE instead of a SKIP: a ui run that smoked a
+# standard binary under a ui name would otherwise pass green, and a skip that
+# cannot fail is not a gate.
+SMOKE_REQUIRE_UI="${SMOKE_REQUIRE_UI:-0}"
+smoke_ui_missing() {
+  if [ "$SMOKE_REQUIRE_UI" = "1" ]; then
+    echo "FAIL $1: SMOKE_REQUIRE_UI=1 but this binary serves no embedded UI assets"
+    kill "$UI_PID" 2>/dev/null || true
+    exit 1
+  fi
+  echo "SKIP $1: $2"
+}
+
 echo ""
 echo "=== Phase 15: UI HTTP server ==="
 
@@ -3270,17 +3362,26 @@ echo "=== Phase 15: UI HTTP server ==="
 # port made the whole phase read as SKIP. The tiny TOCTOU window between
 # probe and bind is the residual risk, not the common case.
 UI_PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
-UI_INPUT=$(smoke_mktemp_file)
-"$BINARY" --port "$UI_PORT" < "$UI_INPUT" > /dev/null 2>&1 &
+# --ui=true is REQUIRED: the HTTP UI is a persisted, default-off setting, so
+# on any fresh profile (every CI runner, every smoke HOME) a bare --port
+# invocation can never serve — the probe then misread "UI disabled" as "no
+# embedded assets" on binaries that carry them (first exposed when the
+# ui-variant no-skip guard made Phase 15 mandatory). Stdin must be HELD OPEN:
+# the UI does not pin the process, so stdio EOF ends it cleanly (rc=0) before
+# the poll can see it serve — the drive-listing guard holds a pipe for the
+# same reason. Equals-form flags match that guard's proven invocation.
+sleep 300 | "$BINARY" --ui=true --port="$UI_PORT" > /dev/null 2>&1 &
 UI_PID=$!
 # Readiness poll instead of a fixed sleep: SKIP is legitimate ONLY when the
 # process exited (the documented no-embedded-assets case); a slow start on a
-# loaded runner must not masquerade as it.
+# loaded runner must not masquerade as it. The UI binds ~6s after launch even
+# on a fast host (measured against the release artifact), so the window
+# matches the drive-listing guard's 25s, not a 10s sprint.
 UI_READY=0
-for _ in $(seq 1 100); do
+for _ in $(seq 1 150); do
   if ! kill -0 "$UI_PID" 2>/dev/null; then break; fi
   if curl -sf "http://127.0.0.1:$UI_PORT/" -o /dev/null 2>/dev/null; then UI_READY=1; break; fi
-  sleep 0.1
+  sleep 0.2
 done
 
 if [ "$UI_READY" -eq 1 ] || kill -0 "$UI_PID" 2>/dev/null; then
@@ -3289,24 +3390,25 @@ if [ "$UI_READY" -eq 1 ] || kill -0 "$UI_PID" 2>/dev/null; then
   if echo "$UI_BODY" | grep -qi "<html"; then
     echo "OK 15a: UI serves HTML at /"
   elif [ -z "$UI_BODY" ]; then
-    echo "SKIP 15a: UI not reachable (binary may not have embedded assets)"
+    smoke_ui_missing "15a" "UI not reachable (binary may not have embedded assets)"
   else
     echo "FAIL 15a: UI root did not return HTML"
     kill "$UI_PID" 2>/dev/null || true
     exit 1
   fi
 
-  # 15b: POST /rpc accepts JSON-RPC and returns JSON
-  RPC_BODY=$(curl -sf -X POST \
-    -H "Content-Type: application/json" \
-    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
-    "http://127.0.0.1:$UI_PORT/rpc" 2>/dev/null || echo "")
-  if echo "$RPC_BODY" | grep -q "jsonrpc"; then
-    echo "OK 15b: /rpc returns JSON-RPC response"
+  # 15b: the API surface answers — GET /api/ui-config is stateless and
+  # session-free, so it proves API reachability on any fresh profile. (The
+  # old probe POSTed an MCP initialize at /rpc, but the UI's /rpc speaks the
+  # UI's own narrow query protocol, not MCP — the probe asserted a request
+  # the endpoint never answered; protocol depth belongs to the UI guards.)
+  RPC_BODY=$(curl -sf "http://127.0.0.1:$UI_PORT/api/ui-config" 2>/dev/null || echo "")
+  if echo "$RPC_BODY" | grep -q "{"; then
+    echo "OK 15b: /api/ui-config returns JSON"
   elif [ -z "$RPC_BODY" ]; then
-    echo "SKIP 15b: /rpc not reachable"
+    smoke_ui_missing "15b" "/api/ui-config not reachable"
   else
-    echo "FAIL 15b: /rpc did not return JSON-RPC"
+    echo "FAIL 15b: /api/ui-config did not return JSON"
     kill "$UI_PID" 2>/dev/null || true
     exit 1
   fi
@@ -3314,9 +3416,8 @@ if [ "$UI_READY" -eq 1 ] || kill -0 "$UI_PID" 2>/dev/null; then
   kill "$UI_PID" 2>/dev/null || true
   wait "$UI_PID" 2>/dev/null || true
 else
-  echo "SKIP Phase 15: binary exited immediately (no UI assets embedded)"
+  smoke_ui_missing "Phase 15" "binary exited immediately (no UI assets embedded)"
 fi
-rm -f "$UI_INPUT"
 
 echo ""
 echo "=== Phase 16: stdio server leaves no orphan after shutdown ==="

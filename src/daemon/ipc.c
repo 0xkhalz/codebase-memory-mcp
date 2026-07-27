@@ -92,14 +92,21 @@ static char *string_format(const char *format, ...) {
     return result;
 }
 
+#ifndef _WIN32
 static cbm_daemon_ipc_posix_publication_hook_fn g_posix_publication_hook_for_test;
 static void *g_posix_publication_hook_context_for_test;
+#endif
 static atomic_uint g_windows_legacy_guard_release_failures_for_test;
 
 void cbm_daemon_ipc_posix_publication_hook_set_for_test(
     cbm_daemon_ipc_posix_publication_hook_fn hook, void *context) {
+#ifndef _WIN32
     g_posix_publication_hook_context_for_test = context;
     g_posix_publication_hook_for_test = hook;
+#else
+    (void)hook;
+    (void)context;
+#endif
 }
 
 void cbm_daemon_ipc_windows_legacy_guard_release_failures_set_for_test(unsigned int count) {
