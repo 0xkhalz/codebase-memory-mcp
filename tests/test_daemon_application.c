@@ -1471,6 +1471,10 @@ static bool app_wait_for_terminal_job_with_subscribers(cbm_daemon_application_t 
             cbm_daemon_application_job_subscribers(application, project) >= minimum_subscribers) {
             return true;
         }
+        /* Yield like every sibling wait helper: a sleepless spin pins a core
+         * and can starve the daemon threads it polls on scarce-CPU runners
+         * (windows-11-arm release leg, run 30305464193). */
+        cbm_usleep(1000);
     }
     return false;
 }
