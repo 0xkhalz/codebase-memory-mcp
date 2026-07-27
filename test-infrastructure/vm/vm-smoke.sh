@@ -186,7 +186,13 @@ READY=0
 for _ in $(seq 1 100); do
     if [ -s "$PORT_FILE" ]; then
         PORT=$(tr -d '[:space:]' < "$PORT_FILE")
-        if curl --noproxy '*' -fsS \
+        # Header-only readiness: a HEAD proves the server routes the artifact
+        # without transferring the archive body on every poll (hosted Windows
+        # runners reset mid-body full-GET polls — WinError 10054 on the server,
+        # 99 aborted transfers per job — while the same stack passes on the VM;
+        # the real download phases still exercise full transfers and report
+        # phase-precise if body transport is broken).
+        if curl --noproxy '*' -fsSI \
             "http://127.0.0.1:$PORT/$EXPECTED_ARTIFACT" >/dev/null 2>&1; then
             READY=1
             break

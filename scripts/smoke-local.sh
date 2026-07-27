@@ -161,7 +161,9 @@ READY=0
 for _ in $(seq 1 100); do
     if [ -s "$PORT_FILE" ]; then
         PORT=$(tr -d '[:space:]' < "$PORT_FILE")
-        if curl --noproxy '*' -fsS \
+        # Header-only readiness (see vm-smoke.sh): proves routing without a
+        # full body transfer per poll; the download phases own body transport.
+        if curl --noproxy '*' -fsSI \
             "http://127.0.0.1:$PORT/$EXPECTED_ARTIFACT" >/dev/null 2>&1; then
             READY=1
             break
