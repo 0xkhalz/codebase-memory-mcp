@@ -381,7 +381,13 @@ if helper.is_file():
                 deadline = time.monotonic() + 30
                 while time.monotonic() < deadline:
                     if port_file.is_file():
-                        text = port_file.read_text(encoding="ascii").strip()
+                        try:
+                            text = port_file.read_text(encoding="ascii").strip()
+                        except OSError:
+                            # Windows: the atomic replace publishing the port
+                            # (or a first-touch AV scan of the fresh file)
+                            # briefly denies the read — not ready yet.
+                            text = ""
                         if text:
                             port = int(text)
                             break
@@ -474,7 +480,12 @@ if helper.is_file():
             dns_deadline = time.monotonic() + 20
             while time.monotonic() < dns_deadline:
                 if dns_port_file.is_file():
-                    dns_text = dns_port_file.read_text(encoding="ascii").strip()
+                    try:
+                        dns_text = dns_port_file.read_text(encoding="ascii").strip()
+                    except OSError:
+                        # Windows: replace-in-flight / first-touch AV scan —
+                        # not ready yet (see the port poll above).
+                        dns_text = ""
                     if dns_text:
                         dns_port = int(dns_text)
                         break
