@@ -164,6 +164,19 @@ for archive, call, ui in (
 # "<dest>.retired-<timestamp>", then installs over the freed name. Without the
 # retire step every Windows update fails on a locked destination.
 installer = read("install.ps1")
+# Windows PowerShell 5.1 decodes a BOM-less .ps1 as ANSI, so a UTF-8 em-dash
+# arrives as three cp1252 characters ending in a double quote. Inside a string
+# literal that quote closes it early and the whole script dies with a cascade of
+# parse errors before its first statement runs. A BOM would fix the file on disk
+# but corrupt the documented `irm ... | iex` path, which pipes the bytes
+# straight into the parser -- so the shipped installer stays pure ASCII.
+non_ascii = sorted({ch for ch in installer if ord(ch) > 0x7F})
+require(
+    not non_ascii,
+    "install.ps1 must be pure ASCII (found: "
+    + ", ".join(f"U+{ord(ch):04X}" for ch in non_ascii)
+    + ")",
+)
 require(
     "$Dest = Join-Path $InstallDir $BinName" in installer,
     "install.ps1 must resolve the canonical install destination as $Dest",

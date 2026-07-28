@@ -57,6 +57,17 @@ smoke_mktemp_dir() {
   fi
 }
 
+# Byte-identity of two files. `cmp` is NOT present in the Windows MSYS shell, so
+# a comparison built on it reports "different" for every pair it is handed —
+# including two copies of the same file.
+smoke_file_sha256() {
+  if command -v sha256sum &>/dev/null; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
 # Every platform ships ONE binary, Windows included: a fixture copy is complete
 # with nothing beside it.
 copy_smoke_binary() {
@@ -876,36 +887,34 @@ if [[ "$BINARY" == *.exe ]] &&
 fi
 
 # 6b: uninstall --dry-run -y
+# Windows used to refuse this: a portable extracted bundle was a DIFFERENT
+# artifact from the launcher-managed install it would have torn down, so it had
+# to decline and point at the managed copy. One binary per platform removes that
+# split entirely — the extracted binary IS the installed one — so uninstall now
+# plans the same removals it does on Linux and macOS.
 echo "--- Phase 6b: uninstall --dry-run ---"
-if [[ "$BINARY" == *.exe ]]; then
-  if UNINSTALL_OUT=$(run_dryrun_env "$BINARY" uninstall --dry-run -y 2>&1); then
-    echo "FAIL: portable Windows bundle accepted uninstall"
-    exit 1
-  fi
-  if ! echo "$UNINSTALL_OUT" | grep -qi 'managed\|install\|package'; then
-    echo "FAIL: portable Windows uninstall refusal had no install guidance"
-    echo "$UNINSTALL_OUT"
-    exit 1
-  fi
-else
-  UNINSTALL_OUT=$(run_dryrun_env "$BINARY" uninstall --dry-run -y 2>&1)
-  if ! echo "$UNINSTALL_OUT" | grep -qi 'uninstall\|remov'; then
-    echo "FAIL: uninstall --dry-run produced unexpected output"
-    echo "$UNINSTALL_OUT"
-    exit 1
-  fi
+UNINSTALL_OUT=$(run_dryrun_env "$BINARY" uninstall --dry-run -y 2>&1)
+if ! echo "$UNINSTALL_OUT" | grep -qi 'uninstall\|remov'; then
+  echo "FAIL: uninstall --dry-run produced unexpected output"
+  echo "$UNINSTALL_OUT"
+  exit 1
 fi
 echo "OK: uninstall --dry-run completed"
 
 # 6c: update --dry-run --standard -y
 echo "--- Phase 6c: update --dry-run ---"
 if [[ "$BINARY" == *.exe ]]; then
-  if UPDATE_OUT=$(run_dryrun_env "$BINARY" update --dry-run --standard -y 2>&1); then
-    echo "FAIL: portable Windows bundle accepted update"
+  # Same contract Phase 14a asserts against a real update: Windows never
+  # replaces the running image in-process, so `update` is a handoff — it exits 0
+  # and prints the exact install.ps1 command. The old refusal here was the
+  # portable-vs-managed split, which died with the launcher stub.
+  if ! UPDATE_OUT=$(run_dryrun_env "$BINARY" update --dry-run --standard -y 2>&1); then
+    echo "FAIL: Windows update handoff exited non-zero"
+    echo "$UPDATE_OUT"
     exit 1
   fi
-  if ! echo "$UPDATE_OUT" | grep -qi 'managed\|install\|package'; then
-    echo "FAIL: portable Windows update refusal had no install guidance"
+  if ! echo "$UPDATE_OUT" | grep -q 'install.ps1'; then
+    echo "FAIL: Windows update did not print the install.ps1 handoff"
     echo "$UPDATE_OUT"
     exit 1
   fi
@@ -1102,10 +1111,10 @@ ROVO_AGENT="$FAKE_HOME/.rovodev/subagents/codebase-memory.md"
 AMAZON_Q_MCP="$FAKE_HOME/.aws/amazonq/default.json"
 mkdir -p "$GITLAB_DIR" "$(dirname "$GITLAB_HOOKS")" "$DEVIN_DIR"
 mkdir -p "$FAKE_HOME/.local/bin"
-# A Windows portable pair is the installer source, not a valid managed target.
-# Leave the canonical destination absent so install can publish the authenticated
-# generation backing + canonical hard-link pair. A one-link copy at that path is
-# deliberately rejected as an unknown/conflicting installation.
+# POSIX seeds the destination so install exercises the replace-an-existing-copy
+# path. Windows leaves it absent and covers the first-install path instead:
+# seeding it would mean running the fixture binary out of the very location the
+# install is about to publish to, which Windows' image lock forbids.
 if [[ "$BINARY" == *.exe ]]; then
   SELF_PATH="$FAKE_HOME/.local/bin/codebase-memory-mcp.exe"
 else
@@ -2934,9 +2943,15 @@ if [ -n "${SMOKE_DOWNLOAD_URL:-}" ]; then
   # Pre-install agent config with positive prior-install identity. POSIX runs
   # update from that exact retired CBM image, so refresh requires only string
   # equality with OS-reported self identity and never probes config paths.
-  # Windows retains its fixed-drive missing-path classification coverage.
+  #
+  # Windows points at the INSTALLED binary, not the retired one. Its update is a
+  # handoff to install.ps1 now, so nothing rewrites this entry in-process the way
+  # the old launcher-managed update did; leaving it on the retired path would
+  # make 14f demand that uninstall delete an entry owned by a DIFFERENT
+  # installation, which it correctly refuses to do. install.ps1 re-runs
+  # `install`, so this is exactly what a real Windows user is left holding.
   if [[ "$BINARY" == *.exe ]]; then
-    STALE_CMD="$UPDATE_HOME/retired-install/codebase-memory-mcp.exe"
+    STALE_CMD="$UPDATE_HOME/.local/bin/codebase-memory-mcp.exe"
   else
     STALE_CMD="$UPDATE_DRIVER"
   fi
@@ -2970,7 +2985,8 @@ if [ -n "${SMOKE_DOWNLOAD_URL:-}" ]; then
       echo "FAIL 14a: Windows update did not print the install.ps1 command"
       exit 1
     fi
-    if ! cmp -s "$BINARY" "$UPDATE_HOME/.local/bin/codebase-memory-mcp.exe"; then
+    if [ "$(smoke_file_sha256 "$BINARY")" != \
+         "$(smoke_file_sha256 "$UPDATE_HOME/.local/bin/codebase-memory-mcp.exe")" ]; then
       echo "FAIL 14a: Windows update replaced the binary in-process"
       exit 1
     fi
