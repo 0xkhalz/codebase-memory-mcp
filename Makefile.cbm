@@ -311,12 +311,7 @@ GIT_SRCS = src/git/git_context.c
 CLI_SRCS = src/cli/cli.c src/cli/progress_sink.c src/cli/hook_augment.c \
 	src/cli/agent_clients.c src/cli/agent_profiles.c \
 	src/cli/config_json_like.c src/cli/config_toml_edit.c src/cli/config_yaml_edit.c \
-	src/cli/config_text_edit.c src/cli/activation_transaction.c \
-	src/cli/windows_launcher_state.c
-
-# Tiny permanent Windows launcher.  It deliberately links only the stable
-# launcher-state module and Windows SDK libraries, never the parser/indexer.
-WINDOWS_LAUNCHER_SRC = src/launcher/windows_launcher.c
+	src/cli/config_text_edit.c src/cli/activation_transaction.c
 
 # UI module (graph visualization)
 UI_SRCS = \
@@ -490,8 +485,7 @@ TEST_TRACES_SRCS = tests/test_traces.c
 TEST_CLI_SRCS = tests/test_cli.c tests/test_agent_clients.c tests/test_agent_profiles.c \
 	tests/test_config_json_like.c \
 	tests/test_config_toml_edit.c tests/test_config_yaml_edit.c tests/test_config_text_edit.c \
-	tests/test_activation_transaction.c \
-	tests/test_windows_launcher_state.c
+	tests/test_activation_transaction.c
 
 TEST_MEM_SRCS = tests/test_mem.c
 
@@ -601,7 +595,7 @@ PP_OBJ_TSAN = $(BUILD_DIR)/tsan_preprocessor.o
 
 # ── Targets ──────────────────────────────────────────────────────
 
-.PHONY: test test-par test-repro test-foundation test-tsan test-daemon-smoke cbm cbm-launcher cbm-with-ui frontend embed clean-c lint lint-tidy lint-cppcheck lint-format security
+.PHONY: test test-par test-repro test-foundation test-tsan test-daemon-smoke cbm cbm-with-ui frontend embed clean-c lint lint-tidy lint-cppcheck lint-format security
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -841,26 +835,6 @@ OBJS_VENDORED_PROD = $(MIMALLOC_OBJ_PROD) $(SQLITE3_OBJ_PROD) $(TRE_OBJ_PROD) $(
 
 MAIN_SRC = src/main.c
 
-WINDOWS_LAUNCHER_TARGET :=
-ifeq ($(IS_MINGW),yes)
-WINDOWS_LAUNCHER_TARGET := $(BUILD_DIR)/codebase-memory-mcp-launcher.exe
-endif
-
-# Keep the explicit .exe target even on non-Windows hosts: packaging contracts
-# and native-Windows invocations share this single artifact name.  A non-Windows
-# direct invocation builds a diagnostic stub and is not part of `cbm`.
-$(BUILD_DIR)/codebase-memory-mcp-launcher.exe: $(WINDOWS_LAUNCHER_SRC) src/cli/windows_launcher_state.c src/cli/windows_launcher_state.h | $(BUILD_DIR)
-	$(CC) $(CFLAGS_PROD) -o $@ \
-		$(WINDOWS_LAUNCHER_SRC) src/cli/windows_launcher_state.c \
-		$(if $(filter yes,$(IS_MINGW)),-municode -lbcrypt $(WIN32_LIBS),)
-
-# Native-Windows compatibility fixture: its launcher ABI intentionally does
-# not fit the production payload's default [1,1] range.  It is never packaged.
-$(BUILD_DIR)/codebase-memory-mcp-launcher-abi2.exe: $(WINDOWS_LAUNCHER_SRC) src/cli/windows_launcher_state.c src/cli/windows_launcher_state.h | $(BUILD_DIR)
-	$(CC) $(CFLAGS_PROD) -DCBM_WINDOWS_LAUNCHER_ABI_CURRENT=2 -o $@ \
-		$(WINDOWS_LAUNCHER_SRC) src/cli/windows_launcher_state.c \
-		$(if $(filter yes,$(IS_MINGW)),-municode -lbcrypt $(WIN32_LIBS),)
-
 $(BUILD_DIR)/codebase-memory-mcp: $(MAIN_SRC) $(PROD_SRCS) $(EXTRACTION_SRCS) $(AC_LZ4_SRCS) $(ZSTD_SRCS) $(SQLITE_WRITER_SRC) $(OBJS_VENDORED_PROD) | $(BUILD_DIR)
 	$(CC) $(CFLAGS_PROD) -o $@ \
 		$(MAIN_SRC) $(PROD_SRCS) \
@@ -868,11 +842,8 @@ $(BUILD_DIR)/codebase-memory-mcp: $(MAIN_SRC) $(PROD_SRCS) $(EXTRACTION_SRCS) $(
 		$(OBJS_VENDORED_PROD) \
 		$(LDFLAGS)
 
-cbm: $(BUILD_DIR)/codebase-memory-mcp $(WINDOWS_LAUNCHER_TARGET)
+cbm: $(BUILD_DIR)/codebase-memory-mcp
 	@echo "Built: $(BUILD_DIR)/codebase-memory-mcp"
-
-cbm-launcher: $(BUILD_DIR)/codebase-memory-mcp-launcher.exe
-	@echo "Built: $(BUILD_DIR)/codebase-memory-mcp-launcher.exe"
 
 # ── Build with embedded UI (requires Node.js) ───────────────────
 
@@ -889,7 +860,7 @@ frontend:
 embed: frontend
 	scripts/embed-frontend.sh graph-ui/dist $(BUILD_DIR)/embedded
 
-cbm-with-ui: embed $(OBJS_VENDORED_PROD) $(WINDOWS_LAUNCHER_TARGET)
+cbm-with-ui: embed $(OBJS_VENDORED_PROD)
 	$(CC) $(CFLAGS_PROD) -o $(BUILD_DIR)/codebase-memory-mcp \
 		$(MAIN_SRC) $(PROD_SRCS_WITH_ASSETS) \
 		$(EXTRACTION_SRCS) $(AC_LZ4_SRCS) $(ZSTD_SRCS) $(SQLITE_WRITER_SRC) \
@@ -919,7 +890,7 @@ SYSROOT_FLAG = $(if $(SYSROOT),-isysroot $(SYSROOT),)
 LINT_SRCS = $(FOUNDATION_SRCS) $(STORE_SRCS) $(CYPHER_SRCS) $(MCP_SRCS) $(DAEMON_SRCS) \
             $(DISCOVER_SRCS) $(GRAPH_BUFFER_SRCS) $(PIPELINE_SRCS) $(SIMHASH_SRCS) $(SEMANTIC_SRCS) \
             $(TRACES_SRCS) $(WATCHER_SRCS) $(CLI_SRCS) $(EXTRACTION_SRCS) $(AC_LZ4_SRCS) \
-            $(ZSTD_SRCS) $(SQLITE_WRITER_SRC) $(MAIN_SRC) $(WINDOWS_LAUNCHER_SRC)
+            $(ZSTD_SRCS) $(SQLITE_WRITER_SRC) $(MAIN_SRC)
 LINT_HDRS = $(wildcard src/**/*.h src/*.h $(CBM_DIR)/*.h)
 LINT_TEST_SRCS = $(ALL_TEST_SRCS)
 

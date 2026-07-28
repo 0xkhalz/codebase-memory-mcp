@@ -57,24 +57,22 @@ smoke_mktemp_dir() {
   fi
 }
 
-# Windows release archives contain a small permanent launcher plus a portable
-# payload. Whenever a smoke fixture copies the launcher, keep the payload next
-# to it so the copied fixture remains a complete portable bundle.
-WINDOWS_PAYLOAD=""
-if [[ "$BINARY" == *.exe ]]; then
-  WINDOWS_PAYLOAD="$(cd "$(dirname "$BINARY")" && pwd)/codebase-memory-mcp.payload.exe"
-  if [ ! -f "$WINDOWS_PAYLOAD" ]; then
-    echo "FAIL: Windows launcher has no adjacent codebase-memory-mcp.payload.exe"
-    exit 1
+# Byte-identity of two files. `cmp` is NOT present in the Windows MSYS shell, so
+# a comparison built on it reports "different" for every pair it is handed —
+# including two copies of the same file.
+smoke_file_sha256() {
+  if command -v sha256sum &>/dev/null; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
   fi
-fi
+}
 
+# Every platform ships ONE binary, Windows included: a fixture copy is complete
+# with nothing beside it.
 copy_smoke_binary() {
   local destination="$1"
   cp "$BINARY" "$destination"
-  if [ -n "$WINDOWS_PAYLOAD" ]; then
-    cp "$WINDOWS_PAYLOAD" "$(dirname "$destination")/codebase-memory-mcp.payload.exe"
-  fi
 }
 
 # Retire the shared account daemon (if one is running) and wait until it
@@ -889,36 +887,34 @@ if [[ "$BINARY" == *.exe ]] &&
 fi
 
 # 6b: uninstall --dry-run -y
+# Windows used to refuse this: a portable extracted bundle was a DIFFERENT
+# artifact from the launcher-managed install it would have torn down, so it had
+# to decline and point at the managed copy. One binary per platform removes that
+# split entirely — the extracted binary IS the installed one — so uninstall now
+# plans the same removals it does on Linux and macOS.
 echo "--- Phase 6b: uninstall --dry-run ---"
-if [[ "$BINARY" == *.exe ]]; then
-  if UNINSTALL_OUT=$(run_dryrun_env "$BINARY" uninstall --dry-run -y 2>&1); then
-    echo "FAIL: portable Windows bundle accepted uninstall"
-    exit 1
-  fi
-  if ! echo "$UNINSTALL_OUT" | grep -qi 'managed\|install\|package'; then
-    echo "FAIL: portable Windows uninstall refusal had no install guidance"
-    echo "$UNINSTALL_OUT"
-    exit 1
-  fi
-else
-  UNINSTALL_OUT=$(run_dryrun_env "$BINARY" uninstall --dry-run -y 2>&1)
-  if ! echo "$UNINSTALL_OUT" | grep -qi 'uninstall\|remov'; then
-    echo "FAIL: uninstall --dry-run produced unexpected output"
-    echo "$UNINSTALL_OUT"
-    exit 1
-  fi
+UNINSTALL_OUT=$(run_dryrun_env "$BINARY" uninstall --dry-run -y 2>&1)
+if ! echo "$UNINSTALL_OUT" | grep -qi 'uninstall\|remov'; then
+  echo "FAIL: uninstall --dry-run produced unexpected output"
+  echo "$UNINSTALL_OUT"
+  exit 1
 fi
 echo "OK: uninstall --dry-run completed"
 
 # 6c: update --dry-run --standard -y
 echo "--- Phase 6c: update --dry-run ---"
 if [[ "$BINARY" == *.exe ]]; then
-  if UPDATE_OUT=$(run_dryrun_env "$BINARY" update --dry-run --standard -y 2>&1); then
-    echo "FAIL: portable Windows bundle accepted update"
+  # Same contract Phase 14a asserts against a real update: Windows never
+  # replaces the running image in-process, so `update` is a handoff — it exits 0
+  # and prints the exact install.ps1 command. The old refusal here was the
+  # portable-vs-managed split, which died with the launcher stub.
+  if ! UPDATE_OUT=$(run_dryrun_env "$BINARY" update --dry-run --standard -y 2>&1); then
+    echo "FAIL: Windows update handoff exited non-zero"
+    echo "$UPDATE_OUT"
     exit 1
   fi
-  if ! echo "$UPDATE_OUT" | grep -qi 'managed\|install\|package'; then
-    echo "FAIL: portable Windows update refusal had no install guidance"
+  if ! echo "$UPDATE_OUT" | grep -q 'install.ps1'; then
+    echo "FAIL: Windows update did not print the install.ps1 handoff"
     echo "$UPDATE_OUT"
     exit 1
   fi
@@ -1115,10 +1111,10 @@ ROVO_AGENT="$FAKE_HOME/.rovodev/subagents/codebase-memory.md"
 AMAZON_Q_MCP="$FAKE_HOME/.aws/amazonq/default.json"
 mkdir -p "$GITLAB_DIR" "$(dirname "$GITLAB_HOOKS")" "$DEVIN_DIR"
 mkdir -p "$FAKE_HOME/.local/bin"
-# A Windows portable pair is the installer source, not a valid managed target.
-# Leave the canonical destination absent so install can publish the authenticated
-# generation backing + canonical hard-link pair. A one-link copy at that path is
-# deliberately rejected as an unknown/conflicting installation.
+# POSIX seeds the destination so install exercises the replace-an-existing-copy
+# path. Windows leaves it absent and covers the first-install path instead:
+# seeding it would mean running the fixture binary out of the very location the
+# install is about to publish to, which Windows' image lock forbids.
 if [[ "$BINARY" == *.exe ]]; then
   SELF_PATH="$FAKE_HOME/.local/bin/codebase-memory-mcp.exe"
 else
@@ -1174,26 +1170,32 @@ HOME="$FAKE_HOME" \
   "$BINARY" install -y > "$PHASE8_INSTALL_LOG" 2>&1 || PHASE8_INSTALL_RC=$?
 cat "$PHASE8_INSTALL_LOG"
 if [[ "$BINARY" == *.exe ]]; then
-  # The managed install itself must SUCCEED on Windows — an install-time
-  # staging/ACL refusal used to scroll past as tolerated noise while the
-  # downstream config assertions kept passing against a previous generation
-  # ("staging transaction open failed (status -3, os 0)" hid a real install
-  # failure class on Administrators-default-owner profiles).
+  # The install itself must SUCCEED on Windows — an install-time staging/ACL
+  # refusal used to scroll past as tolerated noise while the downstream config
+  # assertions kept passing against a previous copy ("staging transaction open
+  # failed (status -3, os 0)" hid a real install failure class on
+  # Administrators-default-owner profiles).
   if [ "$PHASE8_INSTALL_RC" -ne 0 ]; then
-    echo "FAIL 8-0: managed install exited rc=$PHASE8_INSTALL_RC"
+    echo "FAIL 8-0: install exited rc=$PHASE8_INSTALL_RC"
     exit 1
   fi
   PHASE8_CANONICAL="$FAKE_HOME/.local/bin/codebase-memory-mcp.exe"
   if [ ! -f "$PHASE8_CANONICAL" ]; then
-    echo "FAIL 8-0: canonical launcher missing after managed install"
+    echo "FAIL 8-0: installed binary missing after install"
     exit 1
   fi
-  PHASE8_LINKS=$(stat -c %h "$PHASE8_CANONICAL" 2>/dev/null || echo 0)
-  if [ "$PHASE8_LINKS" != "2" ]; then
-    echo "FAIL 8-0: canonical launcher is not an exact two-link file (links=$PHASE8_LINKS)"
+  # ONE binary, one link: a second hard link here would mean the retired
+  # launcher/generation layout came back.
+  PHASE8_LINKS=$(stat -c %h "$PHASE8_CANONICAL" 2>/dev/null || echo 1)
+  if [ "$PHASE8_LINKS" != "1" ]; then
+    echo "FAIL 8-0: installed binary is not a single-link file (links=$PHASE8_LINKS)"
     exit 1
   fi
-  echo "OK 8-0: managed install committed an exact two-link canonical launcher"
+  if [ -e "$FAKE_HOME/.local/bin/codebase-memory-mcp.payload.exe" ]; then
+    echo "FAIL 8-0: install produced a launcher/payload pair"
+    exit 1
+  fi
+  echo "OK 8-0: install committed exactly one Windows binary"
 fi
 
 # Helper for JSON validation (pipe file to python — avoids MSYS2 path translation issues)
@@ -2911,9 +2913,9 @@ if [ -n "${SMOKE_DOWNLOAD_URL:-}" ]; then
   UPDATE_HOME=$(smoke_mktemp_dir)
   mkdir -p "$UPDATE_HOME/.claude" "$UPDATE_HOME/.local/bin"
   if [[ "$BINARY" == *.exe ]]; then
-    # Keep the managed canonical absent until WINDOWS_PAYLOAD installs the
-    # authenticated two-link launcher layout below.
-    :
+    cp "$BINARY" "$UPDATE_HOME/.local/bin/codebase-memory-mcp.exe"
+    mkdir -p "$UPDATE_HOME/retired-install"
+    cp "$BINARY" "$UPDATE_HOME/retired-install/codebase-memory-mcp.exe"
   else
     cp "$BINARY" "$UPDATE_HOME/.local/bin/codebase-memory-mcp"
     chmod 755 "$UPDATE_HOME/.local/bin/codebase-memory-mcp"
@@ -2927,18 +2929,12 @@ if [ -n "${SMOKE_DOWNLOAD_URL:-}" ]; then
     fi
   fi
 
-  # A portable Windows payload may install a managed launcher, but it must not
-  # perform update/uninstall directly. Establish the managed layout first and
-  # exercise those mutations through its canonical launcher.
-  UPDATE_DRIVER="$BINARY"
+  # POSIX runs `update` from the retired image so the in-process replacement is
+  # exercised end to end. Windows has no in-process replacement: a running .exe
+  # cannot replace itself, so `update` hands off to install.ps1 (asserted in
+  # 14a below) and the installed copy drives the later uninstall phases.
   if [[ "$BINARY" == *.exe ]]; then
-    HOME="$UPDATE_HOME" "$WINDOWS_PAYLOAD" install -y --force --skip-config \
-      "--dir=$UPDATE_HOME/.local/bin"
     UPDATE_DRIVER="$UPDATE_HOME/.local/bin/codebase-memory-mcp.exe"
-    if [ ! -f "$UPDATE_DRIVER" ]; then
-      echo "FAIL 14a: managed Windows launcher missing after install"
-      exit 1
-    fi
   else
     RETIRED_DIR=$(cd "$UPDATE_HOME/retired-install" && pwd -P)
     UPDATE_DRIVER="$RETIRED_DIR/codebase-memory-mcp"
@@ -2947,9 +2943,15 @@ if [ -n "${SMOKE_DOWNLOAD_URL:-}" ]; then
   # Pre-install agent config with positive prior-install identity. POSIX runs
   # update from that exact retired CBM image, so refresh requires only string
   # equality with OS-reported self identity and never probes config paths.
-  # Windows retains its fixed-drive missing-path classification coverage.
+  #
+  # Windows points at the INSTALLED binary, not the retired one. Its update is a
+  # handoff to install.ps1 now, so nothing rewrites this entry in-process the way
+  # the old launcher-managed update did; leaving it on the retired path would
+  # make 14f demand that uninstall delete an entry owned by a DIFFERENT
+  # installation, which it correctly refuses to do. install.ps1 re-runs
+  # `install`, so this is exactly what a real Windows user is left holding.
   if [[ "$BINARY" == *.exe ]]; then
-    STALE_CMD="$UPDATE_HOME/retired-install/codebase-memory-mcp.exe"
+    STALE_CMD="$UPDATE_HOME/.local/bin/codebase-memory-mcp.exe"
   else
     STALE_CMD="$UPDATE_DRIVER"
   fi
@@ -2965,8 +2967,32 @@ if [ -n "${SMOKE_DOWNLOAD_URL:-}" ]; then
   if curl --noproxy '*' -sf "$SMOKE_DOWNLOAD_URL/" 2>/dev/null | grep -q "ui-"; then
     UPDATE_VARIANT="--ui"
   fi
+  UPDATE_LOG=$(smoke_mktemp_file)
   HOME="$UPDATE_HOME" CBM_DOWNLOAD_URL="$UPDATE_DOWNLOAD_URL" \
-    "$UPDATE_DRIVER" update $UPDATE_VARIANT -y 2>&1
+    "$UPDATE_DRIVER" update $UPDATE_VARIANT -y > "$UPDATE_LOG" 2>&1
+  UPDATE_RC=$?
+  cat "$UPDATE_LOG"
+
+  if [[ "$BINARY" == *.exe ]]; then
+    # Windows contract: update NEVER replaces the running image in-process. It
+    # exits 0 and prints the install.ps1 command. Regressing to an in-process
+    # self-update means reintroducing the AV-flagged launcher stub.
+    if [ "$UPDATE_RC" -ne 0 ]; then
+      echo "FAIL 14a: Windows update exited rc=$UPDATE_RC (expected 0)"
+      exit 1
+    fi
+    if ! grep -q "install.ps1" "$UPDATE_LOG"; then
+      echo "FAIL 14a: Windows update did not print the install.ps1 command"
+      exit 1
+    fi
+    if [ "$(smoke_file_sha256 "$BINARY")" != \
+         "$(smoke_file_sha256 "$UPDATE_HOME/.local/bin/codebase-memory-mcp.exe")" ]; then
+      echo "FAIL 14a: Windows update replaced the binary in-process"
+      exit 1
+    fi
+    echo "OK 14a: Windows update handed off to install.ps1 without touching the binary"
+  fi
+  rm -f "$UPDATE_LOG"
 
   # 14b: Verify new binary exists and runs
   if [[ "$BINARY" == *.exe ]]; then
@@ -2988,6 +3014,11 @@ if [ -n "${SMOKE_DOWNLOAD_URL:-}" ]; then
   echo "OK 14b: updated binary runs"
 
   # 14c: Verify agent config was refreshed to the exact installed binary.
+  # Windows has no in-process update, so there is no config refresh to assert:
+  # install.ps1 re-runs `install`, which is covered by Phase 8 and Phase 13.
+  if [[ "$BINARY" == *.exe ]]; then
+    echo "SKIP 14c: Windows update hands off to install.ps1 (config refresh covered by install)"
+  else
   UPD_CMD=$(cat "$UPDATE_HOME/.claude.json" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('mcpServers',{}).get('codebase-memory-mcp',{}).get('command',''))" 2>/dev/null || echo "")
   EXPECTED_UPD_CMD="$UPD_BIN"
   if command -v cygpath &>/dev/null; then
@@ -3000,6 +3031,7 @@ if [ -n "${SMOKE_DOWNLOAD_URL:-}" ]; then
     exit 1
   fi
   echo "OK 14c: agent config refreshed (path=$UPD_CMD)"
+  fi
 
   # ── 14d-f: Real uninstall with binary removal ──
   # First verify binary + configs exist
@@ -3158,9 +3190,10 @@ echo "--- Phase 12d: extraction ---"
 (cd "$DL_DIR" && if [ "$DL_EXT" = "zip" ]; then unzip -q "$DL_ARCHIVE"; else tar -xzf "$DL_ARCHIVE"; fi)
 if [ "$DL_OS" = "windows" ]; then
   DL_BIN="$DL_DIR/codebase-memory-mcp.exe"
-  DL_PAYLOAD="$DL_DIR/codebase-memory-mcp.payload.exe"
-  if [ ! -f "$DL_PAYLOAD" ]; then
-    echo "FAIL 12d: Windows payload not found after extraction"
+  # ONE binary per platform: a second executable in the archive would mean the
+  # AV-flagged launcher/payload split came back.
+  if [ -e "$DL_DIR/codebase-memory-mcp.payload.exe" ]; then
+    echo "FAIL 12d: Windows archive still ships a launcher/payload pair"
     exit 1
   fi
 else
@@ -3172,11 +3205,6 @@ if [ ! -f "$DL_BIN" ]; then
 fi
 chmod +x "$DL_BIN"
 echo "OK 12d: binary extracted"
-
-if [ "$DL_OS" = "windows" ] && ! "$DL_PAYLOAD" --version > /dev/null 2>&1; then
-  echo "FAIL 12d: extracted Windows payload doesn't run"
-  exit 1
-fi
 
 # 12e: extracted binary runs
 if ! "$DL_BIN" --version > /dev/null 2>&1; then

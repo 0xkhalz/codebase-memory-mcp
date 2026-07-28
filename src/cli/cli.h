@@ -348,19 +348,6 @@ unsigned char *cbm_extract_binary_from_targz(const unsigned char *data, int data
  * Returns NULL on error. Caller must free. */
 unsigned char *cbm_extract_binary_from_zip(const unsigned char *data, int data_len, int *out_len);
 
-/* Strict two-file Windows release bundle extraction. The archive must contain
- * exactly one root launcher and one root payload; ambiguous aliases,
- * traversal, duplicates, and malformed central/local metadata fail closed. */
-typedef struct {
-    unsigned char *launcher;
-    int launcher_len;
-    unsigned char *payload;
-    int payload_len;
-} cbm_windows_release_pair_t;
-bool cbm_extract_windows_release_pair_from_zip(const unsigned char *data, int data_len,
-                                               cbm_windows_release_pair_t *pair_out);
-void cbm_windows_release_pair_free(cbm_windows_release_pair_t *pair);
-
 /* ── Index management ─────────────────────────────────────────── */
 
 /* List .db files in the cache directory (~/.cache/codebase-memory-mcp/).
@@ -446,14 +433,6 @@ void cbm_cli_set_activation_ops_for_test(const cbm_cli_activation_ops_t *ops);
  * private runtime parent. NULL restores the platform default. This is not a
  * command-line or environment override. */
 void cbm_cli_set_activation_runtime_parent_for_test(const char *runtime_parent);
-
-/* Consume and authenticate any inherited permanent-launcher context before
- * process-role classification. An absent context is the normal portable
- * payload case; an advertised but invalid context fails closed. */
-int cbm_cli_windows_launcher_startup_authenticate(int argc, char *const argv[]);
-/* Internal release-pair probe. Returns -1 when argv does not select the role,
- * otherwise a process exit code. It runs before cache/daemon initialization. */
-int cbm_cli_windows_payload_descriptor_role(int argc, char *const argv[]);
 
 /* ── Subcommands (wired from main.c) ─────────────────────────── */
 

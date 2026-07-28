@@ -116,16 +116,15 @@ if ! grep -Fq "JOBS='\$(nproc)'" "$provisioner" ||
     exit 1
 fi
 guards_block="$(sed -n '/^guards)/,/^    ;;/p' "$driver")"
-# The guards leg builds the CI-shaped product payload (embedded UI + launcher)
-# into an isolated BUILD_DIR, then hands those artifacts to the maintained
+# The guards leg builds the CI-shaped product binary (embedded UI) into an
+# isolated BUILD_DIR, then hands that artifact to the maintained
 # PowerShell driver through a plain cmd shell (CI's environment shape, not
 # the MSYS2 login shell whose TMP ancestry the daemon correctly refuses).
 if ! grep -Fq 'scripts/build.sh --with-ui CC=clang CXX=clang++ SANITIZE= BUILD_DIR=build/guards' \
     <<<"$guards_block" ||
     ! grep -Fq 'powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\test-windows.ps1' \
     <<<"$guards_block" ||
-    ! grep -Fq -- '-GuardsOnly -Binary build\\guards\\codebase-memory-mcp.exe' <<<"$guards_block" ||
-    ! grep -Fq -- '-Launcher build\\guards\\codebase-memory-mcp-launcher.exe' <<<"$guards_block"; then
+    ! grep -Fq -- '-GuardsOnly -Binary build\\guards\\codebase-memory-mcp.exe' <<<"$guards_block"; then
     echo "FAIL: Windows VM guards must delegate to the maintained native-Windows driver" >&2
     exit 1
 fi
