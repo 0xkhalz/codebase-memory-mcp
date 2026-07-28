@@ -3850,8 +3850,8 @@ TEST(search_code_invalid_utf8_still_returns_valid_json) {
     char invalid_path[512];
     snprintf(invalid_path, sizeof(invalid_path), "%s/project/invalid.md", tmp);
     static const unsigned char invalid_source[] = {
-        'i', 'n', 'v', 'a', 'l', 'i', 'd', '-', 'n', 'e', 'e', 'd', 'l', 'e', ' ',
-        0xFF, '\n',
+        'i', 'n', 'v', 'a', 'l', 'i', 'd', '-', 'n', 'e', 'e', 'd', 'l', 'e', '\n',
+        'c', 'o', 'n', 't', 'e', 'x', 't', ' ', 0xFF, '\n',
     };
     FILE *fp = cbm_fopen(invalid_path, "wb");
     ASSERT_NOT_NULL(fp);
@@ -3866,7 +3866,7 @@ TEST(search_code_invalid_utf8_still_returns_valid_json) {
                        .qualified_name = "test-project.invalid",
                        .file_path = "invalid.md",
                        .start_line = 1,
-                       .end_line = 1};
+                       .end_line = 2};
     ASSERT_GT(cbm_store_upsert_node(st, &node), 0);
 
     char *resp = cbm_mcp_server_handle(
