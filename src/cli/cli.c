@@ -9437,12 +9437,16 @@ int cbm_cmd_install(int argc, char **argv) {
          * so a non-OK here is a plan-side check (agent-config / PATH probe)
          * and must still report that it was a dry-run - on Windows it was
          * silently skipping the summary and reading as a hard failure. Emit
-         * the dry-run indicator, and name the underlying status for triage. */
+         * the dry-run indicator, and name the underlying status for triage.
+         *
+         * The status itself still travels: `--dry-run` exists to answer "would
+         * this install work?", so a refused plan check has to be visible to a
+         * caller that only sees the exit code. Reporting success here made a
+         * fail-closed PATH probe indistinguishable from a clean plan. */
         if (dry_run) {
             (void)fprintf(stderr, "note: install --dry-run plan check returned %d\n",
                           activation_rc);
             printf("\n(dry-run — no files were modified)\n");
-            return CLI_OK;
         }
         return CLI_TRUE;
     }
