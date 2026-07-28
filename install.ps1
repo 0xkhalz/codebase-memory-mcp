@@ -1,4 +1,4 @@
-# install.ps1 — One-line installer for codebase-memory-mcp (Windows).
+# install.ps1 - One-line installer for codebase-memory-mcp (Windows).
 #
 # Usage: see README.md for install instructions.
 #
@@ -103,7 +103,7 @@ foreach ($arg in $args) {
 # PROCESSOR_ARCHITEW6432, which is unset for 64-bit emulated processes. Fall back
 # to the env vars only if the .NET API is somehow unavailable.
 if ($env:CBM_ARCH) {
-    # Explicit override wins — used by CI/tests, and an escape hatch under x64
+    # Explicit override wins - used by CI/tests, and an escape hatch under x64
     # emulation on ARM64 where no in-process detection is reliable.
     $Arch = $env:CBM_ARCH
 } else {
@@ -279,7 +279,7 @@ if (Test-Path -LiteralPath $Dest -PathType Leaf) {
         catch { Start-Sleep -Milliseconds 500 }
     }
     if (-not $renamed) {
-        Write-Host "error: could not retire the existing $BinName — close all running" -ForegroundColor Red
+        Write-Host "error: could not retire the existing $BinName - close all running" -ForegroundColor Red
         Write-Host "       codebase-memory-mcp sessions and coding agents, then re-run." -ForegroundColor Red
         Remove-Item -Recurse -Force $TmpDir -ErrorAction SilentlyContinue
         exit 1
