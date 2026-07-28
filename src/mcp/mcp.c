@@ -8683,16 +8683,17 @@ static char *assemble_search_output(search_result_t *sr, int sr_count, grep_matc
                                build_dedup_files_array(doc, sr, output_count, raw, raw_count));
     } else {
         /* json-stringified tree: cols + column-ordered row arrays. FULL mode
-         * appends a per-row object cell with the (guarded, windowed) source —
-         * attach_result_source semantics unchanged. */
+         * appends a per-row object cell with the (guarded, windowed) source;
+         * context requests append the corresponding context object. */
+        bool attach_context = context_lines > 0 && mode != MODE_FULL;
         yyjson_mut_val *jcols = yyjson_mut_arr(doc);
         static const char *const sc_cols[] = {"qn",      "label", "file", "lines",
                                               "matches", "in",    "out"};
         for (size_t ci = 0; ci < sizeof(sc_cols) / sizeof(sc_cols[0]); ci++) {
             yyjson_mut_arr_add_str(doc, jcols, sc_cols[ci]);
         }
-        if (mode == MODE_FULL) {
-            yyjson_mut_arr_add_str(doc, jcols, "source");
+        if (mode == MODE_FULL || attach_context) {
+            yyjson_mut_arr_add_str(doc, jcols, mode == MODE_FULL ? "source" : "context");
         }
         yyjson_mut_obj_add_val(doc, root_obj, "cols", jcols);
 
@@ -8718,7 +8719,7 @@ static char *assemble_search_output(search_result_t *sr, int sr_count, grep_matc
             yyjson_mut_arr_add_val(row, ml);
             yyjson_mut_arr_add_int(doc, row, r->in_degree);
             yyjson_mut_arr_add_int(doc, row, r->out_degree);
-            if (mode == MODE_FULL) {
+            if (mode == MODE_FULL || attach_context) {
                 yyjson_mut_val *src = yyjson_mut_obj(doc);
                 attach_result_source(doc, src, r, mode, context_lines, root_path);
                 yyjson_mut_arr_add_val(row, src);
