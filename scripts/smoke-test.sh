@@ -68,6 +68,31 @@ smoke_file_sha256() {
   fi
 }
 
+# Fixture cleanup, never an assertion. On Windows a directory holding an
+# executable that was just written or just run can refuse deletion for a moment
+# while a scanner or an unreaped child still holds it. Under `set -e` a plain
+# `rm -rf` then kills the run WITHOUT printing anything — three release smoke
+# jobs died exactly that way, silently, immediately after "OK 13h".
+#
+# Retry so the disk actually gets reclaimed (these fixtures hold ~300 MB
+# binaries and runners are disk-tight), then warn and continue: an ephemeral
+# temp dir must never decide the verdict.
+smoke_rmtree() {
+  local target
+  for target in "$@"; do
+    [ -n "$target" ] || continue
+    local attempt
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+      rm -rf "$target" 2>/dev/null && break
+      sleep 0.5
+    done
+    if [ -e "$target" ]; then
+      echo "warn: could not remove smoke fixture $target (leaving it to the runner)"
+    fi
+  done
+  return 0
+}
+
 # Every platform ships ONE binary, Windows included: a fixture copy is complete
 # with nothing beside it.
 copy_smoke_binary() {
@@ -123,7 +148,7 @@ DRYRUN_HOME=""
 if command -v cygpath &>/dev/null; then
     TMPDIR=$(cygpath -m "$TMPDIR")
 fi
-trap 'rm -rf "$TMPDIR" "${DRYRUN_HOME:-}"' EXIT
+trap 'smoke_rmtree "$TMPDIR" "${DRYRUN_HOME:-}"' EXIT
 
 CLI_STDERR=$(smoke_mktemp_file)
 cli() { "$BINARY" cli "$@" 2>"$CLI_STDERR"; }
@@ -970,7 +995,7 @@ chmod 755 "$INSTALL_DIR/codebase-memory-mcp"
 INSTALLED_VER=$("$INSTALL_DIR/codebase-memory-mcp" --version 2>&1)
 if ! echo "$INSTALLED_VER" | grep -qE 'v?[0-9]+\.[0-9]+|dev'; then
   echo "FAIL: installed binary --version failed: $INSTALLED_VER"
-  rm -rf "$REPLACE_DIR"
+  smoke_rmtree "$REPLACE_DIR"
   exit 1
 fi
 
@@ -986,7 +1011,7 @@ chmod 755 "$INSTALL_DIR/codebase-memory-mcp"
 REPLACED_VER=$("$INSTALL_DIR/codebase-memory-mcp" --version 2>&1)
 if ! echo "$REPLACED_VER" | grep -qE 'v?[0-9]+\.[0-9]+|dev'; then
   echo "FAIL: replaced binary --version failed: $REPLACED_VER"
-  rm -rf "$REPLACE_DIR"
+  smoke_rmtree "$REPLACE_DIR"
   exit 1
 fi
 echo "OK: binary replacement succeeded (version: $REPLACED_VER)"
@@ -1000,12 +1025,12 @@ chmod 755 "$INSTALL_DIR/codebase-memory-mcp"
 READONLY_VER=$("$INSTALL_DIR/codebase-memory-mcp" --version 2>&1)
 if ! echo "$READONLY_VER" | grep -qE 'v?[0-9]+\.[0-9]+|dev'; then
   echo "FAIL: read-only replacement --version failed: $READONLY_VER"
-  rm -rf "$REPLACE_DIR"
+  smoke_rmtree "$REPLACE_DIR"
   exit 1
 fi
 echo "OK: read-only binary replacement succeeded"
 
-rm -rf "$REPLACE_DIR"
+smoke_rmtree "$REPLACE_DIR"
 
 echo ""
 echo "=== Phase 7: MCP advanced tool calls ==="
@@ -2671,7 +2696,7 @@ if ! echo "$INSTALL_OUT" | grep -qi 'detected agents'; then
 fi
 echo "OK 9b-1: install with minimal agents exits cleanly"
 retire_account_daemon "9b-1-cleanup"
-rm -rf "$EMPTY_HOME"
+smoke_rmtree "$EMPTY_HOME"
 
 # 9b-2: Install twice (idempotent)
 IDEM_HOME=$(smoke_mktemp_dir)
@@ -2695,7 +2720,7 @@ if [ "$COUNT" != "1" ]; then
 fi
 echo "OK 9b-2: double install is idempotent"
 retire_account_daemon "9b-2-cleanup"
-rm -rf "$IDEM_HOME"
+smoke_rmtree "$IDEM_HOME"
 
 # 9b-3: Uninstall without prior install
 CLEAN_HOME=$(smoke_mktemp_dir)
@@ -2708,7 +2733,7 @@ if [ "$UNINSTALL_RC" -ge 128 ]; then
 fi
 echo "OK 9b-3: uninstall without install doesn't crash"
 retire_account_daemon "9b-3-cleanup"
-rm -rf "$CLEAN_HOME"
+smoke_rmtree "$CLEAN_HOME"
 
 # 9b-4: Install over corrupt JSON
 CORRUPT_HOME=$(smoke_mktemp_dir)
@@ -2719,7 +2744,7 @@ run_no_crash 9b-4 env HOME="$CORRUPT_HOME" "$BINARY" install -y
 # Should either fix it or handle gracefully — not crash
 echo "OK 9b-4: install over corrupt JSON doesn't crash"
 retire_account_daemon "9b-4-cleanup"
-rm -rf "$CORRUPT_HOME"
+smoke_rmtree "$CORRUPT_HOME"
 
 # 9b-8: Double uninstall
 DBL_HOME=$(smoke_mktemp_dir)
@@ -2734,7 +2759,7 @@ run_no_crash 9b-8-first env HOME="$DBL_HOME" "$DBL_UNINSTALLER" uninstall -y -n
 run_no_crash 9b-8-second env HOME="$DBL_HOME" "$BINARY" uninstall -y -n
 echo "OK 9b-8: double uninstall doesn't crash"
 retire_account_daemon "9b-8-cleanup"
-rm -rf "$DBL_HOME"
+smoke_rmtree "$DBL_HOME"
 
 # 9b-9: Non-interactive update without --standard/--ui should fail cleanly (not hang)
 if [ "$(uname -s)" != "MINGW64_NT" ] 2>/dev/null; then
@@ -2748,7 +2773,7 @@ if [ "$(uname -s)" != "MINGW64_NT" ] 2>/dev/null; then
 fi
 
 retire_account_daemon "9-cleanup"
-rm -rf "$FAKE_HOME" "$EMPTY_HOME"
+smoke_rmtree "$FAKE_HOME" "$EMPTY_HOME"
 
 if [ "$SMOKE_MODE" = "--agent-config-only" ]; then
   echo ""
@@ -2848,7 +2873,7 @@ else
   fi
 fi
 
-rm -rf "$SECURITY_DIR"
+smoke_rmtree "$SECURITY_DIR"
 
 echo ""
 echo "=== Phase 11: process kill E2E ==="
@@ -3063,7 +3088,7 @@ sys.exit(0)
     exit 1
   fi
 
-  rm -rf "$UPDATE_HOME"
+  smoke_rmtree "$UPDATE_HOME"
 
 else
   # Local mode: basic binary replacement test (no download)
@@ -3083,7 +3108,7 @@ else
     exit 1
   fi
   echo "OK 14: binary replacement + verify (local mode)"
-  rm -rf "$UPDATE_DIR"
+  smoke_rmtree "$UPDATE_DIR"
 fi
 
 # ── Phase 12 + 13: Download E2E + install script E2E (CI only) ──
@@ -3234,7 +3259,7 @@ else
   echo "OK 12f: binary runs without signing ($DL_OS)"
 fi
 
-rm -rf "$DL_DIR"
+smoke_rmtree "$DL_DIR"
 
 echo ""
 echo "=== Phase 13: install script E2E ==="
@@ -3301,7 +3326,7 @@ if [ "$DL_OS" != "windows" ] && [ -f "$REPO_ROOT/install.sh" ]; then
     echo "OK 13f: PATH setup (rc file may not have been modified if already present)"
   fi
 
-  rm -rf "$INSTALL_TEST_HOME" "$INSTALL_TEST_DIR"
+  smoke_rmtree "$INSTALL_TEST_HOME" "$INSTALL_TEST_DIR"
 
 elif [ -f "$REPO_ROOT/install.ps1" ] && command -v powershell.exe &>/dev/null; then
   echo "--- Phase 13: install.ps1 E2E (Windows) ---"
@@ -3356,7 +3381,7 @@ elif [ -f "$REPO_ROOT/install.ps1" ] && command -v powershell.exe &>/dev/null; t
     exit 1
   fi
 
-  rm -rf "$PS1_TEST_HOME" "$PS1_TEST_DIR"
+  smoke_rmtree "$PS1_TEST_HOME" "$PS1_TEST_DIR"
 else
   echo "SKIP Phase 13: no install script available for this platform"
 fi
