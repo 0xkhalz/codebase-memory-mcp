@@ -110,7 +110,7 @@ else
     vm "clangarm64" "git clone --branch ${BRANCH} --single-branch --depth 200 ${REPO_URL} /c/cbm && cd /c/cbm && git log --oneline -1"
 fi
 
-step "5/6 build: native ARM64 binary + launcher + test-runner (no ASan on arm64)"
+step "5/6 build: native ARM64 binary + test-runner (no ASan on arm64)"
 vm "clangarm64" "cd /c/cbm && make -j${JOBS} -f Makefile.cbm CC=clang CXX=clang++ SANITIZE= cbm build/c/test-runner > /tmp/provision-build.log 2>&1 && echo BUILD_OK || (echo BUILD_FAIL; tail -15 /tmp/provision-build.log; exit 1)"
 
 step "6/6 smoke: binary + test-runner start"

@@ -1719,13 +1719,6 @@ int main(int argc, char **argv) {
         }
     }
 #endif
-    int windows_descriptor_role = cbm_cli_windows_payload_descriptor_role(argc, argv);
-    if (windows_descriptor_role >= 0) {
-        return windows_descriptor_role;
-    }
-    if (cbm_cli_windows_launcher_startup_authenticate(argc, argv) != 0) {
-        return EXIT_FAILURE;
-    }
     cbm_daemon_process_role_t role = cbm_daemon_process_role(argc, argv);
     if (role == CBM_DAEMON_PROCESS_INVALID) {
         (void)fprintf(stderr, "codebase-memory-mcp: invalid internal process arguments\n");
