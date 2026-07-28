@@ -198,9 +198,8 @@ services:
     command:
       - |
         scripts/build.sh CC=x86_64-w64-mingw32-clang CXX=x86_64-w64-mingw32-clang++ BUILD_DIR=build/win-cross &&
-        mv build/win-cross/codebase-memory-mcp.exe build/win-cross/codebase-memory-mcp.payload.exe &&
-        mv build/win-cross/codebase-memory-mcp-launcher.exe build/win-cross/codebase-memory-mcp.exe &&
-        WINEDEBUG=-all wine64 ./build/win-cross/codebase-memory-mcp.payload.exe --version &&
+        test ! -e build/win-cross/codebase-memory-mcp.payload.exe &&
+        WINEDEBUG=-all wine64 ./build/win-cross/codebase-memory-mcp.exe --version &&
         WINEDEBUG=-all wine64 cmd /c build/win-cross/codebase-memory-mcp.exe --version
 
   # ── Linux portable (Alpine musl static) ────────────────────

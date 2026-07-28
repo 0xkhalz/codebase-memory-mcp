@@ -30,16 +30,16 @@ local artifact-flow smoke lane.
              matching binary must already have been built (--with-ui for ui).
   --out-dir  where to place the archive (default: repository root).
 
-Make passthrough (VAR=VAL, forwarded to the Windows launcher build):
+Make passthrough (VAR=VAL, forwarded to the build):
   CC= CXX=   compiler override, e.g. CC=clang CXX=clang++.
 
 Environment:
   BUILD_DIR  build tree to archive from (default build/c).
 
-Archive contents (defined here, canonical):
+Archive contents (defined here, canonical) — ONE binary per platform:
   unix:    codebase-memory-mcp LICENSE install.sh THIRD_PARTY_NOTICES.md (.tar.gz)
-  windows: codebase-memory-mcp.exe (launcher) codebase-memory-mcp.payload.exe
-           LICENSE install.ps1 THIRD_PARTY_NOTICES.md (.zip)
+  windows: codebase-memory-mcp.exe LICENSE install.ps1
+           THIRD_PARTY_NOTICES.md (.zip)
 EOF
 }
 
@@ -92,25 +92,28 @@ OUT_DIR="$(mkdir -p "$OUT_DIR" && cd "$OUT_DIR" && pwd)"
 NAME="codebase-memory-mcp${SUFFIX}-${GOOS}-${GOARCH}"
 
 if [ "$GOOS" = "windows" ]; then
-    # The launcher is part of the ARCHIVE layout (launcher fronts the payload),
-    # so it is built here, exactly as the release venue does.
-    make -f Makefile.cbm "$BUILD_DIR/codebase-memory-mcp-launcher.exe" \
-        BUILD_DIR="$BUILD_DIR" ${MAKE_ARGS[@]+"${MAKE_ARGS[@]}"}
+    # Windows ships ONE binary, exactly like every other platform. There is no
+    # launcher stub: a small unsigned PE whose entire job is to verify and
+    # execute another binary is statically indistinguishable from a dropper,
+    # and Defender's ML scored it Trojan:Win32/Wacatac.B!ml on x64 regardless
+    # of what we changed (bcrypt-free, stripped, versioned, and even
+    # resource-free builds were all flagged, while the product binary itself
+    # scans clean on every platform). Self-update — the launcher's whole reason
+    # to exist — moves OUT of the running process into install.ps1: Windows'
+    # executable lock only blocks a process from replacing ITSELF.
     PAYLOAD="$BUILD_DIR/codebase-memory-mcp"
     [ -f "${PAYLOAD}.exe" ] && PAYLOAD="${PAYLOAD}.exe"
     [ -f "$PAYLOAD" ] || { echo "package-release: build first; missing $PAYLOAD" >&2; exit 2; }
     PACK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cbm-package.XXXXXX")"
     trap 'rm -rf "$PACK_DIR"' EXIT
-    cp "$BUILD_DIR/codebase-memory-mcp-launcher.exe" "$PACK_DIR/codebase-memory-mcp.exe"
-    cp "$PAYLOAD" "$PACK_DIR/codebase-memory-mcp.payload.exe"
+    cp "$PAYLOAD" "$PACK_DIR/codebase-memory-mcp.exe"
     cp LICENSE install.ps1 "$PACK_DIR/"
     scripts/gen-third-party-notices.sh "$PACK_DIR/THIRD_PARTY_NOTICES.md"
     (
         cd "$PACK_DIR"
         rm -f "$OUT_DIR/$NAME.zip"
         zip -q "$OUT_DIR/$NAME.zip" \
-            codebase-memory-mcp.exe codebase-memory-mcp.payload.exe \
-            LICENSE install.ps1 THIRD_PARTY_NOTICES.md
+            codebase-memory-mcp.exe LICENSE install.ps1 THIRD_PARTY_NOTICES.md
     )
     echo "=== package-release: $OUT_DIR/$NAME.zip ==="
 else

@@ -206,18 +206,18 @@ jobs:
           mkdir -p "$ARTIFACT_DIR"
           unzip -o "codebase-memory-mcp${SUFFIX}-windows-${ARCH}.zip" -d "$ARTIFACT_DIR"
           test -s "$ARTIFACT_DIR/codebase-memory-mcp.exe"
-          test -s "$ARTIFACT_DIR/codebase-memory-mcp.payload.exe"
-          # Pre-flight both images from a profile-rooted directory: the shared
-          # runner workspace is deliberately not a valid launcher bundle root.
+          # ONE binary per platform: a payload sibling would mean the
+          # AV-flagged launcher stub came back.
+          test ! -e "$ARTIFACT_DIR/codebase-memory-mcp.payload.exe"
+          # Pre-flight the image from a profile-rooted directory: the shared
+          # runner workspace is deliberately not a valid install root.
           PROFILE_ROOT="$(cygpath -u "$USERPROFILE")"
           LAUNCH_DIR="$(mktemp -d "$PROFILE_ROOT/cbm-release-version.XXXXXX")"
           # Best-effort cleanup with one retry: Windows holds the just-exited
           # image's file busy for ~100ms (section teardown / first-touch AV),
           # and a temp dir on an ephemeral runner must never fail the job.
           trap 'rm -rf "$LAUNCH_DIR" 2>/dev/null || { sleep 2; rm -rf "$LAUNCH_DIR" 2>/dev/null || true; }' EXIT
-          cp "$ARTIFACT_DIR/codebase-memory-mcp.exe" \
-            "$ARTIFACT_DIR/codebase-memory-mcp.payload.exe" "$LAUNCH_DIR/"
-          "$LAUNCH_DIR/codebase-memory-mcp.payload.exe" --version
+          cp "$ARTIFACT_DIR/codebase-memory-mcp.exe" "$LAUNCH_DIR/"
           "$LAUNCH_DIR/codebase-memory-mcp.exe" --version
 
       # ONE harness for every venue: the same script win.sh smoke-install and
@@ -241,13 +241,11 @@ jobs:
         run: |
           ARTIFACT_DIR="$(cygpath -u "$RUNNER_TEMP")/cbm-artifact"
           scripts/security-strings.sh "$ARTIFACT_DIR/codebase-memory-mcp.exe"
-          scripts/security-strings.sh "$ARTIFACT_DIR/codebase-memory-mcp.payload.exe"
           PROFILE_ROOT="$(cygpath -u "$USERPROFILE")"
           SECURITY_DIR="$(mktemp -d "$PROFILE_ROOT/cbm-release-security.XXXXXX")"
           # Best-effort cleanup with one retry (see the version preflight).
           trap 'rm -rf "$SECURITY_DIR" 2>/dev/null || { sleep 2; rm -rf "$SECURITY_DIR" 2>/dev/null || true; }' EXIT
-          cp "$ARTIFACT_DIR/codebase-memory-mcp.exe" \
-            "$ARTIFACT_DIR/codebase-memory-mcp.payload.exe" "$SECURITY_DIR/"
+          cp "$ARTIFACT_DIR/codebase-memory-mcp.exe" "$SECURITY_DIR/"
           TMPDIR="$SECURITY_DIR" \
             scripts/security-install.sh "$SECURITY_DIR/codebase-memory-mcp.exe"
 
@@ -256,7 +254,7 @@ jobs:
         run: |
           & "C:\Program Files\Windows Defender\MpCmdRun.exe" -SignatureUpdate 2>$null
           $artifactDir = Join-Path $env:RUNNER_TEMP "cbm-artifact"
-          foreach ($binary in @("codebase-memory-mcp.exe", "codebase-memory-mcp.payload.exe")) {
+          foreach ($binary in @("codebase-memory-mcp.exe")) {
             $result = & "C:\Program Files\Windows Defender\MpCmdRun.exe" -Scan -ScanType 3 -File (Join-Path $artifactDir $binary) -DisableRemediation
             $code = $LASTEXITCODE
             Write-Host $result

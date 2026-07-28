@@ -98,9 +98,8 @@ ALLOWED_CMDS = {
     # CI plumbing
     "gh", "python3", "node", "codesign", "xcrun", "command", "awk",
 }
-# Per-file additions: _build.yml packages artifacts (its make invocation builds
-# the launcher exe for the zip — packaging, not a test leg) and drives npm for
-# the embedded UI; release.yml pushes finished artifacts to registries after
+# Per-file additions: _build.yml packages artifacts (make/strip are packaging
+# steps, not test legs) and drives npm for the embedded UI; release.yml pushes finished artifacts to registries after
 # every product-exercising gate already ran; the brew tap smoke installs the
 # released formula.
 ALLOWED_EXTRA = {

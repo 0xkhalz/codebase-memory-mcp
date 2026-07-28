@@ -163,16 +163,20 @@ require(
     "fixture checksums must name exact artifact basenames, never ./-prefixed paths",
 )
 
-# Native Windows packages and serves the exact five-file release bundle, then
-# runs the full smoke from a protected profile-rooted directory/cache.
+# Native Windows packages and serves the exact four-file release bundle (ONE
+# binary, like every other platform), then runs the full smoke from a protected
+# profile-rooted directory/cache.
 for name in (
     "codebase-memory-mcp.exe",
-    "codebase-memory-mcp.payload.exe",
     "LICENSE",
     "install.ps1",
     "THIRD_PARTY_NOTICES.md",
 ):
     require(name in vm_smoke, f"vm-smoke.sh archive must include {name}")
+require(
+    "codebase-memory-mcp.payload.exe" not in vm_smoke,
+    "vm-smoke.sh must not stage a Windows launcher/payload pair",
+)
 require("checksums.txt" in vm_smoke, "vm-smoke.sh must generate checksums.txt")
 require(
     "SMOKE_DOWNLOAD_URL=" in vm_smoke
@@ -245,17 +249,21 @@ for service in ("smoke-windows:",):
     )
     section = match.group("body") if match else ""
     require(
-        "mv build/win-cross/codebase-memory-mcp.exe "
-        "build/win-cross/codebase-memory-mcp.payload.exe" in section
-        and "mv build/win-cross/codebase-memory-mcp-launcher.exe "
-        "build/win-cross/codebase-memory-mcp.exe" in section,
-        f"docker-compose {service[:-1]} must assemble the Windows launcher/payload pair",
+        "codebase-memory-mcp-launcher" not in section
+        and "codebase-memory-mcp.payload.exe" not in section.replace(
+            "test ! -e build/win-cross/codebase-memory-mcp.payload.exe", ""
+        ),
+        f"docker-compose {service[:-1]} must build ONE Windows binary, not a launcher/payload pair",
+    )
+    require(
+        "test ! -e build/win-cross/codebase-memory-mcp.payload.exe" in section,
+        f"docker-compose {service[:-1]} must assert no payload sibling is produced",
     )
 require(
-    "wine64 ./build/win-cross/codebase-memory-mcp.payload.exe --version" in compose
+    "wine64 ./build/win-cross/codebase-memory-mcp.exe --version" in compose
     and "wine64 cmd /c build/win-cross/codebase-memory-mcp.exe --version" in compose,
-    "docker-compose Windows cross-smoke must execute the payload through Wine and the launcher "
-    "through a Wine Windows parent",
+    "docker-compose Windows cross-smoke must execute the single binary through Wine and through a "
+    "Wine Windows parent",
 )
 require(
     "soak-windows:" not in compose,
