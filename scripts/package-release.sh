@@ -91,6 +91,53 @@ BUILD_DIR="${BUILD_DIR:-build/c}"
 OUT_DIR="$(mkdir -p "$OUT_DIR" && cd "$OUT_DIR" && pwd)"
 NAME="codebase-memory-mcp${SUFFIX}-${GOOS}-${GOARCH}"
 
+# Ship every release binary stripped. Production already builds without -g, but
+# the linker still keeps a ~536 KB .symtab, so releases carried their full
+# symbol table to users: bigger downloads and a free map of the internals, with
+# nothing gained. Nothing symbolizes at runtime (mem_profile.c is not in the
+# production build and never calls backtrace_symbols), so this costs no
+# diagnostics.
+#
+# It also had a concrete cost. Microsoft's ML scored the unstripped linux-amd64
+# binary Trojan:Script/Wacatac.B!ml (1 engine of 62) and blocked release run
+# 30398064336 at the VirusTotal gate. That verdict is a decision-boundary
+# artifact rather than a property of the code -- the dry-run build two days
+# earlier is the same program plus 10 KB and scans clean, and the ui build of
+# the same commit was never flagged. Stripping removes the symbol surface those
+# models score and cleared BOTH flagged builds (Wacatac.B and Wacatac.C)
+# without changing what the program does.
+#
+# macOS is ad-hoc signed by the build workflow BEFORE this script runs, and
+# stripping invalidates that signature, so Mach-O is re-signed here. Skipping
+# the re-sign ships a binary the kernel refuses to exec.
+strip_release_binary() {
+    local binary="$1"
+    [ -f "$binary" ] || return 0
+    local stripped=""
+    for tool in "${STRIP:-}" llvm-strip strip; do
+        [ -n "$tool" ] || continue
+        command -v "$tool" >/dev/null 2>&1 || continue
+        if [ "$GOOS" = "darwin" ]; then
+            # -x keeps external symbols: a full strip of a Mach-O can leave an
+            # image dyld will not load.
+            "$tool" -x "$binary" 2>/dev/null && stripped="$tool"
+        else
+            "$tool" --strip-all "$binary" 2>/dev/null && stripped="$tool"
+        fi
+        [ -n "$stripped" ] && break
+    done
+    if [ -z "$stripped" ]; then
+        echo "package-release: no working strip for $binary" >&2
+        return 1
+    fi
+    if [ "$GOOS" = "darwin" ]; then
+        command -v codesign >/dev/null 2>&1 &&
+            codesign --sign - --force "$binary" 2>/dev/null
+    fi
+    echo "=== package-release: stripped $(basename "$binary") ==="
+    return 0
+}
+
 if [ "$GOOS" = "windows" ]; then
     # Windows ships ONE binary, exactly like every other platform. There is no
     # launcher stub: a small unsigned PE whose entire job is to verify and
@@ -107,6 +154,7 @@ if [ "$GOOS" = "windows" ]; then
     PACK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cbm-package.XXXXXX")"
     trap 'rm -rf "$PACK_DIR"' EXIT
     cp "$PAYLOAD" "$PACK_DIR/codebase-memory-mcp.exe"
+    strip_release_binary "$PACK_DIR/codebase-memory-mcp.exe" || exit 2
     cp LICENSE install.ps1 "$PACK_DIR/"
     scripts/gen-third-party-notices.sh "$PACK_DIR/THIRD_PARTY_NOTICES.md"
     (
@@ -119,6 +167,7 @@ if [ "$GOOS" = "windows" ]; then
 else
     [ -f "$BUILD_DIR/codebase-memory-mcp" ] ||
         { echo "package-release: build first; missing $BUILD_DIR/codebase-memory-mcp" >&2; exit 2; }
+    strip_release_binary "$BUILD_DIR/codebase-memory-mcp" || exit 2
     cp LICENSE install.sh "$BUILD_DIR/"
     scripts/gen-third-party-notices.sh "$BUILD_DIR/THIRD_PARTY_NOTICES.md"
     tar -czf "$OUT_DIR/$NAME.tar.gz" -C "$BUILD_DIR" \
