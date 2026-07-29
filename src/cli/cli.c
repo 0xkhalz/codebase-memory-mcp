@@ -11168,12 +11168,6 @@ static bool check_already_latest(void) {
 
 #endif /* CBM_CLI_ENABLE_TEST_API */
 
-/* One token on purpose: the security audit extracts URLs literally, so a URL
- * split across string-literal continuations cannot be matched against the
- * allow-list. Printed for the user to paste; never fetched by this binary. */
-#define CBM_INSTALL_SH_URL \
-    "https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh"
-
 int cbm_cmd_update(int argc, char **argv) {
     parse_auto_answer(argc, argv);
 
@@ -11253,7 +11247,9 @@ int cbm_cmd_update(int argc, char **argv) {
         if (have_dir) {
             printf("  powershell -ExecutionPolicy Bypass -File \"%s\\install.ps1\"\n\n", self_dir);
         } else {
-            printf("  powershell -ExecutionPolicy Bypass -File install.ps1\n\n");
+            printf("  powershell -ExecutionPolicy Bypass -File install.ps1\n"
+                   "  (ships in the release archive, and is placed beside the\n"
+                   "  binary on install)\n\n");
         }
         printf("It downloads the latest release, verifies its checksum, and replaces\n"
                "this binary in place. If PowerShell refuses to run the script because\n"
@@ -11263,7 +11259,8 @@ int cbm_cmd_update(int argc, char **argv) {
         if (have_dir) {
             printf("  bash \"%s/install.sh\"\n\n", self_dir);
         } else {
-            printf("  curl -fsSL " CBM_INSTALL_SH_URL " | bash\n\n");
+            printf("  install.sh (ships in the release archive, and is placed\n"
+                   "  beside the binary on install)\n\n");
         }
         printf("It downloads the latest release, verifies its checksum, and replaces\n"
                "this binary in place. install.sh is idempotent, so re-running it IS\n"
