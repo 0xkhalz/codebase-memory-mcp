@@ -334,9 +334,23 @@ require(
     and 'STALE_CMD="$UPDATE_DRIVER"' in smoke_test,
     "POSIX Phase 14 must refresh from positive running-image identity without probing config paths",
 )
+# This used to pin the retired path so Windows Phase 14 carried a config entry
+# naming a missing executable. Two things retired that intent. The fixture now
+# COPIES a binary to the retired path, so it stopped being missing regardless of
+# what this string says -- the requirement was only ever checking the string,
+# never the property. And Windows update is a handoff to install.ps1 now, so
+# nothing rewrites this entry in-process the way the launcher-managed update
+# did: an entry naming a foreign path simply survives to uninstall, which
+# correctly refuses to remove a config entry owned by a DIFFERENT installation,
+# and 14f would then be demanding the one thing uninstall must never do.
+#
+# The missing-executable classification lives on in named unit tests instead of
+# here: cli_editor_mcp_preserves_unrecorded_posix_absolute_entries_without_probe
+# and cli_editor_mcp_preserves_unsafe_windows_drive_probe (tests/test_cli.c),
+# the latter covering the Windows missing-drive case specifically.
 require(
-    'STALE_CMD="$UPDATE_HOME/retired-install/codebase-memory-mcp.exe"' in smoke_test,
-    "Windows Phase 14 must test a literal missing executable, not an ambiguous extensionless command",
+    'STALE_CMD="$UPDATE_HOME/.local/bin/codebase-memory-mcp.exe"' in smoke_test,
+    "Windows Phase 14 must seed the MCP command at the binary uninstall will own",
 )
 for changed_path in (
     "install\\.(sh|ps1)",
