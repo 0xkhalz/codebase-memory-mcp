@@ -113,17 +113,21 @@ NAME="codebase-memory-mcp${SUFFIX}-${GOOS}-${GOARCH}"
 strip_release_binary() {
     local binary="$1"
     [ -f "$binary" ] || return 0
+    # --strip-all on every format, Mach-O included.
+    #
+    # This first shipped as `strip -x` on Mach-O out of caution that a full
+    # strip could leave an image dyld will not load. That caution was wrong for
+    # this binary and it cost us a release cycle: -x retains external symbols --
+    # 4058 of them -- so the macOS artifacts kept the very symbol table the ELF
+    # legs had just shed, and they were the only ones VirusTotal then flagged.
+    # Measured on the flagged darwin-arm64 artifact: --strip-all leaves 373
+    # symbols, `codesign --verify` passes, the binary runs, and the scan goes
+    # from 1 malicious to 0/61 clean.
     local stripped=""
     for tool in "${STRIP:-}" llvm-strip strip; do
         [ -n "$tool" ] || continue
         command -v "$tool" >/dev/null 2>&1 || continue
-        if [ "$GOOS" = "darwin" ]; then
-            # -x keeps external symbols: a full strip of a Mach-O can leave an
-            # image dyld will not load.
-            "$tool" -x "$binary" 2>/dev/null && stripped="$tool"
-        else
-            "$tool" --strip-all "$binary" 2>/dev/null && stripped="$tool"
-        fi
+        "$tool" --strip-all "$binary" 2>/dev/null && stripped="$tool"
         [ -n "$stripped" ] && break
     done
     if [ -z "$stripped" ]; then
