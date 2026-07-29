@@ -249,11 +249,6 @@ static bool main_test_worker_project_lock_marker(const main_local_cli_mutation_t
     return close(marker) == 0 && written;
 #endif
 }
-#else
-static bool main_test_worker_project_lock_marker(const main_local_cli_mutation_t *mutation) {
-    (void)mutation;
-    return true;
-}
 #endif
 
 static bool main_local_cli_mutation_begin(void *context, const char *project) {
@@ -280,6 +275,7 @@ static bool main_local_cli_mutation_begin(void *context, const char *project) {
             held->lease = lease;
             held->next = mutation->leases;
             mutation->leases = held;
+#ifdef CBM_ENABLE_TEST_SEAMS
             if (!main_test_worker_project_lock_marker(mutation)) {
                 mutation->leases = held->next;
                 main_project_lock_release_fully(&held->lease);
@@ -287,6 +283,7 @@ static bool main_local_cli_mutation_begin(void *context, const char *project) {
                 free(held);
                 return false;
             }
+#endif
             return true;
         }
         main_project_lock_release_fully(&lease);
@@ -405,6 +402,20 @@ static bool worker_prepare_process_group(void) {
     return (setpgid(0, 0) == 0 || getpgrp() == process_id) && getpgrp() == process_id;
 }
 
+/* A worker that cannot contain its own process tree must not index: on failure
+ * it would keep running as an orphan with no supervisor able to reap it. Shared
+ * by the ordered containment steps in the worker path so all of them fail
+ * identically — write() and _exit() rather than fprintf/exit, because this runs
+ * after fork-sensitive setup and must not touch stdio locks or atexit handlers.
+ */
+static void worker_containment_unavailable(void) {
+    static const char message[] =
+        "CBM index worker could not start: process-tree containment unavailable\n";
+    (void)write(STDERR_FILENO, message, sizeof(message) - 1);
+    (void)kill(-getpid(), SIGKILL);
+    _exit(EXIT_FAILURE);
+}
+
 /* Test-only crash-orphan probe used by tests/test_worker_watchdog.sh. It is
  * created before the watchdog thread so fork never occurs in a multithreaded
  * worker, and inherits the worker's isolated process group.
@@ -456,10 +467,6 @@ static bool worker_start_watchdog_test_descendant(void) {
         (void)waitpid(descendant, NULL, 0);
     }
     return written;
-}
-#else
-static bool worker_start_watchdog_test_descendant(void) {
-    return true;
 }
 #endif
 
@@ -2045,14 +2052,28 @@ int main(int argc, char **argv) {
                                           invocation.marker_file, invocation.quarantine_file,
                                           invocation.memory_budget_bytes);
 #ifndef _WIN32
+        /* Split into three ordered steps rather than one condition, because the
+         * ORDER is load-bearing and the middle step only exists in test builds:
+         *   1. establish the isolated process group,
+         *   2. (test builds) start the crash-orphan probe, which must inherit
+         *      that group and must fork BEFORE the watchdog thread exists —
+         *      forking a multithreaded process is the bug this ordering avoids,
+         *   3. start the parent-death watchdog thread.
+         * Keeping the probe inside a single `||` chain made its call
+         * unconditional in the source, so with the seam compiled out cppcheck
+         * correctly reported `!probe()` as always false. Guarding the STEP, not
+         * stubbing the function, means release builds simply do not have it. */
         if (!worker_prepare_process_group() || process_initial_ppid <= 1 ||
-            getppid() != process_initial_ppid || !worker_start_watchdog_test_descendant() ||
-            !worker_start_parent_watchdog(process_initial_ppid)) {
-            static const char message[] =
-                "CBM index worker could not start: process-tree containment unavailable\n";
-            (void)write(STDERR_FILENO, message, sizeof(message) - 1);
-            (void)kill(-getpid(), SIGKILL);
-            _exit(EXIT_FAILURE);
+            getppid() != process_initial_ppid) {
+            worker_containment_unavailable();
+        }
+#ifdef CBM_ENABLE_TEST_SEAMS
+        if (!worker_start_watchdog_test_descendant()) {
+            worker_containment_unavailable();
+        }
+#endif
+        if (!worker_start_parent_watchdog(process_initial_ppid)) {
+            worker_containment_unavailable();
         }
 #endif
         cbm_index_supervisor_mark_host();
