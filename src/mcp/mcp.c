@@ -74,10 +74,16 @@ enum {
 #include <process.h>
 #include <windows.h>
 #define getpid _getpid
+/* Write through the descriptor cbm_mkstemp returned rather than reopening its
+ * path — see search_scratch_open. Mirrors config_toml_edit.c's toml_fdopen. */
+#define mcp_fdopen _fdopen
+#define mcp_close _close
 #else
 #include <unistd.h>
 #include <poll.h>
 #include <fcntl.h>
+#define mcp_fdopen fdopen
+#define mcp_close close
 #endif
 #include <yyjson/yyjson.h>
 #include <ctype.h>
@@ -8972,10 +8978,14 @@ static void classify_all_grep_hits(grep_match_t *gm, int gm_count, cbm_store_t *
  * normalized on Windows first), so prefiltering can only skip files whose
  * hits would be dropped anyway — results-preserving by construction.
  * *out_written receives the number of records written (0 = the filter
- * excluded every indexed file). */
+ * excluded every indexed file).
+ *
+ * `fl` is the caller's already-open binary stream on the descriptor cbm_mkstemp
+ * created inside the private scratch directory; this function never opens or
+ * closes it, so the list is never reachable through a predictable pathname. */
 static bool write_scoped_filelist(cbm_mcp_server_t *srv, const char *project, const char *root_path,
-                                  const char *filelist, bool has_path_filter,
-                                  cbm_regex_t *path_regex, int *out_written) {
+                                  FILE *fl, bool has_path_filter, cbm_regex_t *path_regex,
+                                  int *out_written) {
     *out_written = 0;
     cbm_store_t *pre_store = resolve_store(srv, project);
     if (!pre_store) {
@@ -8987,7 +8997,6 @@ static bool write_scoped_filelist(cbm_mcp_server_t *srv, const char *project, co
         indexed_count == 0) {
         return false;
     }
-    FILE *fl = fopen(filelist, "wb");
     bool ok = false;
     int written = 0;
     if (fl) {
@@ -9026,7 +9035,8 @@ static bool write_scoped_filelist(cbm_mcp_server_t *srv, const char *project, co
 #endif
             written++;
         }
-        (void)fclose(fl);
+        /* The stream stays open — the caller owns it and closes it (flushing
+         * these records to disk) before the grep subprocess reads the list. */
         ok = true;
     }
     for (int fi = 0; fi < indexed_count; fi++) {
@@ -9107,15 +9117,115 @@ static bool validate_search_args(const char *root_path, const char *file_pattern
     return true;
 }
 
-/* Write pattern to a temp file for grep -f. Returns true on success. */
-static bool write_pattern_file(char *tmpfile, int tmpfile_sz, const char *pattern) {
-    snprintf(tmpfile, tmpfile_sz, "%s/cbm_search_%d.pat", cbm_tmpdir(), (int)getpid());
-    FILE *tf = fopen(tmpfile, "w");
-    if (!tf) {
+/* Private scratch for one search_code scan: the grep -f pattern file and the
+ * scoped file list.
+ *
+ * Both used to be fixed, guessable paths derived from the pid —
+ * "<tmp>/cbm_search_<pid>.pat" and its ".files" companion — opened with a plain
+ * fopen. Another local user could pre-plant a symlink at either name and
+ * redirect the write; two searches in the same process could also collide on
+ * them. Now both live inside a directory created by cbm_mkdtemp (0700 on POSIX,
+ * an explicit owner-only DACL on Windows) under an unguessable XXXXXX suffix,
+ * and each file is created by cbm_mkstemp — O_CREAT|O_EXCL at mode 0600, so the
+ * create fails rather than following anything already at the name. Every write
+ * goes through the descriptor cbm_mkstemp returned; neither path is ever
+ * reopened by name.
+ *
+ * Sizing: cbm_mkdtemp copies its expanded result back into `dir`, and its own
+ * internal buffer is CBM_SZ_512, so `dir` must be at least that big to receive
+ * it. The two file paths are `dir` plus a short basename. */
+typedef struct {
+    char dir[CBM_SZ_512];
+    char pattern_path[CBM_SZ_1K];
+    char filelist_path[CBM_SZ_1K];
+    FILE *filelist; /* held open for write_scoped_filelist; closed by the caller */
+} search_scratch_t;
+
+/* Create <scratch>/<basename>-XXXXXX exclusively and return a stream on the
+ * descriptor. On failure `path_out` is emptied so cleanup skips it. */
+static FILE *search_scratch_file(const char *dir, const char *basename, char *path_out,
+                                 size_t path_sz) {
+    path_out[0] = '\0';
+    int written = snprintf(path_out, path_sz, "%s/%s-XXXXXX", dir, basename);
+    if (written <= 0 || (size_t)written >= path_sz) {
+        path_out[0] = '\0';
+        return NULL;
+    }
+    int descriptor = cbm_mkstemp(path_out);
+    if (descriptor < 0) {
+        path_out[0] = '\0';
+        return NULL;
+    }
+    /* Binary mode: the file list uses an explicit per-platform record separator
+     * (NUL for xargs -0, newline for PowerShell) that CRLF translation would
+     * corrupt — the same reason the previous code opened it "wb". */
+    FILE *stream = mcp_fdopen(descriptor, "wb");
+    if (!stream) {
+        (void)mcp_close(descriptor);
+        (void)cbm_unlink(path_out);
+        path_out[0] = '\0';
+    }
+    return stream;
+}
+
+/* Anchored cleanup: removes both scratch files and the private directory. Safe
+ * to call more than once and on any partially-initialised scratch, so every
+ * exit from handle_search_code can call it unconditionally. rmdir succeeding is
+ * itself the proof nothing was left inside. */
+static void search_scratch_close(search_scratch_t *scratch) {
+    if (scratch->filelist) {
+        (void)fclose(scratch->filelist);
+        scratch->filelist = NULL;
+    }
+    if (scratch->pattern_path[0] != '\0') {
+        (void)cbm_unlink(scratch->pattern_path);
+        scratch->pattern_path[0] = '\0';
+    }
+    if (scratch->filelist_path[0] != '\0') {
+        (void)cbm_unlink(scratch->filelist_path);
+        scratch->filelist_path[0] = '\0';
+    }
+    if (scratch->dir[0] != '\0') {
+        (void)cbm_rmdir(scratch->dir);
+        scratch->dir[0] = '\0';
+    }
+}
+
+/* Open the scratch directory, write `pattern` to the grep -f file, and leave the
+ * file list open for write_scoped_filelist. Returns true on success; on failure
+ * everything already created is removed before returning. */
+static bool search_scratch_open(search_scratch_t *scratch, const char *pattern) {
+    scratch->dir[0] = '\0';
+    scratch->pattern_path[0] = '\0';
+    scratch->filelist_path[0] = '\0';
+    scratch->filelist = NULL;
+
+    int written =
+        snprintf(scratch->dir, sizeof(scratch->dir), "%s/cbm-search-XXXXXX", cbm_tmpdir());
+    if (written <= 0 || (size_t)written >= sizeof(scratch->dir) || !cbm_mkdtemp(scratch->dir)) {
+        scratch->dir[0] = '\0';
         return false;
     }
-    (void)fprintf(tf, "%s\n", pattern);
-    (void)fclose(tf);
+
+    FILE *pattern_file = search_scratch_file(scratch->dir, "pat", scratch->pattern_path,
+                                             sizeof(scratch->pattern_path));
+    if (!pattern_file) {
+        search_scratch_close(scratch);
+        return false;
+    }
+    bool ok = fprintf(pattern_file, "%s\n", pattern) >= 0;
+    ok = fclose(pattern_file) == 0 && ok;
+    if (!ok) {
+        search_scratch_close(scratch);
+        return false;
+    }
+
+    scratch->filelist = search_scratch_file(scratch->dir, "files", scratch->filelist_path,
+                                            sizeof(scratch->filelist_path));
+    if (!scratch->filelist) {
+        search_scratch_close(scratch);
+        return false;
+    }
     return true;
 }
 
@@ -9245,8 +9355,8 @@ static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
     }
 
     /* ── Phase 1: Grep scan ──────────────────────────────────── */
-    char tmpfile[CBM_SZ_256];
-    if (!write_pattern_file(tmpfile, sizeof(tmpfile), pattern)) {
+    search_scratch_t scratch;
+    if (!search_scratch_open(&scratch, pattern)) {
         char errmsg[CBM_SZ_256];
         snprintf(errmsg, sizeof(errmsg), "search failed: cannot create temp file (%s)",
                  strerror(errno));
@@ -9256,6 +9366,8 @@ static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
         free(file_pattern);
         return cbm_mcp_text_result(errmsg, true);
     }
+    const char *tmpfile = scratch.pattern_path;
+    const char *filelist = scratch.filelist_path;
 
     /* No grep-level match limit — let grep find all matches, then dedup and
      * cap in our code. The -m flag caused results from large vendored files
@@ -9267,13 +9379,16 @@ static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
      * Query the graph for distinct file paths, write them to a temp file,
      * then use xargs to pass them to grep. Falls back to recursive grep if
      * no indexed files found (project not fully indexed). */
-    char filelist[CBM_SZ_256];
-    snprintf(filelist, sizeof(filelist), "%s.files", tmpfile);
     bool scoped = false;
     int scoped_written = 0;
 
-    scoped = write_scoped_filelist(srv, project, root_path, filelist, has_path_filter,
+    scoped = write_scoped_filelist(srv, project, root_path, scratch.filelist, has_path_filter,
                                    has_path_filter ? &path_regex : NULL, &scoped_written);
+    /* Close before grep runs: this is what flushes the records the helper wrote
+     * through the descriptor. Clearing the field hands ownership to
+     * search_scratch_close, which still unlinks the file itself. */
+    (void)fclose(scratch.filelist);
+    scratch.filelist = NULL;
 
     /* Collect grep matches into array */
     int gm_count = 0;
@@ -9284,8 +9399,7 @@ static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
          * platform-dependent (GNU execs grep once with no operands, BSD
          * skips), and the post-grep filter would drop every hit anyway. */
         gm = malloc(sizeof(grep_match_t)); /* empty set; freed below */
-        cbm_unlink(tmpfile);
-        cbm_unlink(filelist);
+        search_scratch_close(&scratch);
     } else {
         char cmd[CBM_SZ_4K];
         build_grep_cmd(cmd, sizeof(cmd), use_regex, scoped, file_pattern, tmpfile, filelist,
@@ -9293,10 +9407,7 @@ static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
 
         FILE *fp = cbm_popen(cmd, "r");
         if (!fp) {
-            cbm_unlink(tmpfile);
-            if (scoped) {
-                cbm_unlink(filelist);
-            }
+            search_scratch_close(&scratch);
             free(root_path);
             free(pattern);
             free(project);
@@ -9307,10 +9418,9 @@ static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
         gm = collect_grep_matches(fp, root_path, strlen(root_path), has_path_filter, &path_regex,
                                   grep_limit, &gm_count);
         cbm_pclose(fp);
-        cbm_unlink(tmpfile);
-        if (scoped) {
-            cbm_unlink(filelist);
-        }
+        /* Both scratch files and the private directory go here — unlike the old
+         * code, the file list is removed even when the scan was not scoped. */
+        search_scratch_close(&scratch);
     }
 
     /* ── Phase 2+3: Block expansion + graph ranking ──────────── */

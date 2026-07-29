@@ -5947,7 +5947,21 @@ static int cli_ensure_windows_user_path(const char *bin_dir, bool dry_run) {
 
 #endif
 
-/* ── Tar.gz extraction ────────────────────────────────────────── */
+/* ── Tar.gz / zip extraction (TEST-ONLY) ──────────────────────────
+ *
+ * The only callers of this block are the in-process updater — already excluded
+ * from release builds — and tests/test_cli.c. The DEFINITIONS were nevertheless
+ * unguarded, so every shipped binary carried a complete archive extractor with
+ * no way to reach it: the translation unit is compiled and linked whole, with no
+ * LTO or function-section garbage collection to drop it.
+ *
+ * "Download an archive, decompress it in memory, pick an executable out of it,
+ * write it to disk and mark it executable" is the canonical dropper composite.
+ * We do not do that in production, and now we cannot: the capability is not in
+ * the artifact rather than merely unreachable within it. Verified by
+ * scripts/ci/check-binary-composition.sh.
+ */
+#ifdef CBM_CLI_ENABLE_TEST_API
 
 /* Decompress gzip data into a malloc'd buffer. Returns NULL on failure.
  * *out_total receives the decompressed size. Caller must free the result. */
@@ -6216,6 +6230,8 @@ unsigned char *cbm_extract_binary_from_zip(const unsigned char *data, int data_l
 
     return NULL;
 }
+
+#endif /* CBM_CLI_ENABLE_TEST_API — tar.gz / zip extraction */
 
 /* ── Index management ─────────────────────────────────────────── */
 
