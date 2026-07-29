@@ -151,7 +151,27 @@ fi
 trap 'smoke_rmtree "$TMPDIR" "${DRYRUN_HOME:-}"' EXIT
 
 CLI_STDERR=$(smoke_mktemp_file)
-cli() { "$BINARY" cli "$@" 2>"$CLI_STDERR"; }
+# 10 of the cli call sites assign directly (VAR=$(cli ...)). Under
+# `set -euo pipefail` a non-zero exit there kills the smoke with NOTHING
+# printed: no FAIL line, no stderr, just an abort indistinguishable from a hang,
+# a starved runner, or a real regression. One such abort cost a full Windows
+# cycle just to locate, and still could not be attributed. Surface the command
+# and its stderr here, while we still can.
+#
+# Neutral wording on purpose: one call site deliberately expects a non-zero exit
+# (the unknown-function query must error loudly), so this must not read as a
+# failure on its own.
+cli() {
+  local rc=0
+  "$BINARY" cli "$@" 2>"$CLI_STDERR" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    {
+      printf 'cli: `%s` exited %s\n' "$*" "$rc"
+      sed 's/^/  /' "$CLI_STDERR" 2>/dev/null
+    } >&2
+  fi
+  return "$rc"
+}
 
 echo "=== Phase 1: version ==="
 VERSION_STATUS=0
