@@ -233,22 +233,18 @@ jobs:
           vt_api_key: ${{ secrets.VIRUS_TOTAL_SCANNER_API_KEY }}
           files: binaries/*
 
-      # VERSION + GH_TOKEN enable the pre-release ML false-positive tolerance:
-      # the gate may downgrade a single-engine Microsoft "!ml" verdict to
-      # TOLERATED, but only for -rc./-pre versions and only when hash-pinned
-      # Defender ENDPOINT evidence is attached to the draft release
-      # (defender-endpoint-verification.txt, from scripts/ci/av-endpoint-verify.sh).
+      # ZERO tolerance: any detection on any artifact blocks the release.
+      # False positives are resolved upstream (Microsoft false-positive
+      # submission for the exact hashes, then re-run this job — no rebuild),
+      # never by loosening this gate.
       - name: Wait for VirusTotal results
         env:
           VT_API_KEY: ${{ secrets.VIRUS_TOTAL_SCANNER_API_KEY }}
           VT_ANALYSIS: ${{ steps.virustotal.outputs.analysis }}
-          VERSION: ${{ inputs.version }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: scripts/ci/check-virustotal.sh
 
-      # Renders per-binary sha256 + VT links into the notes; when the gate
-      # tolerated an ML false positive it states that honestly instead of
-      # claiming "0 detections".
+      # Renders per-binary sha256 + VT links into the notes; only reachable
+      # after the zero-tolerance gate passed, so "0 detections" is verified.
       - name: Append VirusTotal scan links to release notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
