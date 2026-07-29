@@ -6759,6 +6759,7 @@ int cbm_cli_checksum_manifest_digest(const char *manifest_path, const char *arch
 
 /* ── Download helper (shell-free curl via exec) ───────────────── */
 
+#ifdef CBM_CLI_ENABLE_TEST_API
 static bool cli_download_is_explicit_file_override(const char *url) {
     char override_buffer[CLI_BUF_512];
     const char *override =
@@ -6782,6 +6783,7 @@ static const char *cli_download_protocol(const char *url) {
     return NULL;
 }
 
+/* Download primitives: update was their only caller. */
 static int cbm_download_to_file(const char *url, const char *dest) {
     const char *protocol = cli_download_protocol(url);
     if (!protocol || !dest) {
@@ -6810,6 +6812,8 @@ static int cbm_download_to_file_quiet(const char *url, const char *dest) {
     return cbm_exec_no_shell(argv);
 }
 
+#endif /* CBM_CLI_ENABLE_TEST_API */
+
 /* ── macOS ad-hoc signing ─────────────────────────────────────── */
 
 #ifdef __APPLE__
@@ -6824,6 +6828,7 @@ static int cbm_macos_adhoc_sign(const char *binary_path) {
 }
 #endif
 
+#ifdef CBM_CLI_ENABLE_TEST_API
 /* Download checksums.txt and verify the archive integrity. Every non-zero
  * result is a fail-closed refusal; verification is never optional. */
 static int verify_download_checksum(const char *archive_path, const char *archive_name) {
@@ -6902,8 +6907,11 @@ static int verify_download_checksum(const char *archive_path, const char *archiv
     return 0;
 }
 
+#endif /* CBM_CLI_ENABLE_TEST_API */
+
 /* ── Detect OS/arch for download URL ──────────────────────────── */
 
+#ifdef CBM_CLI_ENABLE_TEST_API
 static const char *detect_os(void) {
 #ifdef _WIN32
     return "windows";
@@ -6921,6 +6929,8 @@ static const char *detect_arch(void) {
     return "amd64";
 #endif
 }
+
+#endif /* CBM_CLI_ENABLE_TEST_API */
 
 /* ── Agent config install/refresh (shared by install + update) ── */
 
@@ -10739,6 +10749,7 @@ typedef struct {
     bool delete_indexes;
 } extract_install_args_t;
 
+#ifdef CBM_CLI_ENABLE_TEST_API
 typedef struct {
     const char *bin_dest;
     const char *home;
@@ -10942,6 +10953,13 @@ static int extract_and_install_binary(extract_install_args_t args) {
     return activation_rc == CLI_OK ? CLI_OK : CLI_TRUE;
 }
 
+#endif /* CBM_CLI_ENABLE_TEST_API */
+
+#ifdef CBM_CLI_ENABLE_TEST_API
+/* Update-only helpers. The release build hands updating to the install
+ * script, so none of this ships: no release URL construction, no archive
+ * download, no extract-and-exec. Retained for the C suite, which still
+ * covers the flow through the activation test seam. */
 /* Build the download URL for the update command. */
 static void build_update_url(char *url, int url_sz, const char *os, const char *arch,
                              const char *ext, bool want_ui) {
@@ -11148,6 +11166,8 @@ static bool check_already_latest(void) {
     return false;
 }
 
+#endif /* CBM_CLI_ENABLE_TEST_API */
+
 int cbm_cmd_update(int argc, char **argv) {
     parse_auto_answer(argc, argv);
 
@@ -11170,53 +11190,88 @@ int cbm_cmd_update(int argc, char **argv) {
         }
     }
 
-#ifdef _WIN32
-    /* Windows updates run from install.ps1, not from this process.
+    /* Updates run from the install script, not from this process — on every
+     * platform.
      *
-     * A running .exe cannot replace itself on Windows — the image lock refuses
-     * the replace — so an in-process updater needs a second, permanently
-     * resident binary to swap the first one out. That launcher stub (small,
-     * unsigned, doing nothing but verify-and-execute) is exactly the shape
-     * Defender's ML scores as a dropper, and on x64 no build variant escaped
-     * it. Handing the swap to a script that runs while we are NOT running
-     * removes the constraint and the stub together: one binary per platform,
-     * matching Linux and macOS.
+     * Windows forced the split first: a running .exe cannot replace itself, so
+     * an in-process updater needed a second resident binary to swap the first
+     * one out, and that launcher stub was exactly the shape Defender's ML
+     * scores as a dropper.
      *
-     * install.ps1 ships beside the binary and is idempotent, so re-running it
-     * IS the update. Print the exact command instead of feigning self-update. */
-    bool update_seam_portable = false;
-#ifdef CBM_CLI_ENABLE_TEST_API
-    update_seam_portable = g_cli_activation_test_ops_set;
-    if (update_seam_portable) {
-        (void)fprintf(stderr, "*** cbm test seam: portable update flow engaged; the Windows "
-                              "script-update handoff is bypassed (test builds only) ***\n");
-    }
+     * The rest followed for the same reason rather than a different one. An
+     * in-process updater is, structurally, a downloader: it fetches a remote
+     * archive, extracts it, marks the result executable and runs it. That is
+     * the behaviour Microsoft's Wacatac family describes almost verbatim, and
+     * carrying it in the product binary put download/extract/chmod/exec in
+     * every shipped artifact for a command most users run a handful of times.
+     *
+     * The install script already does all of it, is idempotent -- so re-running
+     * it IS the update -- and runs while cbm is NOT running. Print the exact
+     * command instead of feigning self-update. */
+#ifndef CBM_CLI_ENABLE_TEST_API
+    /* A release build has nothing to do but hand off. The flags are still
+     * parsed and validated above, so `update --dry-run` and friends keep
+     * rejecting typos instead of silently accepting them. */
+    (void)dry_run;
+    (void)force;
+    (void)variant_flag;
 #endif
-    if (!update_seam_portable) {
+#ifdef CBM_CLI_ENABLE_TEST_API
+    if (g_cli_activation_test_ops_set) {
+        (void)fprintf(stderr, "*** cbm test seam: portable update flow engaged; the "
+                              "script-update handoff is bypassed (test builds only) ***\n");
+    } else
+#endif
+    {
+        char self_dir[CLI_BUF_1K] = {0};
+        bool have_dir = false;
+#ifdef _WIN32
         /* Native separators on purpose: this path is printed for the user to
          * paste into PowerShell verbatim. */
-        char self_exe[CLI_BUF_1K] = {0};
-        DWORD self_len = GetModuleFileNameA(NULL, self_exe, (DWORD)sizeof(self_exe));
+        DWORD self_len = GetModuleFileNameA(NULL, self_dir, (DWORD)sizeof(self_dir));
         char *last_sep =
-            (self_len > 0 && (size_t)self_len < sizeof(self_exe)) ? strrchr(self_exe, '\\') : NULL;
+            (self_len > 0 && (size_t)self_len < sizeof(self_dir)) ? strrchr(self_dir, '\\') : NULL;
+#else
+        char *last_sep = cbm_detect_self_path(self_dir, sizeof(self_dir), cbm_get_home_dir())
+                             ? strrchr(self_dir, '/')
+                             : NULL;
+#endif
         if (last_sep) {
             *last_sep = '\0';
+            have_dir = true;
         }
         printf("codebase-memory-mcp update (current: %s)\n\n", CBM_VERSION);
-        printf("On Windows the update runs from install.ps1: a running executable\n"
-               "cannot replace itself. Close any running sessions, then run\n\n");
-        if (last_sep) {
-            printf("  powershell -ExecutionPolicy Bypass -File \"%s\\install.ps1\"\n\n", self_exe);
+#ifdef _WIN32
+        printf("The update runs from install.ps1, not from this process. Close any\n"
+               "running sessions, then run\n\n");
+        if (have_dir) {
+            printf("  powershell -ExecutionPolicy Bypass -File \"%s\\install.ps1\"\n\n", self_dir);
         } else {
             printf("  powershell -ExecutionPolicy Bypass -File install.ps1\n\n");
         }
         printf("It downloads the latest release, verifies its checksum, and replaces\n"
                "this binary in place. If PowerShell refuses to run the script because\n"
                "it came from the internet, Unblock-File it first.\n");
+#else
+        printf("The update runs from install.sh, not from this process. Run\n\n");
+        if (have_dir) {
+            printf("  bash \"%s/install.sh\"\n\n", self_dir);
+        } else {
+            printf("  curl -fsSL https://raw.githubusercontent.com/DeusData/"
+                   "codebase-memory-mcp/main/install.sh | bash\n\n");
+        }
+        printf("It downloads the latest release, verifies its checksum, and replaces\n"
+               "this binary in place. install.sh is idempotent, so re-running it IS\n"
+               "the update; pass --ui for the UI build.\n");
+#endif
         return 0;
     }
-#endif
 
+    /* Everything below is the in-process updater and is excluded from release
+     * builds entirely -- that exclusion, not dead-code elimination, is what
+     * keeps download/extract/chmod/exec and the release URLs out of the
+     * shipped artifact. */
+#ifdef CBM_CLI_ENABLE_TEST_API
     const char *home = cbm_get_home_dir();
     if (!home) {
         (void)fprintf(stderr, "error: HOME not set (use USERPROFILE on Windows)\n");
@@ -11308,6 +11363,7 @@ int cbm_cmd_update(int argc, char **argv) {
            "properly take this into account.\n");
     (void)variant;
     return 0;
+#endif /* CBM_CLI_ENABLE_TEST_API */
 }
 
 /* ── CLI tool arguments (flags / --args-file / --help) ────────────── */
