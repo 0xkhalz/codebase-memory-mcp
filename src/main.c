@@ -201,11 +201,22 @@ static void main_project_lock_release_fully(cbm_project_lock_lease_t **lease) {
     }
 }
 
-/* Test-only ownership proof for the real-binary POSIX smoke. The environment
- * variable is otherwise inert, and only a supervised physical worker may
- * publish it. Publication occurs after the native project lease is acquired,
- * so a marker from the worker also proves that its polling supervisor did not
- * retain the same exclusive lease. */
+/* Test-only ownership proof consumed by the POSIX worker-lease contract tests.
+ * The environment variable is otherwise inert, and only a supervised physical
+ * worker may publish it. Publication occurs after the native project lease is
+ * acquired, so a marker from the worker also proves that its polling supervisor
+ * did not retain the same exclusive lease.
+ *
+ * COMPILED OUT of ordinary builds alongside the watchdog probe above. This one
+ * is benign in isolation (an O_EXCL|O_NOFOLLOW PID file), but it is still
+ * test-only code reachable through a caller-supplied path in a shipped binary,
+ * and its consumers all build with TEST_SEAMS=1. The two seams smoke genuinely
+ * needs against real release artifacts (CBM_TEST_CRASH_ON / CBM_TEST_HANG_ON
+ * fault injection, and CBM_TEST_WINDOWS_USER_PATH_RUN_ID, which is what keeps
+ * the PATH smoke from touching the real user PATH) deliberately REMAIN: smoke's
+ * whole value is exercising the artifact we ship, and removing them would trade
+ * release-artifact coverage for a cosmetic win. */
+#ifdef CBM_ENABLE_TEST_SEAMS
 static bool main_test_worker_project_lock_marker(const main_local_cli_mutation_t *mutation) {
 #ifdef _WIN32
     (void)mutation;
@@ -238,6 +249,12 @@ static bool main_test_worker_project_lock_marker(const main_local_cli_mutation_t
     return close(marker) == 0 && written;
 #endif
 }
+#else
+static bool main_test_worker_project_lock_marker(const main_local_cli_mutation_t *mutation) {
+    (void)mutation;
+    return true;
+}
+#endif
 
 static bool main_local_cli_mutation_begin(void *context, const char *project) {
     main_local_cli_mutation_t *mutation = context;
@@ -390,7 +407,18 @@ static bool worker_prepare_process_group(void) {
 
 /* Test-only crash-orphan probe used by tests/test_worker_watchdog.sh. It is
  * created before the watchdog thread so fork never occurs in a multithreaded
- * worker, and inherits the worker's isolated process group. */
+ * worker, and inherits the worker's isolated process group.
+ *
+ * COMPILED OUT of ordinary builds (see TEST_SEAMS in Makefile.cbm). "Fork a
+ * child that ignores SIGTERM and loops forever, then write its PID to a path
+ * the caller chose" is a fine test probe and an appalling thing to find in a
+ * shipped executable — it is precisely the shape a generic malware classifier
+ * is built to notice, and it has no production caller. Seams are OPT-IN so the
+ * failure mode of forgetting the flag is a clean binary, not a leaky one; the
+ * suites that need it build with TEST_SEAMS=1, and
+ * scripts/ci/check-binary-composition.sh fails the release if the marker
+ * string ever reappears in an artifact. */
+#ifdef CBM_ENABLE_TEST_SEAMS
 static bool worker_start_watchdog_test_descendant(void) {
     char pid_path[CBM_SZ_4K] = {0};
     if (!cbm_safe_getenv("CBM_TEST_WORKER_DESCENDANT_PID_FILE", pid_path, sizeof(pid_path), NULL) ||
@@ -429,6 +457,11 @@ static bool worker_start_watchdog_test_descendant(void) {
     }
     return written;
 }
+#else
+static bool worker_start_watchdog_test_descendant(void) {
+    return true;
+}
+#endif
 
 static bool worker_start_parent_watchdog(pid_t initial_ppid) {
     static parent_watchdog_config_t worker_config;

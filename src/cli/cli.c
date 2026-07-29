@@ -5947,7 +5947,21 @@ static int cli_ensure_windows_user_path(const char *bin_dir, bool dry_run) {
 
 #endif
 
-/* ── Tar.gz extraction ────────────────────────────────────────── */
+/* ── Tar.gz / zip extraction (TEST-ONLY) ──────────────────────────
+ *
+ * The only callers of this block are the in-process updater — already excluded
+ * from release builds — and tests/test_cli.c. The DEFINITIONS were nevertheless
+ * unguarded, so every shipped binary carried a complete archive extractor with
+ * no way to reach it: the translation unit is compiled and linked whole, with no
+ * LTO or function-section garbage collection to drop it.
+ *
+ * "Download an archive, decompress it in memory, pick an executable out of it,
+ * write it to disk and mark it executable" is the canonical dropper composite.
+ * We do not do that in production, and now we cannot: the capability is not in
+ * the artifact rather than merely unreachable within it. Verified by
+ * scripts/ci/check-binary-composition.sh.
+ */
+#ifdef CBM_CLI_ENABLE_TEST_API
 
 /* Decompress gzip data into a malloc'd buffer. Returns NULL on failure.
  * *out_total receives the decompressed size. Caller must free the result. */
@@ -6216,6 +6230,8 @@ unsigned char *cbm_extract_binary_from_zip(const unsigned char *data, int data_l
 
     return NULL;
 }
+
+#endif /* CBM_CLI_ENABLE_TEST_API — tar.gz / zip extraction */
 
 /* ── Index management ─────────────────────────────────────────── */
 
@@ -10580,6 +10596,56 @@ typedef struct {
     bool dry_run;
 } cli_uninstall_activation_t;
 
+/* Report — never delete — the updater script sitting next to the binary.
+ *
+ * install.sh/install.ps1 copies itself beside the executable so `update` has
+ * something to hand off to. Uninstall does NOT remove it, deliberately: we
+ * cannot prove we own that file. The user may have put their own copy there, it
+ * may be a symlink into a checkout, or a package manager may manage it. Deleting
+ * a file we merely expect to find is how an uninstaller eats something it
+ * shouldn't. Telling the user the exact path costs one line and leaves the
+ * decision with them. */
+static void cli_uninstall_report_leftover_installer(const char *bin_path, bool dry_run) {
+    if (!bin_path || !bin_path[0]) {
+        return;
+    }
+    const char *slash = strrchr(bin_path, '/');
+#ifdef _WIN32
+    const char *backslash = strrchr(bin_path, '\\');
+    if (backslash && (!slash || backslash > slash)) {
+        slash = backslash;
+    }
+    static const char *const installer_names[] = {"install.ps1", "install.sh"};
+#else
+    static const char *const installer_names[] = {"install.sh"};
+#endif
+    if (!slash || slash == bin_path) {
+        return;
+    }
+    size_t dir_len = (size_t)(slash - bin_path);
+    for (size_t i = 0; i < sizeof(installer_names) / sizeof(installer_names[0]); i++) {
+        char installer_path[CLI_BUF_1K];
+        int written = snprintf(installer_path, sizeof(installer_path), "%.*s/%s", (int)dir_len,
+                               bin_path, installer_names[i]);
+        if (written <= 0 || (size_t)written >= sizeof(installer_path)) {
+            continue;
+        }
+        struct stat installer_status;
+        if (stat(installer_path, &installer_status) != 0) {
+            continue;
+        }
+        if (dry_run) {
+            printf("Would leave %s in place (remove it yourself if you want it gone).\n",
+                   installer_path);
+        } else {
+            printf("\nLeft in place: %s\n"
+                   "  This is the updater; uninstall does not delete it because it cannot\n"
+                   "  prove it owns it. To remove it as well:\n\n    rm \"%s\"\n",
+                   installer_path, installer_path);
+        }
+    }
+}
+
 /* Uninstall is an activation too: removing the executable or its indexes
  * while a daemon generation is starting/running would leave live sessions on
  * a partially removed installation. Keep every filesystem mutation inside
@@ -10634,6 +10700,7 @@ static int cli_uninstall_activate(void *opaque) {
     if (activation->binary_exists) {
         printf("Removed %s\n", activation->bin_path);
     }
+    cli_uninstall_report_leftover_installer(activation->bin_path, activation->dry_run);
     return CLI_OK;
 }
 
