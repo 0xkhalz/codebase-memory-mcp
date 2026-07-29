@@ -113,21 +113,31 @@ NAME="codebase-memory-mcp${SUFFIX}-${GOOS}-${GOARCH}"
 strip_release_binary() {
     local binary="$1"
     [ -f "$binary" ] || return 0
-    # --strip-all on every format, Mach-O included.
+    # The right flags differ per format, and the WRONG ones fail silently in
+    # the dangerous direction. Measured on the flagged darwin-arm64 artifact:
     #
-    # This first shipped as `strip -x` on Mach-O out of caution that a full
-    # strip could leave an image dyld will not load. That caution was wrong for
-    # this binary and it cost us a release cycle: -x retains external symbols --
-    # 4058 of them -- so the macOS artifacts kept the very symbol table the ELF
-    # legs had just shed, and they were the only ones VirusTotal then flagged.
-    # Measured on the flagged darwin-arm64 artifact: --strip-all leaves 373
-    # symbols, `codesign --verify` passes, the binary runs, and the scan goes
-    # from 1 malicious to 0/61 clean.
+    #   llvm-strip --strip-all   373 symbols   scanned CLEAN
+    #   strip        (no flags)  378 symbols   equivalent
+    #   strip -x -S             4058 symbols   the state VirusTotal FLAGGED
+    #   strip -X / -u -r        4058 symbols   likewise
+    #
+    # Apple's strip returns success for `-x -S`, so a helper that just tries
+    # candidates until one exits 0 would quietly reship the flagged binary.
+    # GNU/LLVM `--strip-all` is not even accepted by Apple's strip, which is why
+    # generalising it to every platform broke the macOS build -- loudly, which
+    # was the lucky outcome.
+    #
+    # So: --strip-all where it is understood, plain `strip` for Mach-O, and a
+    # hard error when no candidate can do the job. Never a weaker fallback.
     local stripped=""
     for tool in "${STRIP:-}" llvm-strip strip; do
         [ -n "$tool" ] || continue
         command -v "$tool" >/dev/null 2>&1 || continue
-        "$tool" --strip-all "$binary" 2>/dev/null && stripped="$tool"
+        if "$tool" --strip-all "$binary" 2>/dev/null; then
+            stripped="$tool --strip-all"
+        elif [ "$GOOS" = "darwin" ] && "$tool" "$binary" 2>/dev/null; then
+            stripped="$tool"
+        fi
         [ -n "$stripped" ] && break
     done
     if [ -z "$stripped" ]; then
