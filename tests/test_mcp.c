@@ -762,6 +762,40 @@ TEST(mcp_tools_list) {
     PASS();
 }
 
+/* #1361: --help omitted check_index_coverage because its tool list was a
+ * hand-maintained copy. The list is now rendered from the registry; this pins
+ * the render so a formatter bug cannot reintroduce a silent omission. */
+TEST(mcp_tools_help_list_matches_registry) {
+    char *help = cbm_mcp_tools_help_list();
+    ASSERT_NOT_NULL(help);
+    int count = cbm_mcp_tool_count();
+    ASSERT_GT(count, 0);
+    for (int i = 0; i < count; i++) {
+        const char *name = cbm_mcp_tool_name(i);
+        ASSERT_NOT_NULL(name);
+        ASSERT_NOT_NULL(strstr(help, name));
+    }
+    /* Exactly one comma between consecutive tools: the rendered cardinality
+     * equals the registry's, so truncation or duplication fails here. */
+    int commas = 0;
+    for (const char *p = help; *p; p++) {
+        if (*p == ',') {
+            commas++;
+        }
+    }
+    ASSERT_EQ(commas, count - 1);
+    /* Wrapped for an 80-column terminal. */
+    const char *line = help;
+    while (line && *line) {
+        const char *nl = strchr(line, '\n');
+        size_t line_len = nl ? (size_t)(nl - line) : strlen(line);
+        ASSERT_LT((int)line_len, 80);
+        line = nl ? nl + 1 : NULL;
+    }
+    free(help);
+    PASS();
+}
+
 TEST(mcp_tools_list_latest_metadata) {
     char *json = cbm_mcp_tools_list();
     ASSERT_NOT_NULL(json);
@@ -9517,6 +9551,7 @@ SUITE(mcp) {
     /* MCP protocol helpers */
     RUN_TEST(mcp_initialize_response);
     RUN_TEST(mcp_tools_list);
+    RUN_TEST(mcp_tools_help_list_matches_registry);
     RUN_TEST(mcp_tools_list_latest_metadata);
     RUN_TEST(mcp_tools_have_behavior_annotations);
     RUN_TEST(mcp_index_repository_declares_name_override_issue571);
