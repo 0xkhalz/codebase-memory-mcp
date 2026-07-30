@@ -1,8 +1,0 @@
-RSS: first=13MB last=15MB max=15MB (19 samples)
-RSS slope (post-warmup): 6596 KB/hr
-RSS ratio (last/first): 1,2x
-FD drift: 0
-Idle daemon CPU: 0,3%
-Max query latency: 62ms (index: 1459ms)
-Total queries: 167
-=== soak-test: PASSED ===
