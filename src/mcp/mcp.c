@@ -9762,26 +9762,49 @@ bool cbm_detect_node_in_hunks(const cbm_node_t *node, const cbm_changed_hunk_t *
  * "before" state, or the hunk fetch failed/was skipped), every non-container
  * definition in the file is a seed — the previous, whole-file behavior — so
  * this is a precision improvement, not a new failure mode. */
+/* Structural container labels carry no CALLS edges and span the whole file, so
+ * they are never seeds. Shared by the seeding loop and the overlap probe. */
+static bool detect_is_seedable_label(const char *lb) {
+    return lb && strcmp(lb, "File") != 0 && strcmp(lb, "Folder") != 0 &&
+           strcmp(lb, "Project") != 0 && strcmp(lb, "Module") != 0 && strcmp(lb, "Package") != 0 &&
+           strcmp(lb, "Section") != 0;
+}
+
 static void detect_collect_seeds(cbm_store_t *store, const char *project, const char *file,
                                  const cbm_changed_hunk_t *hunks, int hunk_count, int64_t **seeds,
                                  int *n, int *cap) {
     cbm_node_t *nodes = NULL;
     int ncount = 0;
     cbm_store_find_nodes_by_file(store, project, file, &nodes, &ncount);
-    bool has_hunks_for_file = false;
+    bool scope_to_hunks = false;
     for (int h = 0; h < hunk_count; h++) {
         if (strcmp(hunks[h].path, file) == 0) {
-            has_hunks_for_file = true;
+            scope_to_hunks = true;
             break;
         }
     }
+    /* A file can have hunks yet no SEEDABLE definition overlapping any of them:
+     * an import-only edit, a module-level constant, or a change above the first
+     * definition all land outside every definition's line range. Scoping would
+     * then drop the file from the seed set entirely — strictly worse recall
+     * than the whole-file behavior this replaces. Probe for an overlap first
+     * and keep whole-file seeding for that file when there is none.
+     *
+     * The probe must apply the same label filter as the seeding loop below:
+     * container nodes span the whole file (a Module node is lines 1..EOF), so
+     * counting them would report an overlap for every hunk and defeat the
+     * fallback entirely. */
+    if (scope_to_hunks) {
+        bool any_overlap = false;
+        for (int i = 0; i < ncount && !any_overlap; i++) {
+            any_overlap = detect_is_seedable_label(nodes[i].label) &&
+                          cbm_detect_node_in_hunks(&nodes[i], hunks, hunk_count, file);
+        }
+        scope_to_hunks = any_overlap;
+    }
     for (int i = 0; i < ncount; i++) {
-        const char *lb = nodes[i].label;
-        if (lb && strcmp(lb, "File") != 0 && strcmp(lb, "Folder") != 0 &&
-            strcmp(lb, "Project") != 0 && strcmp(lb, "Module") != 0 && strcmp(lb, "Package") != 0 &&
-            strcmp(lb, "Section") != 0) {
-            if (has_hunks_for_file &&
-                !cbm_detect_node_in_hunks(&nodes[i], hunks, hunk_count, file)) {
+        if (detect_is_seedable_label(nodes[i].label)) {
+            if (scope_to_hunks && !cbm_detect_node_in_hunks(&nodes[i], hunks, hunk_count, file)) {
                 continue;
             }
             if (*n >= *cap) {
@@ -10075,7 +10098,16 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
      * (see detect_collect_seeds). Best-effort: any failure here just leaves
      * `hunks` empty and every file falls back to its previous whole-file
      * seeding — this is a precision improvement, not a correctness
-     * dependency, so it is never treated as a request-level failure. */
+     * dependency, so it is never treated as a request-level failure.
+     *
+     * Coordinate systems: `base...HEAD` hunks carry HEAD-side line numbers,
+     * the worktree diff carries worktree-side ones, and node line ranges come
+     * from the indexed snapshot. These agree while the index is fresh — the
+     * watcher reindexes on HEAD movement and on a dirty tree — but a stale
+     * index combined with insertions earlier in the file shifts the node lines
+     * relative to the hunks and can mis-scope. The failure is bounded by
+     * detect_collect_seeds' zero-overlap fallback: a file whose definitions all
+     * miss reverts to whole-file seeding rather than dropping out. */
     cbm_changed_hunk_t *hunks = NULL;
     int hunk_count = 0;
     if (want_symbols) {
@@ -10109,6 +10141,18 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
                     enum { HUNK_CAP = 4096 };
                     hunks = safe_realloc(NULL, (size_t)HUNK_CAP * sizeof(cbm_changed_hunk_t));
                     hunk_count = cbm_parse_hunks(hbuf, hunks, HUNK_CAP);
+                    /* A filled buffer means the diff was truncated: the hunks
+                     * past the cap are gone, so files captured only partially
+                     * would still look scoped and silently under-seed. Drop
+                     * scoping for the whole request rather than under-report a
+                     * large refactor — whole-file seeding is the safe side. */
+                    if (hunk_count >= HUNK_CAP) {
+                        cbm_log_info("detect_changes.hunks", "action", "scoping_disabled", "reason",
+                                     "hunk_cap_reached");
+                        free(hunks);
+                        hunks = NULL;
+                        hunk_count = 0;
+                    }
                     free(hbuf);
                 }
             }

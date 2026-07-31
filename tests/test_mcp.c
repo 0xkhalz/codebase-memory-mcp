@@ -6192,15 +6192,22 @@ TEST(detect_changes_seeds_only_touched_symbol_issue1363) {
                                  "    return y\n"),
              0);
 
+    /* `git -C` with double quotes, not `cd '<dir>' &&`: single quotes are not
+     * quoting characters for cmd.exe, and identity/branch/signing come from -c
+     * so the fixture does not depend on the machine's global git config. The
+     * assertions below read `base: main`, so pin init.defaultBranch. */
+#define DC1363_GITCFG                                                                              \
+    "-c user.name=t -c user.email=t@t.io -c init.defaultBranch=main -c commit.gpgsign=false"
     char cmd[1200];
-    snprintf(cmd, sizeof(cmd),
-             "cd '%s' && git init -q && git config user.email t@t.com && "
-             "git config user.name t && git add -A && git commit -q -m init",
-             repo);
-    if (system(cmd) != 0) {
-        th_rmtree(repo);
-        FAIL("git fixture setup failed");
+    const char *steps[] = {"init -q", "add -A", "commit -q -m init"};
+    for (size_t s = 0; s < sizeof(steps) / sizeof(steps[0]); s++) {
+        snprintf(cmd, sizeof(cmd), "git -C \"%s\" " DC1363_GITCFG " %s", repo, steps[s]);
+        if (system(cmd) != 0) {
+            th_rmtree(repo);
+            FAIL("git fixture setup failed");
+        }
     }
+#undef DC1363_GITCFG
 
     cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
     char idx_args[700];
@@ -6231,6 +6238,81 @@ TEST(detect_changes_seeds_only_touched_symbol_issue1363) {
      * in dc_resp's actual bytes — match that, not a real newline. */
     ASSERT_NOT_NULL(strstr(dc_resp, "seed_symbols: 1\\n"));
     ASSERT_NULL(strstr(dc_resp, "bar"));
+
+    free(dc_resp);
+    free(project);
+    cbm_mcp_server_free(srv);
+    th_rmtree(repo);
+    PASS();
+}
+
+/* Recall guard for the zero-overlap case (#1363 review): an import-only edit
+ * changes lines that lie outside every definition's range. Scoping alone would
+ * drop the file from the seed set — worse recall than the whole-file behavior
+ * being replaced — so detect_collect_seeds falls back to whole-file seeding
+ * when a changed file has hunks but no definition overlapping any of them. */
+TEST(detect_changes_zero_overlap_falls_back_issue1363) {
+    char repo[512];
+    snprintf(repo, sizeof(repo), "%s/cbm-detect-zero-overlap-XXXXXX", cbm_tmpdir());
+    if (!cbm_mkdtemp(repo)) {
+        FAIL("cbm_mkdtemp failed");
+    }
+
+    char src[600];
+    snprintf(src, sizeof(src), "%s/mod.py", repo);
+    /* Import on line 1 sits above both definitions. */
+    ASSERT_EQ(th_write_file(src, "import os\n"
+                                 "\n"
+                                 "\n"
+                                 "def foo():\n"
+                                 "    return 1\n"
+                                 "\n"
+                                 "\n"
+                                 "def bar():\n"
+                                 "    return 2\n"),
+              0);
+
+#define DC1363B_GITCFG                                                                             \
+    "-c user.name=t -c user.email=t@t.io -c init.defaultBranch=main -c commit.gpgsign=false"
+    char cmd[1200];
+    const char *steps[] = {"init -q", "add -A", "commit -q -m init"};
+    for (size_t s = 0; s < sizeof(steps) / sizeof(steps[0]); s++) {
+        snprintf(cmd, sizeof(cmd), "git -C \"%s\" " DC1363B_GITCFG " %s", repo, steps[s]);
+        if (system(cmd) != 0) {
+            th_rmtree(repo);
+            FAIL("git fixture setup failed");
+        }
+    }
+#undef DC1363B_GITCFG
+
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    char idx_args[700];
+    snprintf(idx_args, sizeof(idx_args), "{\"repo_path\":\"%s\",\"mode\":\"full\"}", repo);
+    char *idx_resp = cbm_mcp_handle_tool(srv, "index_repository", idx_args);
+    ASSERT_NOT_NULL(idx_resp);
+    free(idx_resp);
+
+    /* Edit ONLY the import line — outside every definition's line range. */
+    ASSERT_EQ(th_write_file(src, "import os, sys\n"
+                                 "\n"
+                                 "\n"
+                                 "def foo():\n"
+                                 "    return 1\n"
+                                 "\n"
+                                 "\n"
+                                 "def bar():\n"
+                                 "    return 2\n"),
+              0);
+
+    char *project = cbm_project_name_from_path(repo);
+    ASSERT_NOT_NULL(project);
+    char dc_args[700];
+    snprintf(dc_args, sizeof(dc_args), "{\"project\":\"%s\",\"depth\":1}", project);
+    char *dc_resp = cbm_mcp_handle_tool(srv, "detect_changes", dc_args);
+    ASSERT_NOT_NULL(dc_resp);
+    /* Both definitions must survive: zero overlaps means no scoping for this
+     * file, not an empty seed set. */
+    ASSERT_NOT_NULL(strstr(dc_resp, "seed_symbols: 2\\n"));
 
     free(dc_resp);
     free(project);
@@ -9959,6 +10041,7 @@ SUITE(mcp) {
     RUN_TEST(tool_detect_changes_contained_commands_clean_up_error_and_success);
     RUN_TEST(detect_changes_node_in_hunks_overlap_issue1363);
     RUN_TEST(detect_changes_seeds_only_touched_symbol_issue1363);
+    RUN_TEST(detect_changes_zero_overlap_falls_back_issue1363);
     RUN_TEST(tool_ingest_traces_basic);
     RUN_TEST(tool_ingest_traces_empty);
 
