@@ -111,10 +111,8 @@ TEST(checkpoint_does_not_truncate_wal) {
     ASSERT(s != NULL);
 
     /* Grow WAL beyond zero bytes via direct SQL. */
-    int rc_sql = cbm_store_exec(
-        s,
-        "INSERT OR IGNORE INTO projects(name, indexed_at, root_path) "
-        "VALUES('p', '2026-01-01', '/tmp/p');");
+    int rc_sql = cbm_store_exec(s, "INSERT OR IGNORE INTO projects(name, indexed_at, root_path) "
+                                   "VALUES('p', '2026-01-01', '/tmp/p');");
     ASSERT_EQ(rc_sql, 0);
     for (int i = 0; i < N_ROWS; i++) {
         char sql[256];
@@ -416,6 +414,18 @@ TEST(dump_install_ignores_stale_wal_sidecar) {
     PASS();
 }
 
+TEST(remove_db_sidecars_rejects_truncated_suffix_path) {
+    /* The implementation's sidecar buffer is 4096 bytes. Before the fix,
+     * snprintf truncation simply skipped every unlink and still returned
+     * success, violating the helper's fail-closed contract. */
+    char db_path[4096];
+    memset(db_path, 'x', sizeof(db_path) - 1);
+    db_path[sizeof(db_path) - 1] = '\0';
+
+    ASSERT_TRUE(cbm_remove_db_sidecars(db_path) != 0);
+    PASS();
+}
+
 SUITE(store_checkpoint) {
     RUN_TEST(checkpoint_does_not_truncate_wal);
     RUN_TEST(seal_for_atomic_publish_makes_main_file_self_contained);
@@ -423,4 +433,5 @@ SUITE(store_checkpoint) {
     RUN_TEST(cached_count_queries_release_delete_mode_reader_lock);
     RUN_TEST(cached_node_lookups_release_delete_mode_reader_lock);
     RUN_TEST(dump_install_ignores_stale_wal_sidecar);
+    RUN_TEST(remove_db_sidecars_rejects_truncated_suffix_path);
 }
