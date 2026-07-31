@@ -28,6 +28,16 @@ enum { CBM_MCP_DEFAULT_AUTO_INDEX_LIMIT = 50000 };
  * without retaining per-file results. A false result means the count exceeded
  * file_limit or could not be established before the bounded deadline; every
  * such failure is fail-closed because this is the memory-admission guard. */
+/* Map an internal resolver strategy (as recorded on a CALLS edge by
+ * pass_calls.c) to the CLOSED public class published by trace_path's
+ * include_evidence output: "lsp" | "language_rule" | "heuristic" |
+ * "unresolved". NULL only for a NULL/empty strategy.
+ *
+ * Exposed so tests/test_mcp.c can pin every strategy production can emit to a
+ * known class — a new resolver KIND must fail there rather than leaking an
+ * unmapped internal name into a user-visible field. */
+const char *cbm_mcp_edge_strategy_class(const char *strategy);
+
 bool cbm_mcp_auto_index_within_file_limit(const char *root_path, int file_limit,
                                           int *file_count_out);
 

@@ -510,7 +510,11 @@ static const tool_def_t TOOLS[] = {
      "filtered out. When true, test nodes are included with a test column/marker.\"},"
      "\"format\":{\"type\":\"string\",\"enum\":[\"tree\",\"json\"],\"default\":\"tree\","
      "\"description\":\"Response encoding. tree (default): prefix-grouped text rows. "
-     "json: the SAME tree model as structured JSON (groups + column-ordered row arrays).\"}},"
+     "json: the SAME tree model as structured JSON (groups + column-ordered row arrays).\"},"
+     "\"include_evidence\":{\"type\":\"boolean\",\"default\":false,"
+     "\"description\":\"Add how each hop was resolved: a strategy class (lsp | language_rule | "
+     "heuristic | unresolved) and the resolver's confidence. Off by default — it adds two "
+     "columns per row. Use it to judge whether an edge is trustworthy, not to find edges.\"}},"
      "\"required\":[\"function_name\",\"project\"]}"},
 
     {"get_code_snippet", "Get code snippet",
@@ -5648,6 +5652,96 @@ static const char *bfs_edge_args_for_hop(cbm_traverse_result_t *tr, int64_t hop_
     return NULL;
 }
 
+/* Classify a resolver strategy into the CLOSED public vocabulary.
+ *
+ * The indexer records ~20 internal strategy names on CALLS edges
+ * (lsp_trait_dispatch, php_self_static, callee_suffix, ...) and the set grows
+ * with every language. Publishing those verbatim would make each internal
+ * resolver name public API by accident, so a rename would silently change a
+ * user-visible field. We publish the CLASS instead: adding lsp_foo_dispatch
+ * maps automatically, while a genuinely new KIND of resolution fails the
+ * pinning test in tests/test_mcp.c and forces a deliberate decision.
+ *
+ * Returns NULL only for a NULL/empty strategy — every non-empty value lands in
+ * a class, so an unmapped strategy can never silently vanish from output. */
+const char *cbm_mcp_edge_strategy_class(const char *strategy) {
+    if (!strategy || !strategy[0]) {
+        return NULL;
+    }
+    /* Order matters: lsp_unresolved is an LSP strategy that failed, and the
+     * caller cares that it did NOT resolve — so it classifies as unresolved. */
+    if (strcmp(strategy, "lsp_unresolved") == 0 || strcmp(strategy, "unknown") == 0) {
+        return "unresolved";
+    }
+    if (strncmp(strategy, "lsp_", 4) == 0) {
+        return "lsp";
+    }
+    if (strncmp(strategy, "php_", 4) == 0 || strncmp(strategy, "perl_", 5) == 0) {
+        return "language_rule";
+    }
+    /* Everything else is a name/shape heuristic: callee_suffix,
+     * field_type_hint, service_pattern, fastapi_depends, unique_name, ... */
+    return "heuristic";
+}
+
+/* Find the resolution evidence on the edge that leads to the given hop node —
+ * the same endpoint-matching rule as bfs_edge_args_for_hop (target for an
+ * outbound trace, source for inbound, so both directions surface it).
+ *
+ * Reads only from tr->edges, and callers pass the PAGINATED view, so evidence
+ * is emitted for the rows on this page and nothing else.
+ *
+ * Returns false when the edge carries no strategy (non-CALLS edges do not). */
+static bool bfs_edge_evidence_for_hop(cbm_traverse_result_t *tr, int64_t hop_node_id,
+                                      const char **class_out, double *confidence_out) {
+    for (int e = 0; e < tr->edge_count; e++) {
+        if (tr->edges[e].target_id != hop_node_id && tr->edges[e].source_id != hop_node_id) {
+            continue;
+        }
+        const char *pj = tr->edges[e].properties_json;
+        if (!pj) {
+            continue;
+        }
+        const char *key = strstr(pj, "\"strategy\"");
+        if (!key) {
+            continue;
+        }
+        const char *open = strchr(key + 10, '"');
+        if (!open) {
+            continue;
+        }
+        open++;
+        const char *close = strchr(open, '"');
+        if (!close || close == open) {
+            continue;
+        }
+        char raw[CBM_SZ_64];
+        size_t len = (size_t)(close - open);
+        if (len >= sizeof(raw)) {
+            len = sizeof(raw) - 1;
+        }
+        memcpy(raw, open, len);
+        raw[len] = '\0';
+        const char *cls = cbm_mcp_edge_strategy_class(raw);
+        if (!cls) {
+            continue;
+        }
+        *class_out = cls;
+        /* Confidence rides on the same edge; absent is reported as -1 so a
+         * genuine 0.0 stays distinguishable from "not recorded". */
+        *confidence_out = -1.0;
+        const char *conf = strstr(pj, "\"confidence\"");
+        if (conf) {
+            const char *colon = strchr(conf, ':');
+            if (colon) {
+                *confidence_out = strtod(colon + 1, NULL);
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
 /* TOON table for one trace direction: callees[N]{qn,hop,...} with optional
  * risk / test / args columns. `name` is omitted (it is the qn's last
  * segment); the per-item JSON key envelope was 84% of the legacy payload. */
@@ -6061,7 +6155,7 @@ static int tree_hop_cmp_qn(const void *pa, const void *pb) {
 }
 
 static void bfs_to_tree_table(cbm_sb_t *sb, const char *key, cbm_traverse_result_t *tr,
-                              bool include_tests) {
+                              bool include_tests, bool include_evidence) {
     int visible = 0;
     for (int i = 0; i < tr->visited_count; i++) {
         if (!include_tests && is_test_file(tr->visited[i].node.file_path)) {
@@ -6070,8 +6164,12 @@ static void bfs_to_tree_table(cbm_sb_t *sb, const char *key, cbm_traverse_result
         visible++;
     }
     char buf[CBM_SZ_256];
-    snprintf(buf, sizeof(buf), "%s: %d  (rows: name hop; qn = group prefix + \".\" + name)\n", key,
-             visible);
+    snprintf(buf, sizeof(buf),
+             include_evidence
+                 ? "%s: %d  (rows: name hop strategy confidence; qn = group prefix + \".\" + "
+                   "name)\n"
+                 : "%s: %d  (rows: name hop; qn = group prefix + \".\" + name)\n",
+             key, visible);
     cbm_sb_append(sb, buf);
     if (tr->visited_count > 1) {
         qsort(tr->visited, (size_t)tr->visited_count, sizeof(cbm_node_hop_t), tree_hop_cmp_qn);
@@ -6093,7 +6191,26 @@ static void bfs_to_tree_table(cbm_sb_t *sb, const char *key, cbm_traverse_result
             cbm_sb_append(sb, ":\n");
         }
         char row[CBM_SZ_512];
-        snprintf(row, sizeof(row), "  %s %d\n", plen ? qn + plen + 1 : qn, tr->visited[i].hop);
+        const char *ev_class = NULL;
+        double ev_conf = -1.0;
+        if (include_evidence &&
+            bfs_edge_evidence_for_hop(tr, tr->visited[i].node.id, &ev_class, &ev_conf)) {
+            if (ev_conf >= 0.0) {
+                snprintf(row, sizeof(row), "  %s %d %s %.2f\n", plen ? qn + plen + 1 : qn,
+                         tr->visited[i].hop, ev_class, ev_conf);
+            } else {
+                snprintf(row, sizeof(row), "  %s %d %s -\n", plen ? qn + plen + 1 : qn,
+                         tr->visited[i].hop, ev_class);
+            }
+        } else if (include_evidence) {
+            /* The root hop has no inbound edge, and non-CALLS edges record no
+             * strategy. Emit placeholders so the column count stays fixed —
+             * a ragged table is worse to parse than an explicit "-". */
+            snprintf(row, sizeof(row), "  %s %d - -\n", plen ? qn + plen + 1 : qn,
+                     tr->visited[i].hop);
+        } else {
+            snprintf(row, sizeof(row), "  %s %d\n", plen ? qn + plen + 1 : qn, tr->visited[i].hop);
+        }
         cbm_sb_append(sb, row);
     }
 }
@@ -6137,6 +6254,10 @@ static char *handle_trace_call_path(cbm_mcp_server_t *srv, const char *args) {
     }
     bool risk_labels = cbm_mcp_get_bool_arg(args, "risk_labels");
     bool include_tests = cbm_mcp_get_bool_arg(args, "include_tests");
+    /* Off by default: two extra columns on every row is exactly the kind of
+     * inflation the tree format exists to avoid. Opt in when you need to judge
+     * whether an edge is trustworthy. */
+    bool include_evidence = cbm_mcp_get_bool_arg(args, "include_evidence");
 
     if (!func_name) {
         free(project);
@@ -6424,7 +6545,7 @@ static char *handle_trace_call_path(cbm_mcp_server_t *srv, const char *args) {
             if (flat_trace) {
                 bfs_to_toon_table(&sb, "callees", &view_out, risk_labels, include_tests, data_flow);
             } else {
-                bfs_to_tree_table(&sb, "callees", &view_out, include_tests);
+                bfs_to_tree_table(&sb, "callees", &view_out, include_tests, include_evidence);
             }
         }
         if (do_inbound) {
@@ -6432,7 +6553,7 @@ static char *handle_trace_call_path(cbm_mcp_server_t *srv, const char *args) {
             if (flat_trace) {
                 bfs_to_toon_table(&sb, "callers", &view_in, risk_labels, include_tests, data_flow);
             } else {
-                bfs_to_tree_table(&sb, "callers", &view_in, include_tests);
+                bfs_to_tree_table(&sb, "callers", &view_in, include_tests, include_evidence);
             }
         }
         if (more_rows) {
