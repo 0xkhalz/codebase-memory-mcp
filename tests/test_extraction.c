@@ -1376,6 +1376,41 @@ TEST(cpp_function) {
     PASS();
 }
 
+/* #1266: GoogleTest TEST() macros with the same name collapse into a single
+ * node when multiple tests share a file. Each must mint a distinct Function
+ * node whose name encodes the suite and case arguments. */
+TEST(cpp_gtest_same_name_collision_issue1266) {
+    CBMFileResult *r = extract(
+        "namespace demo { int assembleWidget(int s) { return s * 2; } }\n"
+        "TEST(WidgetSuite, DoublesSmallSize) { demo::assembleWidget(1); }\n"
+        "TEST(WidgetSuite, DoublesZero) { demo::assembleWidget(0); }\n"
+        "TEST(WidgetSuite, DoublesLargeSize) {\n"
+        "  demo::assembleWidget(1000);\n"
+        "}\n",
+        CBM_LANG_CPP, "t", "direct_test.cpp");
+    ASSERT_NOT_NULL(r);
+    ASSERT(has_def(r, "Function", "TEST_WidgetSuite_DoublesSmallSize"));
+    ASSERT(has_def(r, "Function", "TEST_WidgetSuite_DoublesZero"));
+    ASSERT(has_def(r, "Function", "TEST_WidgetSuite_DoublesLargeSize"));
+    ASSERT(!has_def(r, "Function", "TEST"));
+    cbm_free_result(r);
+    PASS();
+}
+
+/* #1266: TEST_F fixture macro also produces unique names. */
+TEST(cpp_gtest_f_unique_name_issue1266) {
+    CBMFileResult *r = extract(
+        "TEST_F(MyFixture, FirstTest) { doStuff(); }\n"
+        "TEST_F(MyFixture, SecondTest) { doOtherStuff(); }\n",
+        CBM_LANG_CPP, "t", "fixture_test.cpp");
+    ASSERT_NOT_NULL(r);
+    ASSERT(has_def(r, "Function", "TEST_F_MyFixture_FirstTest"));
+    ASSERT(has_def(r, "Function", "TEST_F_MyFixture_SecondTest"));
+    ASSERT(!has_def(r, "Function", "TEST_F"));
+    cbm_free_result(r);
+    PASS();
+}
+
 /* --- C++ out-of-line method definitions (#428) ---
  * A .cpp defining methods of a class declared elsewhere (not in this TU).
  * Pre-fix these were recorded as free Functions (label "Function", no
@@ -4966,6 +5001,8 @@ SUITE(extraction) {
     RUN_TEST(rust_enum);
     RUN_TEST(zig_struct);
     RUN_TEST(cpp_function);
+    RUN_TEST(cpp_gtest_same_name_collision_issue1266);
+    RUN_TEST(cpp_gtest_f_unique_name_issue1266);
     RUN_TEST(cpp_out_of_line_method_issue428);
     RUN_TEST(cobol_paragraph);
     RUN_TEST(verilog_module);
