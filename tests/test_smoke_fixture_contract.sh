@@ -163,16 +163,20 @@ require(
     "fixture checksums must name exact artifact basenames, never ./-prefixed paths",
 )
 
-# Native Windows packages and serves the exact five-file release bundle, then
-# runs the full smoke from a protected profile-rooted directory/cache.
+# Native Windows packages and serves the exact four-file release bundle (ONE
+# binary, like every other platform), then runs the full smoke from a protected
+# profile-rooted directory/cache.
 for name in (
     "codebase-memory-mcp.exe",
-    "codebase-memory-mcp.payload.exe",
     "LICENSE",
     "install.ps1",
     "THIRD_PARTY_NOTICES.md",
 ):
     require(name in vm_smoke, f"vm-smoke.sh archive must include {name}")
+require(
+    "codebase-memory-mcp.payload.exe" not in vm_smoke,
+    "vm-smoke.sh must not stage a Windows launcher/payload pair",
+)
 require("checksums.txt" in vm_smoke, "vm-smoke.sh must generate checksums.txt")
 require(
     "SMOKE_DOWNLOAD_URL=" in vm_smoke
@@ -245,17 +249,21 @@ for service in ("smoke-windows:",):
     )
     section = match.group("body") if match else ""
     require(
-        "mv build/win-cross/codebase-memory-mcp.exe "
-        "build/win-cross/codebase-memory-mcp.payload.exe" in section
-        and "mv build/win-cross/codebase-memory-mcp-launcher.exe "
-        "build/win-cross/codebase-memory-mcp.exe" in section,
-        f"docker-compose {service[:-1]} must assemble the Windows launcher/payload pair",
+        "codebase-memory-mcp-launcher" not in section
+        and "codebase-memory-mcp.payload.exe" not in section.replace(
+            "test ! -e build/win-cross/codebase-memory-mcp.payload.exe", ""
+        ),
+        f"docker-compose {service[:-1]} must build ONE Windows binary, not a launcher/payload pair",
+    )
+    require(
+        "test ! -e build/win-cross/codebase-memory-mcp.payload.exe" in section,
+        f"docker-compose {service[:-1]} must assert no payload sibling is produced",
     )
 require(
-    "wine64 ./build/win-cross/codebase-memory-mcp.payload.exe --version" in compose
+    "wine64 ./build/win-cross/codebase-memory-mcp.exe --version" in compose
     and "wine64 cmd /c build/win-cross/codebase-memory-mcp.exe --version" in compose,
-    "docker-compose Windows cross-smoke must execute the payload through Wine and the launcher "
-    "through a Wine Windows parent",
+    "docker-compose Windows cross-smoke must execute the single binary through Wine and through a "
+    "Wine Windows parent",
 )
 require(
     "soak-windows:" not in compose,
@@ -317,19 +325,29 @@ require(
     and "invalid Windows PATH smoke seam fell back" in smoke_test,
     "Windows release smoke must prove malformed PATH-test gating fails closed",
 )
+# There is no in-process update left to refresh the MCP command, so Phase 14
+# cannot assert a refresh. The refresh itself still happens -- the install
+# script re-runs `install` -- and is covered by Phase 8 (agent config install
+# E2E) and Phase 13 (install script E2E). Phase 14 must say so rather than
+# quietly dropping the step.
 require(
-    'if [ "$UPD_CMD" != "$EXPECTED_UPD_CMD" ]' in smoke_test,
-    "Phase 14 must require the refreshed MCP command to equal the updated binary",
+    "config refresh covered by install" in smoke_test,
+    "Phase 14 must name where the config-refresh coverage moved to",
 )
+# The retired-image driver existed to exercise an in-process replacement that no
+# platform performs any more: `update` prints the shipped install script's
+# command and touches nothing. Phase 14 now drives from the installed binary
+# everywhere, and 14a asserts the binary is byte-identical afterwards.
 require(
-    'UPDATE_DRIVER="$RETIRED_DIR/codebase-memory-mcp"' in smoke_test
+    'UPDATE_DRIVER="$UPDATE_HOME/.local/bin/codebase-memory-mcp"' in smoke_test
     and 'STALE_CMD="$UPDATE_DRIVER"' in smoke_test,
-    "POSIX Phase 14 must refresh from positive running-image identity without probing config paths",
+    "Phase 14 must drive update from the installed binary on every platform",
 )
 require(
-    'STALE_CMD="$UPDATE_HOME/retired-install/codebase-memory-mcp.exe"' in smoke_test,
-    "Windows Phase 14 must test a literal missing executable, not an ambiguous extensionless command",
+    "update replaced the binary in-process" in smoke_test,
+    "Phase 14 must assert update leaves the binary byte-identical",
 )
+
 for changed_path in (
     "install\\.(sh|ps1)",
     "scripts/smoke-local",

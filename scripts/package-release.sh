@@ -30,16 +30,16 @@ local artifact-flow smoke lane.
              matching binary must already have been built (--with-ui for ui).
   --out-dir  where to place the archive (default: repository root).
 
-Make passthrough (VAR=VAL, forwarded to the Windows launcher build):
+Make passthrough (VAR=VAL, forwarded to the build):
   CC= CXX=   compiler override, e.g. CC=clang CXX=clang++.
 
 Environment:
   BUILD_DIR  build tree to archive from (default build/c).
 
-Archive contents (defined here, canonical):
+Archive contents (defined here, canonical) — ONE binary per platform:
   unix:    codebase-memory-mcp LICENSE install.sh THIRD_PARTY_NOTICES.md (.tar.gz)
-  windows: codebase-memory-mcp.exe (launcher) codebase-memory-mcp.payload.exe
-           LICENSE install.ps1 THIRD_PARTY_NOTICES.md (.zip)
+  windows: codebase-memory-mcp.exe LICENSE install.ps1
+           THIRD_PARTY_NOTICES.md (.zip)
 EOF
 }
 
@@ -91,31 +91,104 @@ BUILD_DIR="${BUILD_DIR:-build/c}"
 OUT_DIR="$(mkdir -p "$OUT_DIR" && cd "$OUT_DIR" && pwd)"
 NAME="codebase-memory-mcp${SUFFIX}-${GOOS}-${GOARCH}"
 
+# Ship every release binary stripped. Production already builds without -g, but
+# the linker still keeps a ~536 KB .symtab, so releases carried their full
+# symbol table to users: bigger downloads and a free map of the internals, with
+# nothing gained. Nothing symbolizes at runtime (mem_profile.c is not in the
+# production build and never calls backtrace_symbols), so this costs no
+# diagnostics.
+#
+# It also had a concrete cost. Microsoft's ML scored the unstripped linux-amd64
+# binary Trojan:Script/Wacatac.B!ml (1 engine of 62) and blocked release run
+# 30398064336 at the VirusTotal gate. That verdict is a decision-boundary
+# artifact rather than a property of the code -- the dry-run build two days
+# earlier is the same program plus 10 KB and scans clean, and the ui build of
+# the same commit was never flagged. Stripping removes the symbol surface those
+# models score and cleared BOTH flagged builds (Wacatac.B and Wacatac.C)
+# without changing what the program does.
+#
+# macOS is ad-hoc signed by the build workflow BEFORE this script runs, and
+# stripping invalidates that signature, so Mach-O is re-signed here. Skipping
+# the re-sign ships a binary the kernel refuses to exec.
+strip_release_binary() {
+    local binary="$1"
+    [ -f "$binary" ] || return 0
+    # The right flags differ per format, and the WRONG ones fail silently in
+    # the dangerous direction. Measured on the flagged darwin-arm64 artifact:
+    #
+    #   llvm-strip --strip-all   373 symbols   scanned CLEAN
+    #   strip        (no flags)  378 symbols   equivalent
+    #   strip -x -S             4058 symbols   the state VirusTotal FLAGGED
+    #   strip -X / -u -r        4058 symbols   likewise
+    #
+    # Apple's strip returns success for `-x -S`, so a helper that just tries
+    # candidates until one exits 0 would quietly reship the flagged binary.
+    # GNU/LLVM `--strip-all` is not even accepted by Apple's strip, which is why
+    # generalising it to every platform broke the macOS build -- loudly, which
+    # was the lucky outcome.
+    #
+    # So: --strip-all where it is understood, plain `strip` for Mach-O, and a
+    # hard error when no candidate can do the job. Never a weaker fallback.
+    local stripped=""
+    for tool in "${STRIP:-}" llvm-strip strip; do
+        [ -n "$tool" ] || continue
+        command -v "$tool" >/dev/null 2>&1 || continue
+        if "$tool" --strip-all "$binary" 2>/dev/null; then
+            stripped="$tool --strip-all"
+        elif [ "$GOOS" = "darwin" ] && "$tool" "$binary" 2>/dev/null; then
+            stripped="$tool"
+        fi
+        [ -n "$stripped" ] && break
+    done
+    if [ -z "$stripped" ]; then
+        echo "package-release: no working strip for $binary" >&2
+        return 1
+    fi
+    if [ "$GOOS" = "darwin" ]; then
+        command -v codesign >/dev/null 2>&1 &&
+            codesign --sign - --force "$binary" 2>/dev/null
+    fi
+    echo "=== package-release: stripped $(basename "$binary") ==="
+    return 0
+}
+
 if [ "$GOOS" = "windows" ]; then
-    # The launcher is part of the ARCHIVE layout (launcher fronts the payload),
-    # so it is built here, exactly as the release venue does.
-    make -f Makefile.cbm "$BUILD_DIR/codebase-memory-mcp-launcher.exe" \
-        BUILD_DIR="$BUILD_DIR" ${MAKE_ARGS[@]+"${MAKE_ARGS[@]}"}
+    # Windows ships ONE binary, exactly like every other platform. There is no
+    # launcher stub: a small unsigned PE whose entire job is to verify and
+    # execute another binary is statically indistinguishable from a dropper,
+    # and Defender's ML scored it Trojan:Win32/Wacatac.B!ml on x64 regardless
+    # of what we changed (bcrypt-free, stripped, versioned, and even
+    # resource-free builds were all flagged, while the product binary itself
+    # scans clean on every platform). Self-update — the launcher's whole reason
+    # to exist — moves OUT of the running process into install.ps1: Windows'
+    # executable lock only blocks a process from replacing ITSELF.
     PAYLOAD="$BUILD_DIR/codebase-memory-mcp"
     [ -f "${PAYLOAD}.exe" ] && PAYLOAD="${PAYLOAD}.exe"
     [ -f "$PAYLOAD" ] || { echo "package-release: build first; missing $PAYLOAD" >&2; exit 2; }
     PACK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cbm-package.XXXXXX")"
     trap 'rm -rf "$PACK_DIR"' EXIT
-    cp "$BUILD_DIR/codebase-memory-mcp-launcher.exe" "$PACK_DIR/codebase-memory-mcp.exe"
-    cp "$PAYLOAD" "$PACK_DIR/codebase-memory-mcp.payload.exe"
+    cp "$PAYLOAD" "$PACK_DIR/codebase-memory-mcp.exe"
+    strip_release_binary "$PACK_DIR/codebase-memory-mcp.exe" || exit 2
+    # Gate the artifact AFTER strip: strip is the last byte-changing step, so
+    # this inspects exactly what goes into the archive. Runs here rather than in
+    # a workflow step so the local artifact-flow smoke enforces the same thing.
+    bash scripts/ci/check-binary-composition.sh --variant="$VARIANT" \
+        "$PACK_DIR/codebase-memory-mcp.exe" || exit 2
     cp LICENSE install.ps1 "$PACK_DIR/"
     scripts/gen-third-party-notices.sh "$PACK_DIR/THIRD_PARTY_NOTICES.md"
     (
         cd "$PACK_DIR"
         rm -f "$OUT_DIR/$NAME.zip"
         zip -q "$OUT_DIR/$NAME.zip" \
-            codebase-memory-mcp.exe codebase-memory-mcp.payload.exe \
-            LICENSE install.ps1 THIRD_PARTY_NOTICES.md
+            codebase-memory-mcp.exe LICENSE install.ps1 THIRD_PARTY_NOTICES.md
     )
     echo "=== package-release: $OUT_DIR/$NAME.zip ==="
 else
     [ -f "$BUILD_DIR/codebase-memory-mcp" ] ||
         { echo "package-release: build first; missing $BUILD_DIR/codebase-memory-mcp" >&2; exit 2; }
+    strip_release_binary "$BUILD_DIR/codebase-memory-mcp" || exit 2
+    bash scripts/ci/check-binary-composition.sh --variant="$VARIANT" \
+        "$BUILD_DIR/codebase-memory-mcp" || exit 2
     cp LICENSE install.sh "$BUILD_DIR/"
     scripts/gen-third-party-notices.sh "$BUILD_DIR/THIRD_PARTY_NOTICES.md"
     tar -czf "$OUT_DIR/$NAME.tar.gz" -C "$BUILD_DIR" \

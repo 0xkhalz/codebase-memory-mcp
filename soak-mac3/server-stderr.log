@@ -1,1 +1,0 @@
-codebase-memory-mcp: CBM could not start because the active account daemon uses a different cache directory (active cache 32d84b9291b9fb9f56751c8696ab6361ab1f845ff567097ca792bb0926dd9b78; requested cache c274a32fbb995f29cd6b8e69faddb3fc2858d3301fc36ab81beae00df1b883de). Close all CBM sessions and commands, then retry with one consistent CBM_CACHE_DIR.

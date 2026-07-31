@@ -762,6 +762,40 @@ TEST(mcp_tools_list) {
     PASS();
 }
 
+/* #1361: --help omitted check_index_coverage because its tool list was a
+ * hand-maintained copy. The list is now rendered from the registry; this pins
+ * the render so a formatter bug cannot reintroduce a silent omission. */
+TEST(mcp_tools_help_list_matches_registry) {
+    char *help = cbm_mcp_tools_help_list();
+    ASSERT_NOT_NULL(help);
+    int count = cbm_mcp_tool_count();
+    ASSERT_GT(count, 0);
+    for (int i = 0; i < count; i++) {
+        const char *name = cbm_mcp_tool_name(i);
+        ASSERT_NOT_NULL(name);
+        ASSERT_NOT_NULL(strstr(help, name));
+    }
+    /* Exactly one comma between consecutive tools: the rendered cardinality
+     * equals the registry's, so truncation or duplication fails here. */
+    int commas = 0;
+    for (const char *p = help; *p; p++) {
+        if (*p == ',') {
+            commas++;
+        }
+    }
+    ASSERT_EQ(commas, count - 1);
+    /* Wrapped for an 80-column terminal. */
+    const char *line = help;
+    while (line && *line) {
+        const char *nl = strchr(line, '\n');
+        size_t line_len = nl ? (size_t)(nl - line) : strlen(line);
+        ASSERT_LT((int)line_len, 80);
+        line = nl ? nl + 1 : NULL;
+    }
+    free(help);
+    PASS();
+}
+
 TEST(mcp_tools_list_latest_metadata) {
     char *json = cbm_mcp_tools_list();
     ASSERT_NOT_NULL(json);
@@ -2343,6 +2377,40 @@ TEST(tool_check_index_coverage_reports_paths_scopes_and_ranges) {
     ASSERT_NOT_NULL(strstr(inner, "file exceeds cap"));
     ASSERT_NOT_NULL(strstr(inner, "best_effort"));
 
+    free(inner);
+    free(coverage);
+    cbm_mcp_server_free(srv);
+    cleanup_snippet_dir(tmp);
+    PASS();
+}
+
+TEST(tool_check_index_coverage_preserves_multiple_scope_labels) {
+    char tmp[256];
+    cbm_mcp_server_t *srv = setup_snippet_server(tmp, sizeof(tmp));
+    ASSERT_NOT_NULL(srv);
+
+    char *coverage = cbm_mcp_handle_tool(srv, "check_index_coverage",
+                                         "{\"project\":\"test-project\","
+                                         "\"scopes\":[\"alpha/one\",\"bravo/two\",\"charl/tri\"]}");
+    ASSERT_NOT_NULL(coverage);
+    char *inner = extract_text_content(coverage);
+    ASSERT_NOT_NULL(inner);
+    yyjson_doc *doc = yyjson_read(inner, strlen(inner), 0);
+    ASSERT_NOT_NULL(doc);
+    yyjson_val *scopes = yyjson_obj_get(yyjson_doc_get_root(doc), "scopes");
+    ASSERT_NOT_NULL(scopes);
+    ASSERT_TRUE(yyjson_is_arr(scopes));
+    ASSERT_EQ(yyjson_arr_size(scopes), 3);
+
+    const char *expected[] = {"alpha/one", "bravo/two", "charl/tri"};
+    for (size_t i = 0; i < 3; i++) {
+        yyjson_val *scope = yyjson_obj_get(yyjson_arr_get(scopes, i), "scope");
+        ASSERT_NOT_NULL(scope);
+        ASSERT_TRUE(yyjson_is_str(scope));
+        ASSERT_STR_EQ(yyjson_get_str(scope), expected[i]);
+    }
+
+    yyjson_doc_free(doc);
     free(inner);
     free(coverage);
     cbm_mcp_server_free(srv);
@@ -4228,6 +4296,44 @@ TEST(tool_manage_adr_unified_backend_issue256) {
     PASS();
 }
 
+TEST(tool_manage_adr_rejects_removed_sections_argument) {
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *st = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(st);
+    ASSERT_EQ(cbm_store_upsert_project(st, "adr-sections-guard", "/tmp/adr-sections-guard"),
+              CBM_STORE_OK);
+    cbm_mcp_server_set_project(srv, "adr-sections-guard");
+    ASSERT_EQ(cbm_store_adr_store(st, "adr-sections-guard", "## PURPOSE\nOriginal ADR.\n"),
+              CBM_STORE_OK);
+
+    mcp_mutation_guard_probe_t probe = {0};
+    cbm_mcp_server_set_project_mutation_guard(srv, mcp_mutation_guard_probe_begin,
+                                              mcp_mutation_guard_probe_end, &probe);
+
+    char *resp = cbm_mcp_server_handle(
+        srv, "{\"jsonrpc\":\"2.0\",\"id\":122,\"method\":\"tools/call\","
+             "\"params\":{\"name\":\"manage_adr\",\"arguments\":{"
+             "\"project\":\"adr-sections-guard\",\"mode\":\"update\","
+             "\"sections\":[\"PURPOSE\"],\"content\":\"## PURPOSE\\nReplacement ADR.\\n\"}}}");
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "invalid_arguments"));
+    ASSERT_NOT_NULL(strstr(resp, "No ADR write was performed"));
+    ASSERT_NOT_NULL(strstr(resp, "\"isError\":true"));
+    free(resp);
+    ASSERT_EQ(probe.begin_count, 0);
+    ASSERT_EQ(probe.end_count, 0);
+
+    cbm_adr_t adr;
+    memset(&adr, 0, sizeof(adr));
+    ASSERT_EQ(cbm_store_adr_get(st, "adr-sections-guard", &adr), CBM_STORE_OK);
+    ASSERT_STR_EQ(adr.content, "## PURPOSE\nOriginal ADR.\n");
+    cbm_store_adr_free(&adr);
+
+    cbm_mcp_server_free(srv);
+    PASS();
+}
+
 TEST(tool_manage_adr_mutation_guard_balances_success) {
     const char *project = "guard-adr-success";
     cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
@@ -5514,6 +5620,97 @@ TEST(tool_index_repository_reports_store_backed_adr) {
     remove(src_path);
     cbm_rmdir(cache);
     cbm_rmdir(tmp_dir);
+    PASS();
+}
+
+/* #1211: list_projects only ever advertises the project NAME, never the
+ * repo_path, but re-indexing by that same name (the natural next call) used
+ * to fall straight to "repo_path is required" because nothing resolved the
+ * name back to its stored root_path. Index once by repo_path, then re-index
+ * by project name alone and confirm it actually indexes instead of erroring. */
+TEST(tool_index_repository_resolves_root_path_from_project_name_issue1211) {
+    char tmp_dir[256];
+    snprintf(tmp_dir, sizeof(tmp_dir), "/tmp/cbm-index-byname-test-XXXXXX");
+    if (!cbm_mkdtemp(tmp_dir)) {
+        PASS();
+    }
+    char cache[256];
+    snprintf(cache, sizeof(cache), "/tmp/cbm-index-byname-cache-XXXXXX");
+    if (!cbm_mkdtemp(cache)) {
+        cbm_rmdir(tmp_dir);
+        PASS();
+    }
+
+    const char *saved = getenv("CBM_CACHE_DIR");
+    char *saved_copy = saved ? strdup(saved) : NULL;
+    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+
+    char src_path[512];
+    snprintf(src_path, sizeof(src_path), "%s/main.py", tmp_dir);
+    FILE *fp = fopen(src_path, "w");
+    ASSERT_NOT_NULL(fp);
+    fputs("def main():\n    return 'ok'\n", fp);
+    fclose(fp);
+
+    char *project = cbm_project_name_from_path(tmp_dir);
+    ASSERT_NOT_NULL(project);
+
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+
+    char index_args[1024];
+    snprintf(index_args, sizeof(index_args), "{\"repo_path\":\"%s\",\"mode\":\"fast\"}", tmp_dir);
+    char *resp = cbm_mcp_handle_tool(srv, "index_repository", index_args);
+    ASSERT_NOT_NULL(resp);
+    ASSERT(response_contains_json_fragment(resp, "\"status\":\"indexed\""));
+    free(resp);
+
+    char by_name_args[512];
+    snprintf(by_name_args, sizeof(by_name_args), "{\"project\":\"%s\",\"mode\":\"fast\"}", project);
+    resp = cbm_mcp_handle_tool(srv, "index_repository", by_name_args);
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NULL(strstr(resp, "repo_path is required"));
+    ASSERT(response_contains_json_fragment(resp, "\"status\":\"indexed\""));
+    free(resp);
+
+    cbm_mcp_server_free(srv);
+    cleanup_project_db(cache, project);
+    restore_cache_dir(saved_copy);
+    free(saved_copy);
+    free(project);
+    remove(src_path);
+    cbm_rmdir(cache);
+    cbm_rmdir(tmp_dir);
+    PASS();
+}
+
+/* Same gap, opposite outcome: a project name that was never indexed has no
+ * stored root_path to resolve, so it must still fail with the same clear
+ * "repo_path is required" error rather than a resolver crash or silent
+ * no-op. Guards the fallback path the fix above added. */
+TEST(tool_index_repository_unknown_project_name_still_requires_repo_path) {
+    char cache[256];
+    snprintf(cache, sizeof(cache), "/tmp/cbm-index-byname-unknown-cache-XXXXXX");
+    if (!cbm_mkdtemp(cache)) {
+        PASS();
+    }
+    const char *saved = getenv("CBM_CACHE_DIR");
+    char *saved_copy = saved ? strdup(saved) : NULL;
+    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+
+    char *resp = cbm_mcp_handle_tool(srv, "index_repository",
+                                     "{\"project\":\"never-indexed-project\"}");
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "repo_path is required"));
+    free(resp);
+
+    cbm_mcp_server_free(srv);
+    restore_cache_dir(saved_copy);
+    free(saved_copy);
+    cbm_rmdir(cache);
     PASS();
 }
 
@@ -9561,6 +9758,7 @@ SUITE(mcp) {
     /* MCP protocol helpers */
     RUN_TEST(mcp_initialize_response);
     RUN_TEST(mcp_tools_list);
+    RUN_TEST(mcp_tools_help_list_matches_registry);
     RUN_TEST(mcp_tools_list_latest_metadata);
     RUN_TEST(mcp_tools_have_behavior_annotations);
     RUN_TEST(mcp_index_repository_declares_name_override_issue571);
@@ -9634,6 +9832,7 @@ SUITE(mcp) {
     RUN_TEST(tool_index_status_no_project);
     RUN_TEST(tool_check_index_coverage_finds_path_beyond_status_cap);
     RUN_TEST(tool_check_index_coverage_reports_paths_scopes_and_ranges);
+    RUN_TEST(tool_check_index_coverage_preserves_multiple_scope_labels);
     RUN_TEST(tool_check_index_coverage_rejects_stale_generation);
     RUN_TEST(tool_check_index_coverage_requires_source_when_file_metadata_changed);
     RUN_TEST(tool_check_index_coverage_surfaces_lookup_errors);
@@ -9680,7 +9879,10 @@ SUITE(mcp) {
     RUN_TEST(tool_manage_adr_no_project);
     RUN_TEST(tool_manage_adr_get_with_existing_adr);
     RUN_TEST(tool_manage_adr_unified_backend_issue256);
+    RUN_TEST(tool_manage_adr_rejects_removed_sections_argument);
     RUN_TEST(tool_index_repository_reports_store_backed_adr);
+    RUN_TEST(tool_index_repository_resolves_root_path_from_project_name_issue1211);
+    RUN_TEST(tool_index_repository_unknown_project_name_still_requires_repo_path);
     RUN_TEST(tool_index_repository_dot_uses_absolute_project_key_and_preserves_adr);
     RUN_TEST(index_repository_relative_path_uses_explicit_session_root);
     RUN_TEST(index_repository_supervisor_uses_canonical_session_path);

@@ -465,10 +465,10 @@ static cbm_cli_activation_ops_t cli_activation_fake_ops(cli_activation_fake_t *f
 
 /* Every install/update/uninstall in this suite dispatches through here. On
  * Windows a test that has not installed its own activation ops gets a default
- * fake for the duration of the command: without the seam, the portable-payload
- * gate (correctly) refuses managed mutations before the shared agent-config
- * logic these tests verify ever runs. POSIX behavior is untouched — tests
- * without ops keep exercising the real activation machinery. */
+ * fake for the duration of the command: without the seam, `update` (correctly)
+ * hands off to install.ps1 before the shared agent-config logic these tests
+ * verify ever runs. POSIX behavior is untouched — tests without ops keep
+ * exercising the real activation machinery. */
 static cli_activation_fake_t g_cli_test_seam_fake;
 static cbm_cli_activation_ops_t g_cli_test_seam_ops;
 
@@ -3686,249 +3686,6 @@ static unsigned char *create_test_zip_stored(const char *filename, const unsigne
 
     *out_len = total;
     return zip;
-}
-
-static void test_zip_put_u16(unsigned char *output, uint16_t value) {
-    output[0] = (unsigned char)value;
-    output[1] = (unsigned char)(value >> 8);
-}
-
-static void test_zip_put_u32(unsigned char *output, uint32_t value) {
-    output[0] = (unsigned char)value;
-    output[1] = (unsigned char)(value >> 8);
-    output[2] = (unsigned char)(value >> 16);
-    output[3] = (unsigned char)(value >> 24);
-}
-
-typedef struct {
-    const char *name;
-    const unsigned char *content;
-    size_t content_size;
-} test_zip_entry_t;
-
-static unsigned char *create_test_zip_entries(const test_zip_entry_t *entries, size_t entry_count,
-                                              int *out_len) {
-    enum { TEST_ZIP_ENTRY_MAX = 8 };
-    if (!entries || !out_len || entry_count == 0 || entry_count > TEST_ZIP_ENTRY_MAX) {
-        return NULL;
-    }
-    size_t local_size = 0;
-    size_t central_size = 0;
-    for (size_t index = 0; index < entry_count; index++) {
-        size_t name_size = strlen(entries[index].name);
-        local_size += 30U + name_size + entries[index].content_size;
-        central_size += 46U + name_size;
-    }
-    size_t total = local_size + central_size + 22U;
-    if (total > INT_MAX) {
-        return NULL;
-    }
-    unsigned char *zip = calloc(1, total);
-    if (!zip) {
-        return NULL;
-    }
-    uint32_t local_offsets[TEST_ZIP_ENTRY_MAX];
-    uint32_t crcs[TEST_ZIP_ENTRY_MAX];
-    size_t cursor = 0;
-    for (size_t index = 0; index < entry_count; index++) {
-        size_t name_size = strlen(entries[index].name);
-        local_offsets[index] = (uint32_t)cursor;
-        crcs[index] =
-            (uint32_t)crc32(0L, entries[index].content, (uInt)entries[index].content_size);
-        zip[cursor] = 0x50;
-        zip[cursor + 1U] = 0x4b;
-        zip[cursor + 2U] = 0x03;
-        zip[cursor + 3U] = 0x04;
-        test_zip_put_u16(zip + cursor + 4U, 20U);
-        test_zip_put_u32(zip + cursor + 14U, crcs[index]);
-        test_zip_put_u32(zip + cursor + 18U, (uint32_t)entries[index].content_size);
-        test_zip_put_u32(zip + cursor + 22U, (uint32_t)entries[index].content_size);
-        test_zip_put_u16(zip + cursor + 26U, (uint16_t)name_size);
-        memcpy(zip + cursor + 30U, entries[index].name, name_size);
-        cursor += 30U + name_size;
-        memcpy(zip + cursor, entries[index].content, entries[index].content_size);
-        cursor += entries[index].content_size;
-    }
-
-    size_t central_offset = cursor;
-    for (size_t index = 0; index < entry_count; index++) {
-        size_t name_size = strlen(entries[index].name);
-        zip[cursor] = 0x50;
-        zip[cursor + 1U] = 0x4b;
-        zip[cursor + 2U] = 0x01;
-        zip[cursor + 3U] = 0x02;
-        test_zip_put_u16(zip + cursor + 4U, 20U);
-        test_zip_put_u16(zip + cursor + 6U, 20U);
-        test_zip_put_u32(zip + cursor + 16U, crcs[index]);
-        test_zip_put_u32(zip + cursor + 20U, (uint32_t)entries[index].content_size);
-        test_zip_put_u32(zip + cursor + 24U, (uint32_t)entries[index].content_size);
-        test_zip_put_u16(zip + cursor + 28U, (uint16_t)name_size);
-        test_zip_put_u32(zip + cursor + 42U, local_offsets[index]);
-        memcpy(zip + cursor + 46U, entries[index].name, name_size);
-        cursor += 46U + name_size;
-    }
-    size_t central_length = cursor - central_offset;
-    zip[cursor] = 0x50;
-    zip[cursor + 1U] = 0x4b;
-    zip[cursor + 2U] = 0x05;
-    zip[cursor + 3U] = 0x06;
-    test_zip_put_u16(zip + cursor + 8U, (uint16_t)entry_count);
-    test_zip_put_u16(zip + cursor + 10U, (uint16_t)entry_count);
-    test_zip_put_u32(zip + cursor + 12U, (uint32_t)central_length);
-    test_zip_put_u32(zip + cursor + 16U, (uint32_t)central_offset);
-    *out_len = (int)total;
-    return zip;
-}
-
-static unsigned char *create_test_zip_pair(const test_zip_entry_t entries[2], int *out_len) {
-    return create_test_zip_entries(entries, 2U, out_len);
-}
-
-static unsigned char *create_test_windows_release_zip(const char *launcher_name,
-                                                      const char *payload_name, int *out_len) {
-    static const unsigned char launcher[] = "MZ-launcher";
-    static const unsigned char payload[] = "MZ-payload";
-    static const unsigned char license[] = "license";
-    static const unsigned char installer[] = "installer";
-    static const unsigned char notices[] = "notices";
-    test_zip_entry_t entries[5] = {
-        {
-            .name = launcher_name,
-            .content = launcher,
-            .content_size = sizeof(launcher) - 1U,
-        },
-        {
-            .name = payload_name,
-            .content = payload,
-            .content_size = sizeof(payload) - 1U,
-        },
-        {"LICENSE", license, sizeof(license) - 1U},
-        {"install.ps1", installer, sizeof(installer) - 1U},
-        {"THIRD_PARTY_NOTICES.md", notices, sizeof(notices) - 1U},
-    };
-    return create_test_zip_entries(entries, 5U, out_len);
-}
-
-TEST(cli_extract_windows_release_pair_rejects_incomplete_release_namespace) {
-    static const unsigned char launcher[] = "MZ-launcher";
-    static const unsigned char payload[] = "MZ-payload";
-    const test_zip_entry_t entries[2] = {
-        {"codebase-memory-mcp.exe", launcher, sizeof(launcher) - 1U},
-        {"codebase-memory-mcp.payload.exe", payload, sizeof(payload) - 1U},
-    };
-    int zip_length = 0;
-    unsigned char *zip = create_test_zip_pair(entries, &zip_length);
-    ASSERT_NOT_NULL(zip);
-    cbm_windows_release_pair_t pair;
-    ASSERT_FALSE(cbm_extract_windows_release_pair_from_zip(zip, zip_length, &pair));
-    cbm_windows_release_pair_free(&pair);
-    free(zip);
-    PASS();
-}
-
-/* Release archives retain their legal notices and the standalone installer.
- * The updater must accept that exact official namespace while extracting only
- * the launcher/payload pair. Synthetic two-file fixtures previously hid that
- * every published Windows update would be rejected. */
-TEST(cli_extract_windows_release_pair_accepts_official_release_namespace) {
-    static const unsigned char launcher[] = "MZ-launcher";
-    static const unsigned char payload[] = "MZ-payload";
-    static const unsigned char license[] = "license";
-    static const unsigned char installer[] = "installer";
-    static const unsigned char notices[] = "notices";
-    const test_zip_entry_t entries[] = {
-        {"codebase-memory-mcp.exe", launcher, sizeof(launcher) - 1U},
-        {"codebase-memory-mcp.payload.exe", payload, sizeof(payload) - 1U},
-        {"LICENSE", license, sizeof(license) - 1U},
-        {"install.ps1", installer, sizeof(installer) - 1U},
-        {"THIRD_PARTY_NOTICES.md", notices, sizeof(notices) - 1U},
-    };
-    int zip_length = 0;
-    unsigned char *zip =
-        create_test_zip_entries(entries, sizeof(entries) / sizeof(entries[0]), &zip_length);
-    ASSERT_NOT_NULL(zip);
-    cbm_windows_release_pair_t pair;
-    ASSERT_TRUE(cbm_extract_windows_release_pair_from_zip(zip, zip_length, &pair));
-    ASSERT_EQ(pair.launcher_len, 11);
-    ASSERT_EQ(pair.payload_len, 10);
-    ASSERT_MEM_EQ(pair.launcher, "MZ-launcher", 11);
-    ASSERT_MEM_EQ(pair.payload, "MZ-payload", 10);
-    cbm_windows_release_pair_free(&pair);
-    free(zip);
-    PASS();
-}
-
-TEST(cli_extract_windows_release_pair_rejects_unknown_release_member) {
-    static const unsigned char content[] = "x";
-    const test_zip_entry_t entries[] = {
-        {"codebase-memory-mcp.exe", content, sizeof(content) - 1U},
-        {"codebase-memory-mcp.payload.exe", content, sizeof(content) - 1U},
-        {"LICENSE", content, sizeof(content) - 1U},
-        {"install.ps1", content, sizeof(content) - 1U},
-        {"unexpected.dll", content, sizeof(content) - 1U},
-    };
-    int zip_length = 0;
-    unsigned char *zip =
-        create_test_zip_entries(entries, sizeof(entries) / sizeof(entries[0]), &zip_length);
-    ASSERT_NOT_NULL(zip);
-    cbm_windows_release_pair_t pair;
-    ASSERT_FALSE(cbm_extract_windows_release_pair_from_zip(zip, zip_length, &pair));
-    cbm_windows_release_pair_free(&pair);
-    free(zip);
-    PASS();
-}
-
-TEST(cli_extract_windows_release_pair_rejects_aliases_and_duplicates) {
-    static const struct {
-        const char *launcher;
-        const char *payload;
-    } attacks[] = {
-        {
-            "CODEBASE-MEMORY-MCP.EXE",
-            "codebase-memory-mcp.payload.exe",
-        },
-        {
-            "codebase-memory-mcp.exe",
-            "codebase-memory-mcp.exe",
-        },
-        {
-            ".\\codebase-memory-mcp.exe",
-            "codebase-memory-mcp.payload.exe",
-        },
-        {
-            "codebase-memory-mcp.exe.",
-            "codebase-memory-mcp.payload.exe",
-        },
-        {
-            "codebase-memory-mcp.exe",
-            "codebase-memory-mcp.payload.exe ",
-        },
-    };
-    for (size_t index = 0; index < sizeof(attacks) / sizeof(attacks[0]); index++) {
-        int zip_length = 0;
-        unsigned char *zip = create_test_windows_release_zip(attacks[index].launcher,
-                                                             attacks[index].payload, &zip_length);
-        ASSERT_NOT_NULL(zip);
-        cbm_windows_release_pair_t pair;
-        ASSERT_FALSE(cbm_extract_windows_release_pair_from_zip(zip, zip_length, &pair));
-        cbm_windows_release_pair_free(&pair);
-        free(zip);
-    }
-    PASS();
-}
-
-TEST(cli_extract_windows_release_pair_rejects_local_central_mismatch) {
-    int zip_length = 0;
-    unsigned char *zip = create_test_windows_release_zip(
-        "codebase-memory-mcp.exe", "codebase-memory-mcp.payload.exe", &zip_length);
-    ASSERT_NOT_NULL(zip);
-    /* Local name starts at offset 30; central metadata remains unchanged. */
-    zip[30] = 'x';
-    cbm_windows_release_pair_t pair;
-    ASSERT_FALSE(cbm_extract_windows_release_pair_from_zip(zip, zip_length, &pair));
-    cbm_windows_release_pair_free(&pair);
-    free(zip);
-    PASS();
 }
 
 TEST(cli_extract_binary_from_zip) {
@@ -11950,12 +11707,14 @@ TEST(cli_sha256_file_matches_known_vector) {
 }
 
 #ifdef _WIN32
-/* The fail-closed release contract, asserted with the activation seam OFF:
- * these calls take the exact dispatch a release binary ships (the portable
- * body is unreachable), so the gates themselves keep direct unit coverage. */
-TEST(cli_windows_release_gates_refuse_portable_mutations) {
+/* The Windows update contract, asserted with the activation seam OFF so this
+ * takes the exact dispatch a release binary ships: `update` never replaces the
+ * running image in-process (Windows locks it), it prints the install.ps1
+ * command and exits 0. Regressing to an in-process self-update would mean
+ * reintroducing the launcher stub Defender flags as Trojan:Win32/Wacatac.B!ml. */
+TEST(cli_windows_update_hands_off_to_install_script) {
     char tmpdir[256];
-    snprintf(tmpdir, sizeof(tmpdir), "/tmp/cli-portable-refusal-XXXXXX");
+    snprintf(tmpdir, sizeof(tmpdir), "/tmp/cli-update-handoff-XXXXXX");
     if (!cbm_mkdtemp(tmpdir)) {
         FAIL("cbm_mkdtemp failed");
     }
@@ -11972,61 +11731,17 @@ TEST(cli_windows_release_gates_refuse_portable_mutations) {
     snprintf(bin_dir, sizeof(bin_dir), "%s/.local/bin", tmpdir);
     test_mkdirp(bin_dir);
     snprintf(bin_target, sizeof(bin_target), "%s/codebase-memory-mcp.exe", bin_dir);
-    write_test_file(bin_target, "portable refusal must not touch this");
+    write_test_file(bin_target, "in-process update must not touch this");
 
-    /* A one-shot portable payload (this test runner has no launcher context)
-     * may never self-mutate a managed surface. */
-    char *uninstall_argv[] = {"--yes"};
-    int uninstall_rc = cbm_cmd_uninstall(1, uninstall_argv);
     char *update_argv[] = {"--yes"};
     int update_rc = cbm_cmd_update(1, update_argv);
 
     const char *installed = read_test_file(bin_target);
-    bool preserved = installed && strcmp(installed, "portable refusal must not touch this") == 0;
+    bool preserved = installed && strcmp(installed, "in-process update must not touch this") == 0;
     cli_activation_restore_env(old_home, old_cache);
     test_rmdir_r(tmpdir);
 
-    ASSERT_EQ(uninstall_rc, 1);
-    ASSERT_EQ(update_rc, 1);
-    ASSERT_TRUE(preserved);
-    PASS();
-}
-
-TEST(cli_windows_release_gate_refuses_foreign_install_target) {
-    char tmpdir[256];
-    snprintf(tmpdir, sizeof(tmpdir), "/tmp/cli-foreign-target-XXXXXX");
-    if (!cbm_mkdtemp(tmpdir)) {
-        FAIL("cbm_mkdtemp failed");
-    }
-    char *old_home = NULL;
-    char *old_cache = NULL;
-    cli_activation_save_env(&old_home, &old_cache);
-    cbm_setenv("HOME", tmpdir, 1);
-    char cache_dir[512];
-    snprintf(cache_dir, sizeof(cache_dir), "%s/cache", tmpdir);
-    cbm_setenv("CBM_CACHE_DIR", cache_dir, 1);
-
-    char bin_dir[512];
-    char bin_target[640];
-    snprintf(bin_dir, sizeof(bin_dir), "%s/.local/bin", tmpdir);
-    test_mkdirp(bin_dir);
-    snprintf(bin_target, sizeof(bin_target), "%s/codebase-memory-mcp.exe", bin_dir);
-    write_test_file(bin_target, "foreign binary must be preserved");
-
-    /* An unmanaged file at the canonical launcher path is a conflict the
-     * managed transaction refuses to adopt or replace — even under --force
-     * with prompts auto-answered. */
-    cbm_set_auto_answer_for_test(-1);
-    char *argv[] = {"--force", "-y"};
-    int rc = cbm_cmd_install(2, argv);
-    cbm_set_auto_answer_for_test(0);
-
-    const char *installed = read_test_file(bin_target);
-    bool preserved = installed && strcmp(installed, "foreign binary must be preserved") == 0;
-    cli_activation_restore_env(old_home, old_cache);
-    test_rmdir_r(tmpdir);
-
-    ASSERT_EQ(rc, 1);
+    ASSERT_EQ(update_rc, 0);
     ASSERT_TRUE(preserved);
     PASS();
 }
@@ -12070,8 +11785,7 @@ SUITE(cli) {
     RUN_TEST(cli_uninstall_preserves_binary_and_index_when_cohort_does_not_drain);
     RUN_TEST(cli_activation_guard_is_bypassed_for_dry_run_and_plan);
 #ifdef _WIN32
-    RUN_TEST(cli_windows_release_gates_refuse_portable_mutations);
-    RUN_TEST(cli_windows_release_gate_refuses_foreign_install_target);
+    RUN_TEST(cli_windows_update_hands_off_to_install_script);
 #endif
 
     /* Version (2 tests — selfupdate_test.go) */
@@ -12159,11 +11873,6 @@ SUITE(cli) {
     RUN_TEST(cli_extract_binary_from_targz_not_found);
     RUN_TEST(cli_extract_binary_from_targz_invalid_data);
     RUN_TEST(cli_extract_binary_from_zip);
-    RUN_TEST(cli_extract_windows_release_pair_rejects_incomplete_release_namespace);
-    RUN_TEST(cli_extract_windows_release_pair_accepts_official_release_namespace);
-    RUN_TEST(cli_extract_windows_release_pair_rejects_unknown_release_member);
-    RUN_TEST(cli_extract_windows_release_pair_rejects_aliases_and_duplicates);
-    RUN_TEST(cli_extract_windows_release_pair_rejects_local_central_mismatch);
     RUN_TEST(cli_extract_binary_from_zip_not_found);
     RUN_TEST(cli_extract_binary_from_zip_path_traversal);
     RUN_TEST(cli_extract_binary_from_zip_invalid);

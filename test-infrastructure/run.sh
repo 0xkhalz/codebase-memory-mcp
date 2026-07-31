@@ -206,11 +206,11 @@ case "${1:-full}" in
         $COMPOSE run --rm -e CBM_SKIP_PERF=1 test-portable
         ;;
     windows)
-        echo "=== Windows: cross-compile + launcher/payload version check (Wine) ==="
+        echo "=== Windows: cross-compile + binary version check (Wine) ==="
         $COMPOSE run --rm smoke-windows
         ;;
     smoke-windows)
-        echo "=== Windows: launcher/payload version check (cross-compile + Wine) ==="
+        echo "=== Windows: binary version check (cross-compile + Wine) ==="
         $COMPOSE run --rm smoke-windows
         ;;
     amd64)
@@ -237,7 +237,7 @@ case "${1:-full}" in
         $COMPOSE run --rm -e CBM_SKIP_PERF=1 test-amd64
         $COMPOSE run --rm build-amd64
         $COMPOSE run --rm smoke-amd64
-        echo "=== Windows: cross-compile + launcher/payload version check (Wine) ==="
+        echo "=== Windows: cross-compile + binary version check (Wine) ==="
         $COMPOSE run --rm smoke-windows
         print_real_windows_gate
         ;;

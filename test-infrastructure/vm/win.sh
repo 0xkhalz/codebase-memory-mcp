@@ -196,7 +196,7 @@ sync)
     ;;
 build)
     # The canonical build entry, exactly as CI runs it: a CLEAN scripts/build.sh
-    # (product binary + launcher). ccache engages through env.sh's masquerade
+    # (the single product binary). ccache engages through env.sh's masquerade
     # (content-verified, so a warm cache only accelerates, never goes stale) —
     # NOT via CC='ccache clang', which bypassed the verified-cache env layer.
     # The test-runner is no longer built here: the test leg (scripts/test.sh)
@@ -213,8 +213,8 @@ test)
     vm clangarm64 "cd /c/cbm && bash test-infrastructure/vm/vm-run-tests.sh $*"
     ;;
 guards)
-    # Match the Windows CI product build: a clean, embedded-UI payload plus the
-    # permanent launcher. Passing those freshly built artifacts to the maintained
+    # Match the Windows CI product build: a clean, embedded-UI product binary.
+    # Passing that freshly built artifact to the maintained
     # PowerShell driver prevents an earlier non-UI `win.sh build` from silently
     # turning product guards into precondition skips. BUILD_DIR isolates the
     # clean product build from build/c, which build.sh would otherwise wipe —
@@ -230,7 +230,7 @@ guards)
     # different environment shape than CI's profile-rooted TEMP. Python must
     # be PREPENDED: the Microsoft Store python.exe alias stub lives early in
     # the profile PATH and otherwise shadows any appended interpreter.
-    vm_cmd "cd /d C:\\cbm && set PATH=C:\\msys64\\clangarm64\\bin;C:\\msys64\\usr\\bin;%PATH%&& powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\test-windows.ps1 -GuardsOnly -Binary build\\guards\\codebase-memory-mcp.exe -Launcher build\\guards\\codebase-memory-mcp-launcher.exe -Make C:\\msys64\\usr\\bin\\make.exe"
+    vm_cmd "cd /d C:\\cbm && set PATH=C:\\msys64\\clangarm64\\bin;C:\\msys64\\usr\\bin;%PATH%&& powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\test-windows.ps1 -GuardsOnly -Binary build\\guards\\codebase-memory-mcp.exe -Make C:\\msys64\\usr\\bin\\make.exe"
     ;;
 smoke-install)
     # EXACTLY the PR CI smoke job (pr.yml pr-smoke windows): a clean canonical

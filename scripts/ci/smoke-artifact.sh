@@ -104,7 +104,9 @@ mkdir -p "$EXTRACT_DIR"
 if [ "$GOOS" = "windows" ]; then
     unzip -q -o "$WORK_DIR/$NAME.zip" -d "$EXTRACT_DIR"
     test -s "$EXTRACT_DIR/codebase-memory-mcp.exe"
-    test -s "$EXTRACT_DIR/codebase-memory-mcp.payload.exe"
+    # ONE binary per platform: a payload sibling means the AV-flagged launcher
+    # stub came back.
+    test ! -e "$EXTRACT_DIR/codebase-memory-mcp.payload.exe"
     echo "=== smoke-artifact: smoking EXTRACTED $NAME.zip via vm-smoke.sh ==="
     SMOKE_ARCH="$GOARCH" SMOKE_VARIANT="$VARIANT" \
         CBM_SMOKE_ARTIFACT_DIR="$EXTRACT_DIR" \
