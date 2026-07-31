@@ -2,6 +2,8 @@
 #define CBM_MCP_INTERNAL_H
 
 #include "mcp/mcp.h"
+#include "pipeline/pipeline.h" /* cbm_changed_hunk_t */
+#include "store/store.h"       /* cbm_node_t */
 
 /* White-box fault injection for deterministic cross-platform quarantine
  * safety tests. This header is internal and is not part of the MCP API. */
@@ -30,5 +32,11 @@ enum { CBM_MCP_DEFAULT_AUTO_INDEX_LIMIT = 50000 };
  * such failure is fail-closed because this is the memory-admission guard. */
 bool cbm_mcp_auto_index_within_file_limit(const char *root_path, int file_limit,
                                           int *file_count_out);
+
+/* detect_changes seed scoping (#1363): does `node`'s line range overlap any
+ * recorded hunk for `file`? Exposed for direct unit testing of the overlap
+ * logic, independent of the git/subprocess/index plumbing around it. */
+bool cbm_detect_node_in_hunks(const cbm_node_t *node, const cbm_changed_hunk_t *hunks,
+                              int hunk_count, const char *file);
 
 #endif

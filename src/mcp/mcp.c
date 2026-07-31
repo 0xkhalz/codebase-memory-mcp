@@ -9736,19 +9736,54 @@ static int mcp_run_shell_command_cancellable(cbm_mcp_server_t *srv, const char *
     return contained ? 0 : -1;
 }
 
-/* Collect BFS seed ids: every symbol DEFINED in a changed file (everything but
- * the structural container labels — those have no CALLS edges). These anchor
- * the multi-source impact traversal. */
+/* Does `node`'s line range overlap any recorded hunk for `file`? Used to scope
+ * seed detection to the actually-changed lines rather than the whole file.
+ * Non-static (declared in mcp_internal.h) so tests can exercise the overlap
+ * logic directly, matching this file's existing white-box test hooks. */
+bool cbm_detect_node_in_hunks(const cbm_node_t *node, const cbm_changed_hunk_t *hunks,
+                              int hunk_count, const char *file) {
+    for (int h = 0; h < hunk_count; h++) {
+        if (strcmp(hunks[h].path, file) == 0 && node->start_line <= hunks[h].end_line &&
+            node->end_line >= hunks[h].start_line) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Collect BFS seed ids for one changed file (everything but the structural
+ * container labels — those have no CALLS edges). These anchor the
+ * multi-source impact traversal.
+ *
+ * When `hunks` has at least one entry for `file`, only definitions whose line
+ * range overlaps a hunk become seeds — a one-line edit inside a single
+ * function no longer seeds every other definition in the file. When no hunk
+ * is recorded for `file` (a brand-new/untracked file has no comparable
+ * "before" state, or the hunk fetch failed/was skipped), every non-container
+ * definition in the file is a seed — the previous, whole-file behavior — so
+ * this is a precision improvement, not a new failure mode. */
 static void detect_collect_seeds(cbm_store_t *store, const char *project, const char *file,
-                                 int64_t **seeds, int *n, int *cap) {
+                                 const cbm_changed_hunk_t *hunks, int hunk_count, int64_t **seeds,
+                                 int *n, int *cap) {
     cbm_node_t *nodes = NULL;
     int ncount = 0;
     cbm_store_find_nodes_by_file(store, project, file, &nodes, &ncount);
+    bool has_hunks_for_file = false;
+    for (int h = 0; h < hunk_count; h++) {
+        if (strcmp(hunks[h].path, file) == 0) {
+            has_hunks_for_file = true;
+            break;
+        }
+    }
     for (int i = 0; i < ncount; i++) {
         const char *lb = nodes[i].label;
         if (lb && strcmp(lb, "File") != 0 && strcmp(lb, "Folder") != 0 &&
             strcmp(lb, "Project") != 0 && strcmp(lb, "Module") != 0 && strcmp(lb, "Package") != 0 &&
             strcmp(lb, "Section") != 0) {
+            if (has_hunks_for_file &&
+                !cbm_detect_node_in_hunks(&nodes[i], hunks, hunk_count, file)) {
+                continue;
+            }
             if (*n >= *cap) {
                 *cap = *cap ? *cap * 2 : 16;
                 *seeds = safe_realloc(*seeds, (size_t)*cap * sizeof(int64_t));
@@ -10035,6 +10070,55 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
     int seed_count = 0;
     int seed_cap = 0;
 
+    /* Hunk line ranges (unified=0 diff), used to scope seed detection to the
+     * actually-changed lines instead of every definition in a changed file
+     * (see detect_collect_seeds). Best-effort: any failure here just leaves
+     * `hunks` empty and every file falls back to its previous whole-file
+     * seeding — this is a precision improvement, not a correctness
+     * dependency, so it is never treated as a request-level failure. */
+    cbm_changed_hunk_t *hunks = NULL;
+    int hunk_count = 0;
+    if (want_symbols) {
+        char hunk_cmd[CBM_SZ_2K];
+#ifdef _WIN32
+        snprintf(hunk_cmd, sizeof(hunk_cmd),
+                 "git -C \"%s\" diff --unified=0 \"%s\"...HEAD 2>NUL & "
+                 "git -C \"%s\" diff --unified=0 2>NUL",
+                 root_path, base_branch, root_path);
+#else
+        snprintf(hunk_cmd, sizeof(hunk_cmd),
+                 "{ git -C '%s' diff --unified=0 '%s'...HEAD 2>/dev/null; "
+                 "git -C '%s' diff --unified=0 2>/dev/null; }",
+                 root_path, base_branch, root_path);
+#endif
+        char hunk_output_path[CBM_SZ_2K] = {0};
+        cbm_proc_result_t hunk_result = {0};
+        int hunk_run =
+            mcp_run_shell_command_cancellable(srv, hunk_cmd, hunk_output_path, &hunk_result);
+        bool hunk_cancelled = hunk_result.cancellation_requested || mcp_request_cancelled(srv);
+        FILE *hfp = (!hunk_cancelled && hunk_run == 0) ? cbm_fopen(hunk_output_path, "rb") : NULL;
+        if (hfp) {
+            (void)fseek(hfp, 0, SEEK_END);
+            long hsz = ftell(hfp);
+            if (hsz > 0) {
+                (void)fseek(hfp, 0, SEEK_SET);
+                char *hbuf = malloc((size_t)hsz + SKIP_ONE);
+                if (hbuf) {
+                    size_t hread = fread(hbuf, SKIP_ONE, (size_t)hsz, hfp);
+                    hbuf[hread] = '\0';
+                    enum { HUNK_CAP = 4096 };
+                    hunks = safe_realloc(NULL, (size_t)HUNK_CAP * sizeof(cbm_changed_hunk_t));
+                    hunk_count = cbm_parse_hunks(hbuf, hunks, HUNK_CAP);
+                    free(hbuf);
+                }
+            }
+            (void)fclose(hfp);
+        }
+        if (hunk_output_path[0]) {
+            (void)cbm_unlink(hunk_output_path);
+        }
+    }
+
     char line[CBM_SZ_1K];
     while (fgets(line, sizeof(line), fp)) {
         size_t len = strlen(line);
@@ -10077,7 +10161,8 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
         }
         files[file_count++] = heap_strdup(path_line);
         if (want_symbols) {
-            detect_collect_seeds(store, project, path_line, &seeds, &seed_count, &seed_cap);
+            detect_collect_seeds(store, project, path_line, hunks, hunk_count, &seeds, &seed_count,
+                                 &seed_cap);
         }
     }
     (void)fclose(fp);
@@ -10123,6 +10208,7 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
             }
             free(files);
             free(seeds);
+            free(hunks);
             free(direction);
             free(root_path);
             free(project);
@@ -10280,6 +10366,7 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
     }
     free(files);
     free(seeds);
+    free(hunks);
     free(direction);
     free(root_path);
     free(project);
