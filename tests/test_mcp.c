@@ -2850,6 +2850,133 @@ TEST(tool_trace_call_path_prefers_definition) {
     PASS();
 }
 
+/* CONTRACT PIN for the closed strategy vocabulary published by
+ * trace_path(include_evidence:true).
+ *
+ * The indexer records ~20 internal strategy names on CALLS edges and the set
+ * grows with every language added. We publish a CLASS, not the raw name, so a
+ * resolver rename cannot silently change a user-visible field. This test is
+ * what keeps that promise honest: every strategy production can emit must land
+ * in a known class. Adding lsp_foo_dispatch passes automatically; introducing a
+ * genuinely new KIND of resolution fails HERE and forces a deliberate decision
+ * about the public contract instead of leaking an internal name. */
+TEST(trace_evidence_strategy_class_vocabulary_is_closed) {
+    /* Every strategy string assigned anywhere in src/ + internal/ as of this
+     * commit, plus the two literals pass_calls.c writes directly. */
+    static const char *const lsp[] = {"lsp_direct",         "lsp_base_dispatch",
+                                      "lsp_embed_dispatch", "lsp_implicit_this",
+                                      "lsp_inherited_dispatch", "lsp_method_dispatch",
+                                      "lsp_proc_macro",     "lsp_smart_ptr_dispatch",
+                                      "lsp_strategy_cross_file", "lsp_trait_dispatch",
+                                      "lsp_type_dispatch",  "lsp_virtual_dispatch"};
+    for (size_t i = 0; i < sizeof(lsp) / sizeof(lsp[0]); i++) {
+        const char *cls = cbm_mcp_edge_strategy_class(lsp[i]);
+        ASSERT_NOT_NULL(cls);
+        ASSERT_STR_EQ(cls, "lsp");
+    }
+    static const char *const lang[] = {"php_self_static", "php_static_resolved",
+                                       "perl_method_static", "perl_method_typed"};
+    for (size_t i = 0; i < sizeof(lang) / sizeof(lang[0]); i++) {
+        const char *cls = cbm_mcp_edge_strategy_class(lang[i]);
+        ASSERT_NOT_NULL(cls);
+        ASSERT_STR_EQ(cls, "language_rule");
+    }
+    static const char *const heur[] = {"callee_suffix", "field_type_hint", "service_pattern",
+                                       "fastapi_depends"};
+    for (size_t i = 0; i < sizeof(heur) / sizeof(heur[0]); i++) {
+        const char *cls = cbm_mcp_edge_strategy_class(heur[i]);
+        ASSERT_NOT_NULL(cls);
+        ASSERT_STR_EQ(cls, "heuristic");
+    }
+    /* A failed LSP resolution is reported as unresolved, not as "lsp" — the
+     * caller's question is whether the edge is trustworthy, and "we tried LSP
+     * and it did not resolve" answers no. */
+    ASSERT_STR_EQ(cbm_mcp_edge_strategy_class("lsp_unresolved"), "unresolved");
+    ASSERT_STR_EQ(cbm_mcp_edge_strategy_class("unknown"), "unresolved");
+    /* Only a NULL/empty strategy is unclassified — an unmapped non-empty value
+     * must never silently disappear from the output. */
+    ASSERT_NULL(cbm_mcp_edge_strategy_class(NULL));
+    ASSERT_NULL(cbm_mcp_edge_strategy_class(""));
+    ASSERT_STR_EQ(cbm_mcp_edge_strategy_class("some_future_resolver"), "heuristic");
+    PASS();
+}
+
+/* Distilled from #559 (@vvenegasv). The indexer already records
+ * {strategy, confidence} on every CALLS edge (pass_calls.c:355) and the store
+ * reads it back, but no tool ever surfaced it — an agent could see THAT A->B
+ * exists, never HOW it was resolved.
+ *
+ * Binds two things at once: the evidence columns appear only when asked for
+ * (default stays lean), and the published value is the CLASS, not the raw
+ * internal strategy name. Fails without the production change in both
+ * directions — no columns at all before, and "lsp_trait_dispatch" would leak
+ * verbatim if the classifier were bypassed. */
+TEST(tool_trace_path_evidence_is_opt_in_and_class_mapped) {
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    cbm_store_t *st = cbm_mcp_server_store(srv);
+    const char *proj = "ev-proj";
+    cbm_mcp_server_set_project(srv, proj);
+    cbm_store_upsert_project(st, proj, "/tmp/ev");
+    cbm_node_t caller = {.project = proj,
+                         .label = "Function",
+                         .name = "caller",
+                         .qualified_name = "ev-proj.src.caller",
+                         .file_path = "src/a.c",
+                         .start_line = 1,
+                         .end_line = 5};
+    cbm_node_t callee = {.project = proj,
+                         .label = "Function",
+                         .name = "target",
+                         .qualified_name = "ev-proj.src.target",
+                         .file_path = "src/a.c",
+                         .start_line = 10,
+                         .end_line = 20};
+    int64_t id_caller = cbm_store_upsert_node(st, &caller);
+    int64_t id_callee = cbm_store_upsert_node(st, &callee);
+    ASSERT_GT(id_caller, 0);
+    ASSERT_GT(id_callee, 0);
+    /* Exactly the shape pass_calls.c:355 writes in production. */
+    cbm_edge_t e = {.project = proj,
+                    .source_id = id_caller,
+                    .target_id = id_callee,
+                    .type = "CALLS",
+                    .properties_json = "{\"callee\":\"target\",\"confidence\":0.95,"
+                                       "\"strategy\":\"lsp_trait_dispatch\",\"candidates\":1}"};
+    ASSERT_GT(cbm_store_insert_edge(st, &e), 0);
+
+    /* Default: lean. No evidence columns, no strategy anywhere. */
+    char *plain = cbm_mcp_server_handle(
+        srv, "{\"jsonrpc\":\"2.0\",\"id\":91,\"method\":\"tools/call\","
+             "\"params\":{\"name\":\"trace_path\",\"arguments\":{\"function_name\":\"caller\","
+             "\"project\":\"ev-proj\",\"direction\":\"outbound\"}}}");
+    ASSERT_NOT_NULL(plain);
+    char *plain_txt = extract_text_content(plain);
+    ASSERT_NOT_NULL(plain_txt);
+    ASSERT_NOT_NULL(strstr(plain_txt, "target")); /* positive control: the hop IS there */
+    ASSERT_NULL(strstr(plain_txt, "lsp"));
+    ASSERT_NULL(strstr(plain_txt, "0.95"));
+    free(plain_txt);
+    free(plain);
+
+    /* Opted in: the class and the confidence appear, the raw name does not. */
+    char *ev = cbm_mcp_server_handle(
+        srv, "{\"jsonrpc\":\"2.0\",\"id\":92,\"method\":\"tools/call\","
+             "\"params\":{\"name\":\"trace_path\",\"arguments\":{\"function_name\":\"caller\","
+             "\"project\":\"ev-proj\",\"direction\":\"outbound\",\"include_evidence\":true}}}");
+    ASSERT_NOT_NULL(ev);
+    char *ev_txt = extract_text_content(ev);
+    ASSERT_NOT_NULL(ev_txt);
+    ASSERT_NOT_NULL(strstr(ev_txt, "target"));
+    ASSERT_NOT_NULL(strstr(ev_txt, "lsp"));
+    ASSERT_NOT_NULL(strstr(ev_txt, "0.95"));
+    /* The internal resolver name must NOT reach the client. */
+    ASSERT_NULL(strstr(ev_txt, "lsp_trait_dispatch"));
+    free(ev_txt);
+    free(ev);
+    cbm_mcp_server_free(srv);
+    PASS();
+}
+
 /* Reproduce-first (#887): the client-supplied `depth` on trace_call_path must be
  * clamped to the MCP ceiling (cbm_mcp_max_depth(), default 15). On origin/main
  * an MCP_MAX_DEPTH=15 constant was defined but never applied — `depth` flowed
@@ -9800,6 +9927,8 @@ SUITE(mcp) {
     RUN_TEST(tool_trace_union_records_min_hop_across_seeds);
     RUN_TEST(tool_trace_pagination_exactly_once);
     RUN_TEST(tool_trace_call_path_prefers_definition);
+    RUN_TEST(trace_evidence_strategy_class_vocabulary_is_closed);
+    RUN_TEST(tool_trace_path_evidence_is_opt_in_and_class_mapped);
     RUN_TEST(tool_trace_call_path_depth_clamped);
     RUN_TEST(tool_trace_call_path_distinct_defs_not_over_unioned);
     RUN_TEST(tool_trace_call_path_dts_stub_unions_with_impl);
