@@ -1145,6 +1145,97 @@ TEST(nix_function) {
     PASS();
 }
 
+/* A Nix file's root expression is normally itself a function (`{ pkgs, lib, ... }:`)
+ * — the near-universal library/module header. Definitions must survive that header.
+ * Each shape below is asserted separately so a regression names the shape it broke.
+ * `nix_function` above deliberately stays as-is: its binding is an application, not
+ * a function, so it pins the "parses, no def" case and cannot cover this. */
+TEST(nix_defs_in_let_rooted_file) {
+    CBMFileResult *r = extract("let\n  alpha = x: x + 1;\n  beta = { a, b }: a + b;\nin\n"
+                               "{ inherit alpha beta; }\n",
+                               CBM_LANG_NIX, "t", "bare.nix");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    ASSERT(has_def(r, "Function", "alpha"));
+    ASSERT(has_def(r, "Function", "beta"));
+    cbm_free_result(r);
+    PASS();
+}
+
+TEST(nix_defs_in_attrset_rooted_file) {
+    CBMFileResult *r = extract("{\n  epsilon = x: x + 1;\n  zeta = { a, b }: a + b;\n}\n",
+                               CBM_LANG_NIX, "t", "attrset.nix");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    ASSERT(has_def(r, "Function", "epsilon"));
+    ASSERT(has_def(r, "Function", "zeta"));
+    cbm_free_result(r);
+    PASS();
+}
+
+TEST(nix_defs_in_nested_let) {
+    CBMFileResult *r = extract("let\n  outer =\n    let theta = x: x + 1;\n    in theta;\n"
+                               "in\n{ inherit outer; }\n",
+                               CBM_LANG_NIX, "t", "nested.nix");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    ASSERT(has_def(r, "Function", "theta"));
+    cbm_free_result(r);
+    PASS();
+}
+
+/* The regression this suite previously could not see: the root `{ prelude }:` matches
+ * nix_func_types, resolves no name of its own, and — before the fix — terminated the
+ * walk, so nothing below the header was ever visited. */
+TEST(nix_defs_survive_function_header_let) {
+    CBMFileResult *r = extract("{ prelude }:\nlet\n  gamma = x: x + 1;\n"
+                               "  delta = { a, b }: a + b;\nin\n{ inherit gamma delta; }\n",
+                               CBM_LANG_NIX, "t", "wrapped.nix");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    ASSERT(has_def(r, "Function", "gamma"));
+    ASSERT(has_def(r, "Function", "delta"));
+    cbm_free_result(r);
+    PASS();
+}
+
+TEST(nix_defs_survive_function_header_attrset) {
+    CBMFileResult *r = extract("{ prelude }:\n{\n  eta = x: x + 1;\n}\n", CBM_LANG_NIX, "t",
+                               "wrapped_attrset.nix");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    ASSERT(has_def(r, "Function", "eta"));
+    cbm_free_result(r);
+    PASS();
+}
+
+/* A curried header — `final: prev: { … }` is the standard nixpkgs overlay signature, and
+ * the most common multi-arm header in the ecosystem. Two nested function_expressions sit
+ * between the file root and the body. */
+TEST(nix_defs_survive_curried_header) {
+    CBMFileResult *r =
+        extract("final: prev: {\n  kappa = x: x + 1;\n}\n", CBM_LANG_NIX, "t", "overlay.nix");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    ASSERT(has_def(r, "Function", "kappa"));
+    cbm_free_result(r);
+    PASS();
+}
+
+/* Descending past the header must not mint a second def from a curried lambda's inner
+ * arm: `iota = a: b: ...` is one named function, not two. The inner `b:` has a
+ * function_expression parent, resolves no name, and must stay out. */
+TEST(nix_curried_lambda_mints_one_def) {
+    CBMFileResult *r = extract("{ prelude }:\nlet\n  iota = a: b: a + b;\nin\n{ inherit iota; }\n",
+                               CBM_LANG_NIX, "t", "curried.nix");
+    ASSERT_NOT_NULL(r);
+    ASSERT_FALSE(r->has_error);
+    ASSERT(has_def(r, "Function", "iota"));
+    ASSERT(count_defs_with_label(r, "Function") == 1);
+    cbm_free_result(r);
+    PASS();
+}
+
 /* --- Fortran --- */
 TEST(fortran_function) {
     /* Fortran subroutine name extraction is incomplete — just verify no crash */
@@ -4830,6 +4921,13 @@ SUITE(extraction) {
     RUN_TEST(julia_function);
     RUN_TEST(elm_function);
     RUN_TEST(nix_function);
+    RUN_TEST(nix_defs_in_let_rooted_file);
+    RUN_TEST(nix_defs_in_attrset_rooted_file);
+    RUN_TEST(nix_defs_in_nested_let);
+    RUN_TEST(nix_defs_survive_function_header_let);
+    RUN_TEST(nix_defs_survive_function_header_attrset);
+    RUN_TEST(nix_defs_survive_curried_header);
+    RUN_TEST(nix_curried_lambda_mints_one_def);
     RUN_TEST(fortran_function);
 
     /* OOP/Systems variants */

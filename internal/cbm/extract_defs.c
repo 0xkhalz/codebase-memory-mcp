@@ -6758,10 +6758,16 @@ static void walk_defs(CBMExtractCtx *ctx, TSNode root, const CBMLangSpec *spec, 
                 // Ada subprograms nest (a procedure body's declarative part can
                 // contain inner subprogram bodies); descend so the nested defs
                 // are captured and same-file calls to them resolve to a CALLS edge.
+                // Nix: a library/module file's ROOT expression is normally itself a
+                // function_expression (`{ pkgs, lib, ... }: <body>`), so stopping here
+                // abandons the entire file — every binding in it is lost. Descend so
+                // the body's `name = args: ...` bindings are reached. Inner curried
+                // lambdas (`f = a: b: ...`) resolve no name and mint nothing, so the
+                // extra descent adds defs without adding noise.
                 bool descend_into_func =
                     (ctx->language == CBM_LANG_WOLFRAM || ctx->language == CBM_LANG_TYPESCRIPT ||
                      ctx->language == CBM_LANG_JAVASCRIPT || ctx->language == CBM_LANG_TSX ||
-                     ctx->language == CBM_LANG_ADA);
+                     ctx->language == CBM_LANG_ADA || ctx->language == CBM_LANG_NIX);
                 if (!descend_into_func) {
                     continue;
                 }
