@@ -1530,9 +1530,8 @@ const cbm_gbuf_node_t *cbm_pipeline_resolve_import_node(const cbm_pipeline_ctx_t
             char symbuf[256];
             const char *sym = import_candidate_symbol(imp->module_path, symbuf, sizeof(symbuf));
             if (sym && sym[0] && strcmp(sym, "*") != 0) {
-                const char *mod_tail = import_last_segment(target->qualified_name
-                                                               ? target->qualified_name
-                                                               : "");
+                const char *mod_tail =
+                    import_last_segment(target->qualified_name ? target->qualified_name : "");
                 if (!mod_tail || strcmp(mod_tail, sym) != 0) {
                     char member_qn[CBM_SZ_512];
                     snprintf(member_qn, sizeof(member_qn), "%s.%s", target->qualified_name, sym);

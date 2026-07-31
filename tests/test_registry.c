@@ -386,9 +386,9 @@ TEST(resolve_import_map_bare_alias) {
     PASS();
 }
 
-/* from M import execute as bridge_execute + bridge_execute() — IMPORTS target is
- * already the def QN. Must CALLS→execute, not invent …M.bridge_execute.
- * Yui G1 shape (alongside resolve_import_map_bare_alias). */
+/* Adversarial pin: when import_map already stores the def QN under the alias
+ * key, bare alias call must CALLS→def (not invent …M.bridge_execute). Behavior
+ * already on main via #875/#979; this locks the Yui G1 shape. */
 TEST(resolve_import_map_aliased_from_import) {
     cbm_registry_t *r = cbm_registry_new();
     cbm_registry_add(r, "execute", "proj.services.satori_bridge.gate.execute", "Function");
