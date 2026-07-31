@@ -131,8 +131,10 @@ static void cleanup_project_db(const char *cache, const char *project) {
 
 typedef struct {
     int deny_begin_call;      /* one-based; zero allows every acquisition */
+    int deny_try_begin_call;  /* one-based; zero allows every try acquisition */
     int cancel_on_begin_call; /* one-based; zero never requests cancellation */
     int begin_count;
+    int try_begin_count;
     int end_count;
     cbm_mcp_server_t *cancel_server;
     bool cancel_attempted;
@@ -144,6 +146,7 @@ typedef struct {
     bool db_exists_at_end;
     bool backup_exists_at_end;
     char begin_projects[MCP_MUTATION_GUARD_MAX_EVENTS][CBM_SZ_256];
+    char try_begin_projects[MCP_MUTATION_GUARD_MAX_EVENTS][CBM_SZ_256];
     char end_projects[MCP_MUTATION_GUARD_MAX_EVENTS][CBM_SZ_256];
 } mcp_mutation_guard_probe_t;
 
@@ -301,6 +304,26 @@ static bool mcp_mutation_guard_probe_begin(void *context, const char *project) {
         probe->backup_exists_at_begin = cbm_file_exists(probe->observed_backup_path);
     }
     return probe->deny_begin_call == 0 || probe->begin_count != probe->deny_begin_call;
+}
+
+static bool mcp_mutation_guard_probe_try_begin(void *context, const char *project) {
+    mcp_mutation_guard_probe_t *probe = context;
+    if (!probe) {
+        return false;
+    }
+
+    int event = probe->try_begin_count++;
+    if (event < MCP_MUTATION_GUARD_MAX_EVENTS) {
+        snprintf(probe->try_begin_projects[event], sizeof(probe->try_begin_projects[event]), "%s",
+                 project ? project : "");
+    }
+    if (probe->observed_db_path) {
+        probe->db_exists_at_begin = cbm_file_exists(probe->observed_db_path);
+    }
+    if (probe->observed_backup_path) {
+        probe->backup_exists_at_begin = cbm_file_exists(probe->observed_backup_path);
+    }
+    return probe->deny_try_begin_call == 0 || probe->try_begin_count != probe->deny_try_begin_call;
 }
 
 static void mcp_mutation_guard_probe_end(void *context, const char *project) {
@@ -4445,7 +4468,47 @@ TEST(tool_manage_adr_mutation_guard_balances_success) {
     PASS();
 }
 
-TEST(tool_manage_adr_mutation_guard_releases_on_missing_store) {
+/* ADR reads must not wait behind the same project's mutation lease. A reindex
+ * can be expensive; existing SQLite data is a stable query snapshot, so get
+ * and sections must not invoke the blocking guard. */
+TEST(tool_manage_adr_read_paths_skip_blocking_mutation_guard) {
+    const char *project = "guard-adr-read";
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    ASSERT_EQ(cbm_store_upsert_project(store, project, "/tmp/guard-adr-read"), CBM_STORE_OK);
+    ASSERT_EQ(
+        cbm_store_adr_store(store, project, "## PURPOSE\nNonblocking read.\n\n## STACK\nC.\n"),
+        CBM_STORE_OK);
+    cbm_mcp_server_set_project(srv, project);
+
+    mcp_mutation_guard_probe_t probe = {.deny_begin_call = 1};
+    cbm_mcp_server_set_project_mutation_guard(srv, mcp_mutation_guard_probe_begin,
+                                              mcp_mutation_guard_probe_end, &probe);
+
+    char *get_response =
+        cbm_mcp_handle_tool(srv, "manage_adr", "{\"project\":\"guard-adr-read\",\"mode\":\"get\"}");
+    char *sections_response = cbm_mcp_handle_tool(
+        srv, "manage_adr", "{\"project\":\"guard-adr-read\",\"mode\":\"sections\"}");
+    bool get_returned_adr = get_response && strstr(get_response, "Nonblocking read.") &&
+                            !strstr(get_response, "\"isError\":true");
+    bool sections_returned_adr = sections_response && strstr(sections_response, "## PURPOSE") &&
+                                 strstr(sections_response, "## STACK") &&
+                                 !strstr(sections_response, "\"isError\":true");
+
+    free(get_response);
+    free(sections_response);
+    cbm_mcp_server_free(srv);
+
+    ASSERT_TRUE(get_returned_adr);
+    ASSERT_TRUE(sections_returned_adr);
+    ASSERT_EQ(probe.begin_count, 0);
+    ASSERT_EQ(probe.end_count, 0);
+    PASS();
+}
+
+TEST(tool_manage_adr_read_missing_store_skips_mutation_guard) {
     char cache[256];
     snprintf(cache, sizeof(cache), "/tmp/cbm-mcp-adr-guard-XXXXXX");
     if (!cbm_mkdtemp(cache)) {
@@ -4467,10 +4530,8 @@ TEST(tool_manage_adr_mutation_guard_releases_on_missing_store) {
                                      "{\"project\":\"guard-adr-missing\",\"mode\":\"get\"}");
     ASSERT_NOT_NULL(resp);
     ASSERT_TRUE(strstr(resp, "not found") || strstr(resp, "not indexed"));
-    ASSERT_EQ(probe.begin_count, 1);
-    ASSERT_EQ(probe.end_count, 1);
-    ASSERT_STR_EQ(probe.begin_projects[0], project);
-    ASSERT_STR_EQ(probe.end_projects[0], project);
+    ASSERT_EQ(probe.begin_count, 0);
+    ASSERT_EQ(probe.end_count, 0);
     free(resp);
 
     cbm_mcp_server_free(srv);
@@ -4478,6 +4539,85 @@ TEST(tool_manage_adr_mutation_guard_releases_on_missing_store) {
     cbm_rmdir(cache);
     restore_cache_dir(saved_cache_copy);
     free(saved_cache_copy);
+    PASS();
+}
+
+TEST(tool_manage_adr_legacy_migration_tries_without_blocking) {
+    const char *project = "guard-adr-legacy";
+    char root[256];
+    char cache[256];
+    snprintf(root, sizeof(root), "%s/cbm-adr-legacy-XXXXXX", cbm_tmpdir());
+    snprintf(cache, sizeof(cache), "%s/cbm-adr-legacy-cache-XXXXXX", cbm_tmpdir());
+    ASSERT_NOT_NULL(cbm_mkdtemp(root));
+    ASSERT_NOT_NULL(cbm_mkdtemp(cache));
+
+    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
+    ASSERT_EQ(cbm_setenv("CBM_CACHE_DIR", cache, 1), 0);
+
+    char adr_dir[CBM_SZ_1K];
+    char adr_path[CBM_SZ_1K];
+    snprintf(adr_dir, sizeof(adr_dir), "%s/.codebase-memory", root);
+    snprintf(adr_path, sizeof(adr_path), "%s/adr.md", adr_dir);
+    ASSERT_EQ(cbm_mkdir(adr_dir), 0);
+    FILE *fp = cbm_fopen(adr_path, "w");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_TRUE(fputs("## PURPOSE\nLegacy ADR.\n", fp) >= 0);
+    ASSERT_EQ(fclose(fp), 0);
+
+    char db_path[CBM_SZ_1K];
+    snprintf(db_path, sizeof(db_path), "%s/%s.db", cache, project);
+    cbm_store_t *writer = cbm_store_open_path(db_path);
+    ASSERT_NOT_NULL(writer);
+    ASSERT_EQ(cbm_store_upsert_project(writer, project, root), CBM_STORE_OK);
+    cbm_store_close(writer);
+
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+
+    mcp_mutation_guard_probe_t probe = {.deny_try_begin_call = 1};
+    cbm_mcp_server_set_project_mutation_guard(srv, mcp_mutation_guard_probe_begin,
+                                              mcp_mutation_guard_probe_end, &probe);
+    cbm_mcp_server_set_project_mutation_try_guard(srv, mcp_mutation_guard_probe_try_begin);
+
+    char *busy_response = cbm_mcp_handle_tool(
+        srv, "manage_adr", "{\"project\":\"guard-adr-legacy\",\"mode\":\"get\"}");
+    char *migrated_response = cbm_mcp_handle_tool(
+        srv, "manage_adr", "{\"project\":\"guard-adr-legacy\",\"mode\":\"get\"}");
+    /* A successful migration invalidates the request-scoped query store; prove
+     * persistence through the next public read instead of retaining its former
+     * borrowed test handle. */
+    char *persisted_response = cbm_mcp_handle_tool(
+        srv, "manage_adr", "{\"project\":\"guard-adr-legacy\",\"mode\":\"get\"}");
+    bool busy_read_returned_legacy = busy_response && strstr(busy_response, "Legacy ADR.") &&
+                                     !strstr(busy_response, "\"isError\":true");
+    bool migrated_read_returned_legacy = migrated_response &&
+                                         strstr(migrated_response, "Legacy ADR.") &&
+                                         !strstr(migrated_response, "\"isError\":true");
+    bool migration_persisted = persisted_response && strstr(persisted_response, "Legacy ADR.") &&
+                               !strstr(persisted_response, "\"isError\":true");
+
+    free(busy_response);
+    free(migrated_response);
+    free(persisted_response);
+    cbm_mcp_server_free(srv);
+    cbm_unlink(adr_path);
+    cbm_rmdir(adr_dir);
+    cbm_rmdir(root);
+    cleanup_project_db(cache, project);
+    restore_cache_dir(saved_cache_copy);
+    free(saved_cache_copy);
+    cbm_rmdir(cache);
+
+    ASSERT_TRUE(busy_read_returned_legacy);
+    ASSERT_TRUE(migrated_read_returned_legacy);
+    ASSERT_TRUE(migration_persisted);
+    ASSERT_EQ(probe.begin_count, 0);
+    ASSERT_EQ(probe.try_begin_count, 2);
+    ASSERT_EQ(probe.end_count, 1);
+    ASSERT_STR_EQ(probe.try_begin_projects[0], project);
+    ASSERT_STR_EQ(probe.try_begin_projects[1], project);
+    ASSERT_STR_EQ(probe.end_projects[0], project);
     PASS();
 }
 
@@ -5179,9 +5319,9 @@ TEST(tool_cross_repo_honors_source_name_override) {
 }
 
 /* Corrupt-store quarantine renames/unlinks the project DB and sidecars, so it
- * is a mutation even when resolve_store() was reached by a query tool. The
- * query path needs one balanced lease; manage_adr already owns that project
- * lease and must not acquire a nested second lease during the same cleanup. */
+ * is a mutation even when resolve_store() was reached by a query tool. Generic
+ * queries use a blocking guard for that recovery, while manage_adr reads must
+ * use one nonblocking acquisition and never nest a blocking lease. */
 TEST(tool_corrupt_store_cleanup_guard_is_balanced_and_not_nested) {
     char cache[256];
     snprintf(cache, sizeof(cache), "%s/cbm-mcp-corrupt-guard-XXXXXX", cbm_tmpdir());
@@ -5226,6 +5366,7 @@ TEST(tool_corrupt_store_cleanup_guard_is_balanced_and_not_nested) {
     };
     cbm_mcp_server_set_project_mutation_guard(adr_srv, mcp_mutation_guard_probe_begin,
                                               mcp_mutation_guard_probe_end, &adr_probe);
+    cbm_mcp_server_set_project_mutation_try_guard(adr_srv, mcp_mutation_guard_probe_try_begin);
     resp = cbm_mcp_handle_tool(adr_srv, "manage_adr",
                                "{\"project\":\"guard-corrupt-project\",\"mode\":\"get\"}");
     free(resp);
@@ -5250,9 +5391,10 @@ TEST(tool_corrupt_store_cleanup_guard_is_balanced_and_not_nested) {
     ASSERT_TRUE(query_probe.db_exists_at_begin);
     ASSERT_FALSE(query_probe.db_exists_at_end);
     ASSERT_TRUE(adr_quarantined);
-    ASSERT_EQ(adr_probe.begin_count, 1);
+    ASSERT_EQ(adr_probe.begin_count, 0);
+    ASSERT_EQ(adr_probe.try_begin_count, 1);
     ASSERT_EQ(adr_probe.end_count, 1);
-    ASSERT_STR_EQ(adr_probe.begin_projects[0], project);
+    ASSERT_STR_EQ(adr_probe.try_begin_projects[0], project);
     ASSERT_STR_EQ(adr_probe.end_projects[0], project);
     ASSERT_TRUE(adr_probe.db_exists_at_begin);
     ASSERT_FALSE(adr_probe.db_exists_at_end);
@@ -5326,6 +5468,102 @@ TEST(tool_corrupt_store_cleanup_guard_denial_preserves_db_and_wal) {
     ASSERT_TRUE(wal_unchanged);
     ASSERT_EQ(backup_count, 0);
     ASSERT_EQ(artifact_count, 0);
+    PASS();
+}
+
+/* A read must not wait for corrupt-store recovery. When another process owns
+ * that lease, distinguish the retryable busy state from an absent project. */
+TEST(tool_manage_adr_corrupt_store_busy_is_retryable) {
+    char cache[256];
+    snprintf(cache, sizeof(cache), "%s/cbm-mcp-adr-corrupt-busy-XXXXXX", cbm_tmpdir());
+    ASSERT_NOT_NULL(cbm_mkdtemp(cache));
+
+    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
+    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+
+    const char *project = "guard-adr-corrupt-busy";
+    char db_path[CBM_SZ_1K];
+    snprintf(db_path, sizeof(db_path), "%s/%s.db", cache, project);
+    ASSERT_TRUE(mcp_make_corrupt_project_store(cache, project));
+
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    mcp_mutation_guard_probe_t probe = {.deny_try_begin_call = 1};
+    cbm_mcp_server_set_project_mutation_guard(srv, mcp_mutation_guard_probe_begin,
+                                              mcp_mutation_guard_probe_end, &probe);
+    cbm_mcp_server_set_project_mutation_try_guard(srv, mcp_mutation_guard_probe_try_begin);
+
+    char *resp = cbm_mcp_handle_tool(srv, "manage_adr",
+                                     "{\"project\":\"guard-adr-corrupt-busy\",\"mode\":\"get\"}");
+    bool retryable_busy = resp && strstr(resp, "project is busy; retry after indexing") &&
+                          response_contains_json_fragment(resp, "\"isError\":true");
+    bool db_preserved = cbm_file_exists(db_path);
+    char unexpected_backup[CBM_SZ_1K];
+    int backup_count =
+        mcp_find_corrupt_backups(cache, project, unexpected_backup, sizeof(unexpected_backup));
+
+    free(resp);
+    cbm_mcp_server_free(srv);
+    mcp_cleanup_corrupt_backups(cache, project);
+    cleanup_project_db(cache, project);
+    restore_cache_dir(saved_cache_copy);
+    free(saved_cache_copy);
+    cbm_rmdir(cache);
+
+    ASSERT_TRUE(retryable_busy);
+    ASSERT_EQ(probe.begin_count, 0);
+    ASSERT_EQ(probe.try_begin_count, 1);
+    ASSERT_EQ(probe.end_count, 0);
+    ASSERT_TRUE(db_preserved);
+    ASSERT_EQ(backup_count, 0);
+    PASS();
+}
+
+TEST(tool_manage_adr_corrupt_store_missing_try_guard_reports_configuration) {
+    char cache[256];
+    snprintf(cache, sizeof(cache), "%s/cbm-mcp-adr-corrupt-config-XXXXXX", cbm_tmpdir());
+    ASSERT_NOT_NULL(cbm_mkdtemp(cache));
+
+    const char *saved_cache = getenv("CBM_CACHE_DIR");
+    char *saved_cache_copy = saved_cache ? strdup(saved_cache) : NULL;
+    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+
+    const char *project = "guard-adr-corrupt-config";
+    char db_path[CBM_SZ_1K];
+    snprintf(db_path, sizeof(db_path), "%s/%s.db", cache, project);
+    ASSERT_TRUE(mcp_make_corrupt_project_store(cache, project));
+
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    mcp_mutation_guard_probe_t probe = {0};
+    cbm_mcp_server_set_project_mutation_guard(srv, mcp_mutation_guard_probe_begin,
+                                              mcp_mutation_guard_probe_end, &probe);
+
+    char *resp = cbm_mcp_handle_tool(srv, "manage_adr",
+                                     "{\"project\":\"guard-adr-corrupt-config\",\"mode\":\"get\"}");
+    bool missing_try_guard =
+        resp && strstr(resp, "project recovery requires a nonblocking mutation guard") &&
+        response_contains_json_fragment(resp, "\"isError\":true");
+    bool db_preserved = cbm_file_exists(db_path);
+    char unexpected_backup[CBM_SZ_1K];
+    int backup_count =
+        mcp_find_corrupt_backups(cache, project, unexpected_backup, sizeof(unexpected_backup));
+
+    free(resp);
+    cbm_mcp_server_free(srv);
+    mcp_cleanup_corrupt_backups(cache, project);
+    cleanup_project_db(cache, project);
+    restore_cache_dir(saved_cache_copy);
+    free(saved_cache_copy);
+    cbm_rmdir(cache);
+
+    ASSERT_TRUE(missing_try_guard);
+    ASSERT_EQ(probe.begin_count, 0);
+    ASSERT_EQ(probe.try_begin_count, 0);
+    ASSERT_EQ(probe.end_count, 0);
+    ASSERT_TRUE(db_preserved);
+    ASSERT_EQ(backup_count, 0);
     PASS();
 }
 
@@ -10048,7 +10286,9 @@ SUITE(mcp_mutation_guard) {
     RUN_TEST(tool_delete_project_mutation_guard_blocks_then_releases);
     RUN_TEST(tool_index_repository_mutation_guard_blocks_before_local_worker);
     RUN_TEST(tool_manage_adr_mutation_guard_balances_success);
-    RUN_TEST(tool_manage_adr_mutation_guard_releases_on_missing_store);
+    RUN_TEST(tool_manage_adr_read_paths_skip_blocking_mutation_guard);
+    RUN_TEST(tool_manage_adr_read_missing_store_skips_mutation_guard);
+    RUN_TEST(tool_manage_adr_legacy_migration_tries_without_blocking);
     RUN_TEST(tool_raw_dispatch_cancel_is_scoped_non_mutating_and_next_request_clean);
     RUN_TEST(tool_outer_request_scope_preserves_predispatch_cancel);
     RUN_TEST(tool_index_repository_early_raw_cancel_survives_index_entry);
@@ -10061,6 +10301,8 @@ SUITE(mcp_mutation_guard) {
     RUN_TEST(tool_cross_repo_honors_source_name_override);
     RUN_TEST(tool_corrupt_store_cleanup_guard_is_balanced_and_not_nested);
     RUN_TEST(tool_corrupt_store_cleanup_guard_denial_preserves_db_and_wal);
+    RUN_TEST(tool_manage_adr_corrupt_store_busy_is_retryable);
+    RUN_TEST(tool_manage_adr_corrupt_store_missing_try_guard_reports_configuration);
     RUN_TEST(tool_corrupt_store_cleanup_rechecks_generation_after_guard_wait);
     RUN_TEST(tool_corrupt_store_cleanup_preserves_existing_backup_and_uses_unique_name);
     RUN_TEST(tool_corrupt_store_cleanup_publish_failure_preserves_db_and_wal);
