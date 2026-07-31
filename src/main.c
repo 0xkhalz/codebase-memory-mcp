@@ -888,10 +888,13 @@ static void print_help(void) {
     printf("  Manual/UI MCP boundaries: Qodo, Warp, JetBrains AI/ACP, Replit,\n");
     printf("  Plandex, SWE-agent, BLACKBOX, GitHub cloud agents, Jules,\n");
     printf("  CodeRabbit.\n");
-    printf("\nTools: index_repository, search_graph, query_graph, trace_path,\n");
-    printf("  get_code_snippet, get_graph_schema, get_architecture, search_code,\n");
-    printf("  list_projects, delete_project, index_status, detect_changes,\n");
-    printf("  manage_adr, ingest_traces\n");
+    /* Rendered from the MCP tool registry: a hand-maintained copy here
+     * omitted check_index_coverage (#1361) and could silently drift again. */
+    char *tools_help = cbm_mcp_tools_help_list();
+    if (tools_help) {
+        printf("\n%s", tools_help);
+        free(tools_help);
+    }
 }
 
 /* ── Main ───────────────────────────────────────────────────────── */
