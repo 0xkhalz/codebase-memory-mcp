@@ -21,6 +21,7 @@
 #include "foundation/constants.h"
 #include "foundation/log.h"
 #include "foundation/sha256.h"
+#include "cli/client_adapter.h"
 #include "mcp/mcp.h" // cbm_mcp_tool_input_schema — CLI flag parser + per-tool --help
 #include "mcp/index_supervisor.h"
 
@@ -7823,13 +7824,69 @@ static void install_devin_durable_context(const cbm_agent_registry_context_t *re
     }
 }
 
-static void install_pi_durable_context(const char *home, bool force, bool dry_run) {
+/* Write a generated client extension module into `path` as a managed block.
+ *
+ * The module is generated from the tool registry rather than shipped (see
+ * src/cli/client_adapter.h), and it goes in as a MARKED BLOCK rather than a
+ * whole-file write: the directory is auto-loaded by the client, so a user may
+ * legitimately keep their own module there, and clobbering it would be the
+ * install routine destroying user content.
+ *
+ * `generate` returns heap-allocated text or NULL; NULL is a hard error rather
+ * than a skip, because a silently absent extension is exactly the failure mode
+ * that left #616 a no-op for six weeks. */
+static void install_generated_client_extension(const char *label, const char *path,
+                                               const char *binary_path,
+                                               char *(*generate)(const char *), bool dry_run) {
+    if (g_install_plan) {
+        plan_record(label, "extension", path);
+        return;
+    }
+    char *content = generate(binary_path);
+    if (!content) {
+        record_agent_config_error(false, label, "extension_generate", path);
+        return;
+    }
+    bool installed = true;
+    if (!dry_run && (!prepare_config_parent(path) ||
+                     cbm_text_upsert_managed_block(path, CBM_ADAPTER_MARKER_START,
+                                                   CBM_ADAPTER_MARKER_END, content) != 0)) {
+        installed = false;
+        record_agent_config_error(false, label, "extension_install", path);
+    }
+    free(content);
+    if (installed) {
+        printf("  extension: %s\n", path);
+    }
+}
+
+/* Remove only OUR marked block, never the file: a user's own module may share
+ * it, and owned removal is the convention every other uninstall path here
+ * follows. */
+static void uninstall_generated_client_extension(const char *label, const char *path,
+                                                 bool dry_run) {
+    if (!dry_run && cbm_file_exists(path) &&
+        cbm_text_remove_managed_block(path, CBM_ADAPTER_MARKER_START, CBM_ADAPTER_MARKER_END) !=
+            0) {
+        record_agent_config_error(true, label, "extension_uninstall", path);
+        return;
+    }
+    printf("  extension: removed managed block\n");
+}
+
+static void install_pi_durable_context(const char *home, const char *binary_path, bool force,
+                                       bool dry_run) {
     char instructions_path[CLI_BUF_1K];
     char skills_dir[CLI_BUF_1K];
+    char extension_path[CLI_BUF_1K];
     snprintf(instructions_path, sizeof(instructions_path), "%s/.pi/agent/AGENTS.md", home);
     snprintf(skills_dir, sizeof(skills_dir), "%s/.pi/agent/skills", home);
+    snprintf(extension_path, sizeof(extension_path), "%s/.pi/agent/extensions/cbmem.ts", home);
     install_managed_agent_instructions("Pi", instructions_path, dry_run);
     install_agent_skill("Pi", skills_dir, force, dry_run);
+    /* pi has no MCP client, so this bridge is its ONLY route to the graph. */
+    install_generated_client_extension("Pi", extension_path, binary_path, cbm_client_adapter_pi,
+                                       dry_run);
 }
 
 static void install_kimi_durable_context(const cbm_agent_registry_context_t *registry,
@@ -8007,7 +8064,7 @@ static void install_agent_client_registry(const char *home, const char *binary_p
         } else if (profile->id == CBM_AGENT_CLIENT_POCHI) {
             install_pochi_durable_context(home, force, dry_run);
         } else if (profile->id == CBM_AGENT_CLIENT_PI) {
-            install_pi_durable_context(home, force, dry_run);
+            install_pi_durable_context(home, binary_path, force, dry_run);
         }
     }
 }
@@ -8159,6 +8216,16 @@ static void install_cli_agent_configs(const cbm_detected_agents_t *agents, const
                 .dialect = CBM_GRAPH_DIALECT_OPENCODE,
             },
             dry_run);
+        /* OpenCode already reaches every tool over MCP (installed just above),
+         * so this adds no tools -- only the automatic graph lookup before a
+         * grep/glob that other clients get from their own hook configuration.
+         * OpenCode has no such configuration; a plugin module is its only
+         * extension point (verified against their plugin documentation). */
+        char plugin_path[CLI_BUF_1K];
+        snprintf(plugin_path, sizeof(plugin_path), "%s/.config/opencode/plugins/cbm-augment.ts",
+                 home);
+        install_generated_client_extension("OpenCode", plugin_path, binary_path,
+                                           cbm_client_adapter_opencode, dry_run);
     }
     if (agents->antigravity) {
         char cp[CLI_BUF_1K];
@@ -9794,6 +9861,9 @@ static void uninstall_pi_durable_context(const char *home, bool dry_run) {
     }
     printf("  instructions: removed managed context\n");
     uninstall_agent_skill("Pi", skills_dir, dry_run);
+    char extension_path[CLI_BUF_1K];
+    snprintf(extension_path, sizeof(extension_path), "%s/.pi/agent/extensions/cbmem.ts", home);
+    uninstall_generated_client_extension("Pi", extension_path, dry_run);
 }
 
 static void uninstall_managed_agent_instructions(const char *label, const char *instructions_path,
@@ -10106,6 +10176,10 @@ static void uninstall_cli_agents(const cbm_detected_agents_t *agents, const char
                 .dialect = CBM_GRAPH_DIALECT_OPENCODE,
             },
             dry_run);
+        char plugin_path[CLI_BUF_1K];
+        snprintf(plugin_path, sizeof(plugin_path), "%s/.config/opencode/plugins/cbm-augment.ts",
+                 home);
+        uninstall_generated_client_extension("OpenCode", plugin_path, dry_run);
     }
     if (agents->antigravity) {
         char cp[CLI_BUF_1K];
