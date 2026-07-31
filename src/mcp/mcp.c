@@ -7571,11 +7571,46 @@ static char *index_args_with_repo_path(const char *args, const char *canonical_r
     return rewritten;
 }
 
+/* #1211: index_repository requires repo_path, but list_projects only ever
+ * advertises the project NAME, and every read tool accepts that name back via
+ * get_project_arg's "project"/"project_name"/"project_id"/"projectName"
+ * aliases (mcp.c:1385). Re-indexing an already-indexed project by that same
+ * name had no resolution path and fell straight to "repo_path is required".
+ * Look up the project's own stored root_path (list_projects proves it's on
+ * file) before giving up. Query-only open, always closed here: this never
+ * creates a store or touches srv->store/srv->current_project, so it cannot
+ * disturb whatever project the server has cached. */
+static char *resolved_repo_path_from_project_arg(const char *args) {
+    char *project = get_project_arg(args);
+    if (!project) {
+        return NULL;
+    }
+    char db_path[CBM_SZ_1K];
+    project_db_path(project, db_path, sizeof(db_path));
+    cbm_store_t *store = db_path[0] ? cbm_store_open_path_query(db_path) : NULL;
+    char *root_path = NULL;
+    if (store) {
+        cbm_project_t proj = {0};
+        if (cbm_store_get_project(store, project, &proj) == CBM_STORE_OK) {
+            root_path = proj.root_path ? heap_strdup(proj.root_path) : NULL;
+            cbm_project_free_fields(&proj);
+        }
+        cbm_store_close(store);
+    }
+    free(project);
+    return root_path;
+}
+
 static char *handle_index_repository(cbm_mcp_server_t *srv, const char *args) {
     char *repo_path = cbm_mcp_get_string_arg(args, "repo_path");
     char *mode_str = cbm_mcp_get_string_arg(args, "mode");
     char *name_override = cbm_mcp_get_string_arg(args, "name");
     cbm_normalize_path_sep(repo_path);
+
+    if (!repo_path) {
+        repo_path = resolved_repo_path_from_project_arg(args);
+        cbm_normalize_path_sep(repo_path);
+    }
 
     if (!repo_path) {
         free(mode_str);

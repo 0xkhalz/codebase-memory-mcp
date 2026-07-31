@@ -5473,6 +5473,97 @@ TEST(tool_index_repository_reports_store_backed_adr) {
     PASS();
 }
 
+/* #1211: list_projects only ever advertises the project NAME, never the
+ * repo_path, but re-indexing by that same name (the natural next call) used
+ * to fall straight to "repo_path is required" because nothing resolved the
+ * name back to its stored root_path. Index once by repo_path, then re-index
+ * by project name alone and confirm it actually indexes instead of erroring. */
+TEST(tool_index_repository_resolves_root_path_from_project_name_issue1211) {
+    char tmp_dir[256];
+    snprintf(tmp_dir, sizeof(tmp_dir), "/tmp/cbm-index-byname-test-XXXXXX");
+    if (!cbm_mkdtemp(tmp_dir)) {
+        PASS();
+    }
+    char cache[256];
+    snprintf(cache, sizeof(cache), "/tmp/cbm-index-byname-cache-XXXXXX");
+    if (!cbm_mkdtemp(cache)) {
+        cbm_rmdir(tmp_dir);
+        PASS();
+    }
+
+    const char *saved = getenv("CBM_CACHE_DIR");
+    char *saved_copy = saved ? strdup(saved) : NULL;
+    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+
+    char src_path[512];
+    snprintf(src_path, sizeof(src_path), "%s/main.py", tmp_dir);
+    FILE *fp = fopen(src_path, "w");
+    ASSERT_NOT_NULL(fp);
+    fputs("def main():\n    return 'ok'\n", fp);
+    fclose(fp);
+
+    char *project = cbm_project_name_from_path(tmp_dir);
+    ASSERT_NOT_NULL(project);
+
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+
+    char index_args[1024];
+    snprintf(index_args, sizeof(index_args), "{\"repo_path\":\"%s\",\"mode\":\"fast\"}", tmp_dir);
+    char *resp = cbm_mcp_handle_tool(srv, "index_repository", index_args);
+    ASSERT_NOT_NULL(resp);
+    ASSERT(response_contains_json_fragment(resp, "\"status\":\"indexed\""));
+    free(resp);
+
+    char by_name_args[512];
+    snprintf(by_name_args, sizeof(by_name_args), "{\"project\":\"%s\",\"mode\":\"fast\"}", project);
+    resp = cbm_mcp_handle_tool(srv, "index_repository", by_name_args);
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NULL(strstr(resp, "repo_path is required"));
+    ASSERT(response_contains_json_fragment(resp, "\"status\":\"indexed\""));
+    free(resp);
+
+    cbm_mcp_server_free(srv);
+    cleanup_project_db(cache, project);
+    restore_cache_dir(saved_copy);
+    free(saved_copy);
+    free(project);
+    remove(src_path);
+    cbm_rmdir(cache);
+    cbm_rmdir(tmp_dir);
+    PASS();
+}
+
+/* Same gap, opposite outcome: a project name that was never indexed has no
+ * stored root_path to resolve, so it must still fail with the same clear
+ * "repo_path is required" error rather than a resolver crash or silent
+ * no-op. Guards the fallback path the fix above added. */
+TEST(tool_index_repository_unknown_project_name_still_requires_repo_path) {
+    char cache[256];
+    snprintf(cache, sizeof(cache), "/tmp/cbm-index-byname-unknown-cache-XXXXXX");
+    if (!cbm_mkdtemp(cache)) {
+        PASS();
+    }
+    const char *saved = getenv("CBM_CACHE_DIR");
+    char *saved_copy = saved ? strdup(saved) : NULL;
+    cbm_setenv("CBM_CACHE_DIR", cache, 1);
+
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+
+    char *resp = cbm_mcp_handle_tool(srv, "index_repository",
+                                     "{\"project\":\"never-indexed-project\"}");
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NOT_NULL(strstr(resp, "repo_path is required"));
+    free(resp);
+
+    cbm_mcp_server_free(srv);
+    restore_cache_dir(saved_copy);
+    free(saved_copy);
+    cbm_rmdir(cache);
+    PASS();
+}
+
 TEST(tool_index_repository_dot_uses_absolute_project_key_and_preserves_adr) {
     char tmp_dir[256];
     snprintf(tmp_dir, sizeof(tmp_dir), "/tmp/cbm-index-dot-adr-test-XXXXXX");
@@ -9636,6 +9727,8 @@ SUITE(mcp) {
     RUN_TEST(tool_manage_adr_get_with_existing_adr);
     RUN_TEST(tool_manage_adr_unified_backend_issue256);
     RUN_TEST(tool_index_repository_reports_store_backed_adr);
+    RUN_TEST(tool_index_repository_resolves_root_path_from_project_name_issue1211);
+    RUN_TEST(tool_index_repository_unknown_project_name_still_requires_repo_path);
     RUN_TEST(tool_index_repository_dot_uses_absolute_project_key_and_preserves_adr);
     RUN_TEST(index_repository_relative_path_uses_explicit_session_root);
     RUN_TEST(index_repository_supervisor_uses_canonical_session_path);
