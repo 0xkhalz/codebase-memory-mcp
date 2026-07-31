@@ -3082,7 +3082,15 @@ static void process_edges(cbm_store_t *store, cbm_edge_t *edges, int edge_count,
      * the result of dead-code queries and produced wrong rows (#627). */
     cbm_node_t *bound_to = binding_get(b, to_var);
     int64_t bound_to_id = bound_to ? bound_to->id : 0;
-    for (int ei = 0; ei < edge_count && *new_count < max_new; ei++) {
+    /* The budget caps MATERIALISATION, not detection: `match_count` must stay
+     * truthful even after `new_count` hits `max_new`. Gating the loop itself
+     * (`ei < edge_count && *new_count < max_new`) stopped fetching entirely, so
+     * a saturated source reported `match_count == 0` despite having neighbours —
+     * and the OPTIONAL fallback in expand_pattern_rels then emitted an unbound
+     * "no match" row for it. `WHERE x IS NULL` reads those rows as "nothing
+     * points here", i.e. it reported live code as dead. Losing rows is
+     * recoverable; asserting a match does not exist when it does is not. */
+    for (int ei = 0; ei < edge_count; ei++) {
         int64_t tid = inbound ? edges[ei].source_id : edges[ei].target_id;
         if (bound_to && tid != bound_to_id) {
             continue; /* edge does not reach the already-bound terminal node */
@@ -3099,15 +3107,17 @@ static void process_edges(cbm_store_t *store, cbm_edge_t *edges, int edge_count,
             node_fields_free(&found);
             continue;
         }
-        binding_t nb = {0};
-        binding_copy(&nb, b);
-        binding_set(&nb, to_var, &found);
-        if (rel_var) {
-            binding_set_edge(&nb, rel_var, &edges[ei]);
+        (*match_count)++; /* a real neighbour exists, budget or not */
+        if (*new_count < max_new) {
+            binding_t nb = {0};
+            binding_copy(&nb, b);
+            binding_set(&nb, to_var, &found);
+            if (rel_var) {
+                binding_set_edge(&nb, rel_var, &edges[ei]);
+            }
+            new_bindings[(*new_count)++] = nb;
         }
         node_fields_free(&found);
-        new_bindings[(*new_count)++] = nb;
-        (*match_count)++;
     }
 }
 
@@ -3141,7 +3151,10 @@ static void expand_var_length(cbm_store_t *store, cbm_rel_pattern_t *rel,
     cbm_traverse_result_t tr = {0};
     const char *dir = rel->direction ? rel->direction : "outbound";
     cbm_store_bfs(store, src->id, dir, rel->types, rel->type_count, max_depth, CBM_PERCENT, &tr);
-    for (int v = 0; v < tr.visited_count && *new_count < max_new; v++) {
+    /* Same contract as process_edges: the budget caps materialisation, never
+     * detection, so a saturated source cannot report match_count == 0 and get a
+     * fabricated OPTIONAL "no match" row. */
+    for (int v = 0; v < tr.visited_count; v++) {
         cbm_node_hop_t *hop = &tr.visited[v];
         if (hop->hop < rel->min_hops) {
             continue;
@@ -3152,11 +3165,13 @@ static void expand_var_length(cbm_store_t *store, cbm_rel_pattern_t *rel,
         if (!check_inline_props(&hop->node, target_node->props, target_node->prop_count, store)) {
             continue;
         }
-        binding_t nb = {0};
-        binding_copy(&nb, b);
-        binding_set(&nb, to_var, &hop->node);
-        new_bindings[(*new_count)++] = nb;
         (*match_count)++;
+        if (*new_count < max_new) {
+            binding_t nb = {0};
+            binding_copy(&nb, b);
+            binding_set(&nb, to_var, &hop->node);
+            new_bindings[(*new_count)++] = nb;
+        }
     }
     cbm_store_traverse_free(&tr);
 }

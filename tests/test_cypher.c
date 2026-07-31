@@ -580,6 +580,88 @@ TEST(cypher_exec_optional_rel_saturated_no_overflow) {
     PASS();
 }
 
+/* Reproduce-first: after the expansion budget is exhausted, OPTIONAL MATCH must
+ * not FABRICATE a "no match" row for a source that genuinely has matches.
+ *
+ * process_edges / expand_var_length used to carry the budget in the LOOP
+ * condition (`ei < edge_count && *new_count < max_new`), so once new_count hit
+ * max_new they stopped iterating entirely and never incremented match_count —
+ * even though neighbours existed. expand_pattern_rels' ungated fallback then saw
+ * match_count == 0 and emitted an unbound row. `WHERE b IS NULL` reads that as
+ * "nothing points here", so a dead-code query reported LIVE code as dead.
+ *
+ * Shape: A saturates the budget, B genuinely has no callees, C has 5. Only B may
+ * appear with an unbound b. Asserting on C specifically is what discriminates —
+ * the pre-fix code emits C with an empty b, and a `row_count` check would not
+ * notice. Deterministic: insertion order fixes the scan order (rowid), and every
+ * count is exact. */
+TEST(cypher_exec_optional_saturated_does_not_fabricate_no_match) {
+    cbm_store_t *s = cbm_store_open_memory();
+    cbm_store_upsert_project(s, "test", "/tmp/test");
+
+    /* 3 Function nodes → scan_count = 3; max_rows = 3 → bind_cap = 3 and
+     * max_new = 30. A alone exceeds that, so B and C are reached with the
+     * budget already spent — the regime that produced the fabrication. */
+    cbm_node_t a = {.project = "test", .label = "Function", .name = "A", .qualified_name = "test.A"};
+    cbm_node_t b = {.project = "test", .label = "Function", .name = "B", .qualified_name = "test.B"};
+    cbm_node_t c = {.project = "test", .label = "Function", .name = "C", .qualified_name = "test.C"};
+    int64_t a_id = cbm_store_upsert_node(s, &a);
+    (void)cbm_store_upsert_node(s, &b); /* B: no outgoing CALLS at all */
+    int64_t c_id = cbm_store_upsert_node(s, &c);
+    ASSERT_GT(a_id, 0);
+    ASSERT_GT(c_id, 0);
+
+    /* Callees are label Var so they do not inflate scan_count/bind_cap. */
+    for (int i = 0; i < 40; i++) {
+        char nm[32];
+        char qn[48];
+        snprintf(nm, sizeof(nm), "acallee%d", i);
+        snprintf(qn, sizeof(qn), "test.acallee%d", i);
+        cbm_node_t t = {.project = "test", .label = "Var", .name = nm, .qualified_name = qn};
+        int64_t tid = cbm_store_upsert_node(s, &t);
+        cbm_edge_t e = {.project = "test", .source_id = a_id, .target_id = tid, .type = "CALLS"};
+        cbm_store_insert_edge(s, &e);
+    }
+    for (int i = 0; i < 5; i++) {
+        char nm[32];
+        char qn[48];
+        snprintf(nm, sizeof(nm), "ccallee%d", i);
+        snprintf(qn, sizeof(qn), "test.ccallee%d", i);
+        cbm_node_t t = {.project = "test", .label = "Var", .name = nm, .qualified_name = qn};
+        int64_t tid = cbm_store_upsert_node(s, &t);
+        cbm_edge_t e = {.project = "test", .source_id = c_id, .target_id = tid, .type = "CALLS"};
+        cbm_store_insert_edge(s, &e);
+    }
+
+    cbm_cypher_result_t r = {0};
+    int rc = cbm_cypher_execute(
+        s, "MATCH (f:Function) OPTIONAL MATCH (f)-[:CALLS]->(g) WHERE g IS NULL RETURN f.name",
+        "test", 3, &r);
+    ASSERT_EQ(rc, 0);
+
+    /* Positive control: B genuinely has no callees, so the query must still find
+     * it. Without this a "C is absent" assertion could pass on an empty result. */
+    bool saw_b = false;
+    bool saw_c = false;
+    for (int i = 0; i < r.row_count; i++) {
+        const char *name = r.rows[i][0];
+        if (name && strcmp(name, "B") == 0) {
+            saw_b = true;
+        }
+        if (name && strcmp(name, "C") == 0) {
+            saw_c = true;
+        }
+    }
+    ASSERT_TRUE(saw_b);
+    /* The discriminator: C has 5 callees, so claiming it has none is a
+     * fabrication. Pre-fix this is exactly what the saturated path emitted. */
+    ASSERT_FALSE(saw_c);
+
+    cbm_cypher_result_free(&r);
+    cbm_store_close(s);
+    PASS();
+}
+
 /* Arithmetic-boundary companion to the zero-label overflow above: the node
  * cross-join sizes its buffer from bind_count * extra_count. As a plain int that
  * product wraps past INT_MAX to a negative/garbage malloc size (the large-graph
@@ -3491,6 +3573,7 @@ SUITE(cypher) {
     RUN_TEST(cypher_exec_optional_empty_label_no_overflow);
     RUN_TEST(cypher_cross_join_alloc_rejects_overflow);
     RUN_TEST(cypher_exec_optional_rel_saturated_no_overflow);
+    RUN_TEST(cypher_exec_optional_saturated_does_not_fabricate_no_match);
     RUN_TEST(cypher_exec_optional_rel_leaf_fallback_survives);
     RUN_TEST(cypher_issue240_labels_function);
     RUN_TEST(cypher_issue237_distinct_order_limit);
