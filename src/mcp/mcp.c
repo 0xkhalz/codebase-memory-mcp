@@ -89,6 +89,7 @@ enum {
 #include <yyjson/yyjson.h>
 #include <ctype.h>
 #include <limits.h>
+#include <stdarg.h> // va_list, for the bounded help-list appender
 #include <stdint.h> // int64_t
 #include <stdio.h>
 #include <stdlib.h>
@@ -906,6 +907,32 @@ const char *cbm_mcp_tool_name(int index) {
  * serves. The list used to be hand-maintained in the help text and drifted
  * when check_index_coverage was added (#1361); deriving it here makes that
  * divergence impossible. Heap-allocated; caller frees. */
+/* Append at out[len] and return the bytes ACTUALLY written.
+ *
+ * snprintf returns the length it WOULD have written, so accumulating that value
+ * lets len run past cap; the next `cap - len` then underflows to a huge size_t
+ * and the following write lands outside the buffer. CodeQL flagged exactly that
+ * shape here, and it is the same class #1173 just fixed in the Cypher list
+ * builder. The capacity computed below does happen to be sufficient today —
+ * which makes this the more dangerous version, not the safer one: the code is
+ * correct only by an argument made ten lines away, so renaming a tool or
+ * changing the wrap rule would turn it into an overflow with nothing to notice.
+ * Clamping makes `len <= cap - 1` a local invariant no later edit can void. */
+static size_t help_append(char *out, size_t cap, size_t len, const char *fmt, ...) {
+    if (len + 1 >= cap) {
+        return 0;
+    }
+    va_list args;
+    va_start(args, fmt);
+    int written = vsnprintf(out + len, cap - len, fmt, args);
+    va_end(args);
+    if (written <= 0) {
+        return 0;
+    }
+    size_t room = cap - len - 1;
+    return (size_t)written > room ? room : (size_t)written;
+}
+
 char *cbm_mcp_tools_help_list(void) {
     size_t cap = SLEN("Tools:") + 2; /* trailing newline + NUL */
     for (int i = 0; i < TOOL_COUNT; i++) {
@@ -915,20 +942,21 @@ char *cbm_mcp_tools_help_list(void) {
     if (!out) {
         return NULL;
     }
-    size_t len = (size_t)snprintf(out, cap, "Tools:");
+    size_t len = help_append(out, cap, 0, "Tools:");
     size_t col = len;
     for (int i = 0; i < TOOL_COUNT; i++) {
         const char *sep = (i + 1 < TOOL_COUNT) ? "," : "";
         size_t item = SLEN(" ") + strlen(TOOLS[i].name) + strlen(sep);
         if (i > 0 && col + item > MCP_HELP_TOOLS_WRAP_COL) {
-            len += (size_t)snprintf(out + len, cap - len, "\n ");
+            len += help_append(out, cap, len, "\n ");
             col = 1;
         }
-        size_t wrote = (size_t)snprintf(out + len, cap - len, " %s%s", TOOLS[i].name, sep);
+        size_t wrote = help_append(out, cap, len, " %s%s", TOOLS[i].name, sep);
         len += wrote;
         col += wrote;
     }
-    snprintf(out + len, cap - len, "\n");
+    len += help_append(out, cap, len, "\n");
+    (void)len; /* final length is not needed; the buffer is NUL-terminated */
     return out;
 }
 
