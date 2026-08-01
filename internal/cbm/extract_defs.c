@@ -6778,8 +6778,16 @@ static bool is_template_class_node(TSNode node, CBMLanguage lang) {
  * its members. C#/PHP need the same treatment paired with their LSP resolvers
  * (a def-only change breaks their existing namespace handling), done separately. */
 static bool is_namespace_scope_kind(CBMLanguage lang, const char *kind, TSNode node) {
-    if (lang == CBM_LANG_CPP || lang == CBM_LANG_CUDA) {
-        return strcmp(kind, "namespace_definition") == 0;
+    /* Delegate the kind-only languages to the shared predicate rather than
+     * restating them. This function once carried its own copy of the C++/CUDA
+     * case, which silently dropped the TypeScript `internal_module` case the
+     * shared predicate also has -- so TS namespace members lost their namespace
+     * QN segment on the def side while extract_unified and the enclosing-scope
+     * walk in helpers.c still qualified them, and `MyNS.inner()` stopped
+     * resolving. One source of truth for kind -> namespace-scope; this wrapper
+     * adds only the case the shared predicate cannot express. */
+    if (cbm_is_namespace_scope_kind(lang, kind)) {
+        return true;
     }
     /* Nix: a binding whose value is an attribute set is a named scope that is not
      * itself a definition — the same shape as a C++ namespace. `setA = { fn = …; }`
