@@ -2613,7 +2613,13 @@ static void resolve_file_usages(resolve_ctx_t *rc, resolve_worker_state_t *ws,
         if (!tgt || src->id == tgt->id) {
             continue;
         }
-        char uprops[CBM_SZ_256];
+        /* 512, matching the sequential twin in pass_usages.c. esc_ref holds up
+         * to 255 bytes and the {"callee":"..."} wrapper adds 13, so a 256-byte
+         * uprops truncates a long callable identifier mid-string -- cutting the
+         * closing quote-brace and persisting MALFORMED JSON. The two paths must
+         * also agree: the same repo indexed in parallel and sequentially has to
+         * produce byte-identical edge properties. */
+        char uprops[CBM_SZ_512];
         char esc_ref[CBM_SZ_256]; /* sliced source text: escape quotes/newlines */
         cbm_json_escape(esc_ref, sizeof(esc_ref), usage->ref_name);
         snprintf(uprops, sizeof(uprops), "{\"callee\":\"%s\"}", esc_ref);

@@ -1316,14 +1316,20 @@ static int try_incremental_or_delete_db(cbm_pipeline_t *p, cbm_file_info_t *file
     cbm_log_info("pipeline.route", "path", "incremental_manifest");
     int rc = cbm_pipeline_run_incremental(p, db_path, files, file_count, baseline_manifest,
                                           baseline_count);
+    /* Delete the existing generation ONLY when we are about to rebuild it.
+     * On main this was guarded by an early `return rc` for the incremental
+     * path; this function has no such early return, so the delete must be
+     * conditional. Unconditionally removing it destroys the database on the
+     * no-op and successful-incremental routes -- the pipeline reports success
+     * while every later reader finds no store. */
     if (rc == CBM_PIPELINE_FORCE_FULL_REINDEX) {
         int adr_rc = capture_existing_adr(p, db_path);
         if (adr_rc != 0) {
             rc = adr_rc;
         }
+        (void)cbm_unlink(db_path);
+        (void)cbm_remove_db_sidecars(db_path);
     }
-    (void)cbm_unlink(db_path);
-    (void)cbm_remove_db_sidecars(db_path);
     free(db_path);
     return rc;
 }
