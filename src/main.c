@@ -251,17 +251,21 @@ static bool main_test_worker_project_lock_marker(const main_local_cli_mutation_t
 }
 #endif
 
-static bool main_local_cli_mutation_begin(void *context, const char *project) {
+static bool main_local_cli_mutation_begin_internal(void *context, const char *project, bool wait) {
     main_local_cli_mutation_t *mutation = context;
     if (!mutation || !mutation->manager || !project || !project[0]) {
         return false;
     }
     for (;;) {
-        uint64_t now = cbm_now_ms();
-        uint64_t deadline = now > UINT64_MAX - 100U ? UINT64_MAX : now + 100U;
         cbm_project_lock_lease_t *lease = NULL;
-        cbm_private_file_lock_status_t status =
-            cbm_project_lock_acquire(mutation->manager, project, deadline, NULL, &lease);
+        cbm_private_file_lock_status_t status;
+        if (wait) {
+            uint64_t now = cbm_now_ms();
+            uint64_t deadline = now > UINT64_MAX - 100U ? UINT64_MAX : now + 100U;
+            status = cbm_project_lock_acquire(mutation->manager, project, deadline, NULL, &lease);
+        } else {
+            status = cbm_project_lock_try_acquire(mutation->manager, project, &lease);
+        }
         if (status == CBM_PRIVATE_FILE_LOCK_OK && lease) {
             main_local_cli_lease_t *held = calloc(1, sizeof(*held));
             if (held) {
@@ -292,6 +296,9 @@ static bool main_local_cli_mutation_begin(void *context, const char *project) {
                           "refuse_mutation");
             return false;
         }
+        if (!wait) {
+            return false;
+        }
         if (mutation->feedback && !mutation->waiting_reported) {
             (void)fprintf(mutation->feedback, "Waiting for another CBM mutation of %s...\n",
                           project);
@@ -299,6 +306,14 @@ static bool main_local_cli_mutation_begin(void *context, const char *project) {
             mutation->waiting_reported = true;
         }
     }
+}
+
+static bool main_local_cli_mutation_begin(void *context, const char *project) {
+    return main_local_cli_mutation_begin_internal(context, project, true);
+}
+
+static bool main_local_cli_mutation_try_begin(void *context, const char *project) {
+    return main_local_cli_mutation_begin_internal(context, project, false);
 }
 
 static void main_local_cli_mutation_end(void *context, const char *project) {
@@ -775,6 +790,8 @@ static int run_cli(int argc, char **argv, cbm_project_lock_manager_t *project_lo
             if (project_locks) {
                 cbm_mcp_server_set_project_mutation_guard(srv, main_local_cli_mutation_begin,
                                                           main_local_cli_mutation_end, &mutation);
+                cbm_mcp_server_set_project_mutation_try_guard(srv,
+                                                              main_local_cli_mutation_try_begin);
             }
         }
         maintenance_binding_failed = srv && !maintenance_context;
@@ -888,10 +905,13 @@ static void print_help(void) {
     printf("  Manual/UI MCP boundaries: Qodo, Warp, JetBrains AI/ACP, Replit,\n");
     printf("  Plandex, SWE-agent, BLACKBOX, GitHub cloud agents, Jules,\n");
     printf("  CodeRabbit.\n");
-    printf("\nTools: index_repository, search_graph, query_graph, trace_path,\n");
-    printf("  get_code_snippet, get_graph_schema, get_architecture, search_code,\n");
-    printf("  list_projects, delete_project, index_status, detect_changes,\n");
-    printf("  manage_adr, ingest_traces\n");
+    /* Rendered from the MCP tool registry: a hand-maintained copy here
+     * omitted check_index_coverage (#1361) and could silently drift again. */
+    char *tools_help = cbm_mcp_tools_help_list();
+    if (tools_help) {
+        printf("\n%s", tools_help);
+        free(tools_help);
+    }
 }
 
 /* ── Main ───────────────────────────────────────────────────────── */

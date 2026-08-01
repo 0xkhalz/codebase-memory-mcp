@@ -34,6 +34,7 @@ enum {
     MCP_CONTENT_PREFIX = 15, /* strlen("Content-Length:") */
     MCP_RETURN_2 = 2,
     MCP_TOOLS_PAGE_SIZE = 8,
+    MCP_HELP_TOOLS_WRAP_COL = 74, /* --help tool list stays readable on 80-col terminals */
     MCP_MAX_CROSS_REPO_TARGETS = 4096,
 };
 #define MCP_MS_TO_US 1000LL
@@ -88,6 +89,7 @@ enum {
 #include <yyjson/yyjson.h>
 #include <ctype.h>
 #include <limits.h>
+#include <stdarg.h> // va_list, for the bounded help-list appender
 #include <stdint.h> // int64_t
 #include <stdio.h>
 #include <stdlib.h>
@@ -508,7 +510,11 @@ static const tool_def_t TOOLS[] = {
      "filtered out. When true, test nodes are included with a test column/marker.\"},"
      "\"format\":{\"type\":\"string\",\"enum\":[\"tree\",\"json\"],\"default\":\"tree\","
      "\"description\":\"Response encoding. tree (default): prefix-grouped text rows. "
-     "json: the SAME tree model as structured JSON (groups + column-ordered row arrays).\"}},"
+     "json: the SAME tree model as structured JSON (groups + column-ordered row arrays).\"},"
+     "\"include_evidence\":{\"type\":\"boolean\",\"default\":false,"
+     "\"description\":\"Add how each hop was resolved: a strategy class (lsp | language_rule | "
+     "heuristic | unresolved) and the resolver's confidence. Off by default — it adds two "
+     "columns per row. Use it to judge whether an edge is trustworthy, not to find edges.\"}},"
      "\"required\":[\"function_name\",\"project\"]}"},
 
     {"get_code_snippet", "Get code snippet",
@@ -648,9 +654,11 @@ static const tool_def_t TOOLS[] = {
 
     {"manage_adr", "Manage ADR", "Create or update Architecture Decision Records",
      "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},\"mode\":{\"type\":"
-     "\"string\",\"enum\":[\"get\",\"update\",\"sections\"]},\"content\":{\"type\":\"string\"},"
-     "\"sections\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}},\"required\":[\"project\"]"
-     "}"},
+     "\"string\",\"enum\":[\"get\",\"update\",\"sections\"],\"description\":\"update replaces "
+     "the entire ADR document; sections only lists existing "
+     "headings\"},\"content\":{\"type\":\"string\",\"description\":\"Complete replacement document "
+     "required by update\"}},\"additionalProperties\":false,"
+     "\"required\":[\"project\"]}"},
 
     {"ingest_traces", "Ingest traces", "Ingest runtime traces to enhance the knowledge graph",
      "{\"type\":\"object\",\"properties\":{\"traces\":{\"type\":\"array\",\"items\":{\"type\":"
@@ -888,6 +896,74 @@ const char *cbm_mcp_tool_input_schema(const char *tool_name) {
         }
     }
     return NULL;
+}
+
+int cbm_mcp_tool_count(void) {
+    return TOOL_COUNT;
+}
+
+const char *cbm_mcp_tool_name(int index) {
+    if (index < 0 || index >= TOOL_COUNT) {
+        return NULL;
+    }
+    return TOOLS[index].name;
+}
+
+/* Render the top-level --help "Tools:" block from the registry tools/list
+ * serves. The list used to be hand-maintained in the help text and drifted
+ * when check_index_coverage was added (#1361); deriving it here makes that
+ * divergence impossible. Heap-allocated; caller frees. */
+/* Append at out[len] and return the bytes ACTUALLY written.
+ *
+ * snprintf returns the length it WOULD have written, so accumulating that value
+ * lets len run past cap; the next `cap - len` then underflows to a huge size_t
+ * and the following write lands outside the buffer. CodeQL flagged exactly that
+ * shape here, and it is the same class #1173 just fixed in the Cypher list
+ * builder. The capacity computed below does happen to be sufficient today —
+ * which makes this the more dangerous version, not the safer one: the code is
+ * correct only by an argument made ten lines away, so renaming a tool or
+ * changing the wrap rule would turn it into an overflow with nothing to notice.
+ * Clamping makes `len <= cap - 1` a local invariant no later edit can void. */
+static size_t help_append(char *out, size_t cap, size_t len, const char *fmt, ...) {
+    if (len + 1 >= cap) {
+        return 0;
+    }
+    va_list args;
+    va_start(args, fmt);
+    int written = vsnprintf(out + len, cap - len, fmt, args);
+    va_end(args);
+    if (written <= 0) {
+        return 0;
+    }
+    size_t room = cap - len - 1;
+    return (size_t)written > room ? room : (size_t)written;
+}
+
+char *cbm_mcp_tools_help_list(void) {
+    size_t cap = SLEN("Tools:") + 2; /* trailing newline + NUL */
+    for (int i = 0; i < TOOL_COUNT; i++) {
+        cap += strlen(TOOLS[i].name) + SLEN(" ,\n "); /* per-tool worst case incl. a wrap */
+    }
+    char *out = malloc(cap);
+    if (!out) {
+        return NULL;
+    }
+    size_t len = help_append(out, cap, 0, "Tools:");
+    size_t col = len;
+    for (int i = 0; i < TOOL_COUNT; i++) {
+        const char *sep = (i + 1 < TOOL_COUNT) ? "," : "";
+        size_t item = SLEN(" ") + strlen(TOOLS[i].name) + strlen(sep);
+        if (i > 0 && col + item > MCP_HELP_TOOLS_WRAP_COL) {
+            len += help_append(out, cap, len, "\n ");
+            col = 1;
+        }
+        size_t wrote = help_append(out, cap, len, " %s%s", TOOLS[i].name, sep);
+        len += wrote;
+        col += wrote;
+    }
+    len += help_append(out, cap, len, "\n");
+    (void)len; /* final length is not needed; the buffer is NUL-terminated */
+    return out;
 }
 
 static int mcp_tools_cursor_offset(const char *params_json, bool *has_cursor_out) {
@@ -1456,6 +1532,7 @@ struct cbm_mcp_server {
     cbm_proc_log_cb index_log_callback;
     void *index_log_context;
     cbm_mcp_project_mutation_begin_fn mutation_begin;
+    cbm_mcp_project_mutation_try_begin_fn mutation_try_begin;
     cbm_mcp_project_mutation_end_fn mutation_end;
     void *mutation_context;
     cbm_mcp_quarantine_test_hook_fn quarantine_test_hook;
@@ -1606,12 +1683,25 @@ void cbm_mcp_server_set_project_mutation_guard(cbm_mcp_server_t *srv,
         return;
     }
     srv->mutation_begin = begin;
+    srv->mutation_try_begin = NULL;
     srv->mutation_end = end;
     srv->mutation_context = begin ? context : NULL;
 }
 
+void cbm_mcp_server_set_project_mutation_try_guard(
+    cbm_mcp_server_t *srv, cbm_mcp_project_mutation_try_begin_fn try_begin) {
+    if (srv && srv->mutation_begin) {
+        srv->mutation_try_begin = try_begin;
+    }
+}
+
 static bool mcp_project_mutation_begin(cbm_mcp_server_t *srv, const char *project) {
     return !srv->mutation_begin || srv->mutation_begin(srv->mutation_context, project);
+}
+
+static bool mcp_project_mutation_try_begin(cbm_mcp_server_t *srv, const char *project) {
+    return !srv->mutation_begin ||
+           (srv->mutation_try_begin && srv->mutation_try_begin(srv->mutation_context, project));
 }
 
 static void mcp_project_mutation_end(cbm_mcp_server_t *srv, const char *project) {
@@ -1969,8 +2059,18 @@ static bool quarantine_corrupt_store(cbm_mcp_server_t *srv, const char *project,
 /* Open the right project's .db file for query tools.
  * Caches the connection — reopens only when project changes.
  * Tracks last-access time so the event loop can evict idle stores. */
+typedef enum {
+    STORE_RECOVERY_NONE,
+    STORE_RECOVERY_BUSY,
+    STORE_RECOVERY_TRY_GUARD_UNAVAILABLE,
+} store_recovery_status_t;
+
 static cbm_store_t *resolve_store_internal(cbm_mcp_server_t *srv, const char *project,
-                                           bool mutation_already_held) {
+                                           bool mutation_already_held, bool nonblocking_recovery,
+                                           store_recovery_status_t *recovery_status) {
+    if (recovery_status) {
+        *recovery_status = STORE_RECOVERY_NONE;
+    }
     if (!project) {
         return NULL; /* project is required — no implicit fallback */
     }
@@ -2000,9 +2100,16 @@ static cbm_store_t *resolve_store_internal(cbm_mcp_server_t *srv, const char *pr
             srv->store = NULL;
             bool mutation_acquired = mutation_already_held;
             if (!mutation_acquired) {
-                mutation_acquired = mcp_project_mutation_begin(srv, project);
+                mutation_acquired = nonblocking_recovery
+                                        ? mcp_project_mutation_try_begin(srv, project)
+                                        : mcp_project_mutation_begin(srv, project);
             }
             if (!mutation_acquired) {
+                if (nonblocking_recovery && recovery_status) {
+                    *recovery_status = srv->mutation_try_begin
+                                           ? STORE_RECOVERY_BUSY
+                                           : STORE_RECOVERY_TRY_GUARD_UNAVAILABLE;
+                }
                 return NULL;
             }
 
@@ -2066,7 +2173,7 @@ static cbm_store_t *resolve_store_internal(cbm_mcp_server_t *srv, const char *pr
 }
 
 static cbm_store_t *resolve_store(cbm_mcp_server_t *srv, const char *project) {
-    return resolve_store_internal(srv, project, false);
+    return resolve_store_internal(srv, project, false, false, NULL);
 }
 
 /* Forward decl — definition lives below alongside list_projects. */
@@ -2756,7 +2863,7 @@ static char *bm25_search(cbm_store_t *store, const char *project, const char *qu
         "       (fts.base_rank "
         "        - CASE WHEN n.label IN ('Function','Method') THEN 10.0 "
         "               WHEN n.label = 'Route' THEN 8.0 "
-        "               WHEN n.label IN ('Class','Interface','Type','Enum') THEN 5.0 "
+        "               WHEN n.label IN (" CBM_SQL_TYPE_LIKE_LABELS ") THEN 5.0 "
         "               ELSE 0.0 END) AS rank "
         "FROM ("
         "    SELECT rowid, bm25(nodes_fts) AS base_rank"
@@ -4228,7 +4335,7 @@ static char *handle_check_index_coverage(cbm_mcp_server_t *srv, const char *args
                 yyjson_mut_arr_add_val(scope_results, item);
                 continue;
             }
-            yyjson_mut_obj_add_str(doc, item, "scope", scope[0] ? scope : ".");
+            yyjson_mut_obj_add_strcpy(doc, item, "scope", scope[0] ? scope : ".");
             cbm_coverage_row_t *rows = NULL;
             int row_count = 0;
             int cov_rc = cbm_store_coverage_get_scope(store, project, scope, &rows, &row_count);
@@ -5576,6 +5683,96 @@ static const char *bfs_edge_args_for_hop(cbm_traverse_result_t *tr, int64_t hop_
     return NULL;
 }
 
+/* Classify a resolver strategy into the CLOSED public vocabulary.
+ *
+ * The indexer records ~20 internal strategy names on CALLS edges
+ * (lsp_trait_dispatch, php_self_static, callee_suffix, ...) and the set grows
+ * with every language. Publishing those verbatim would make each internal
+ * resolver name public API by accident, so a rename would silently change a
+ * user-visible field. We publish the CLASS instead: adding lsp_foo_dispatch
+ * maps automatically, while a genuinely new KIND of resolution fails the
+ * pinning test in tests/test_mcp.c and forces a deliberate decision.
+ *
+ * Returns NULL only for a NULL/empty strategy — every non-empty value lands in
+ * a class, so an unmapped strategy can never silently vanish from output. */
+const char *cbm_mcp_edge_strategy_class(const char *strategy) {
+    if (!strategy || !strategy[0]) {
+        return NULL;
+    }
+    /* Order matters: lsp_unresolved is an LSP strategy that failed, and the
+     * caller cares that it did NOT resolve — so it classifies as unresolved. */
+    if (strcmp(strategy, "lsp_unresolved") == 0 || strcmp(strategy, "unknown") == 0) {
+        return "unresolved";
+    }
+    if (strncmp(strategy, "lsp_", 4) == 0) {
+        return "lsp";
+    }
+    if (strncmp(strategy, "php_", 4) == 0 || strncmp(strategy, "perl_", 5) == 0) {
+        return "language_rule";
+    }
+    /* Everything else is a name/shape heuristic: callee_suffix,
+     * field_type_hint, service_pattern, fastapi_depends, unique_name, ... */
+    return "heuristic";
+}
+
+/* Find the resolution evidence on the edge that leads to the given hop node —
+ * the same endpoint-matching rule as bfs_edge_args_for_hop (target for an
+ * outbound trace, source for inbound, so both directions surface it).
+ *
+ * Reads only from tr->edges, and callers pass the PAGINATED view, so evidence
+ * is emitted for the rows on this page and nothing else.
+ *
+ * Returns false when the edge carries no strategy (non-CALLS edges do not). */
+static bool bfs_edge_evidence_for_hop(cbm_traverse_result_t *tr, int64_t hop_node_id,
+                                      const char **class_out, double *confidence_out) {
+    for (int e = 0; e < tr->edge_count; e++) {
+        if (tr->edges[e].target_id != hop_node_id && tr->edges[e].source_id != hop_node_id) {
+            continue;
+        }
+        const char *pj = tr->edges[e].properties_json;
+        if (!pj) {
+            continue;
+        }
+        const char *key = strstr(pj, "\"strategy\"");
+        if (!key) {
+            continue;
+        }
+        const char *open = strchr(key + 10, '"');
+        if (!open) {
+            continue;
+        }
+        open++;
+        const char *close = strchr(open, '"');
+        if (!close || close == open) {
+            continue;
+        }
+        char raw[CBM_SZ_64];
+        size_t len = (size_t)(close - open);
+        if (len >= sizeof(raw)) {
+            len = sizeof(raw) - 1;
+        }
+        memcpy(raw, open, len);
+        raw[len] = '\0';
+        const char *cls = cbm_mcp_edge_strategy_class(raw);
+        if (!cls) {
+            continue;
+        }
+        *class_out = cls;
+        /* Confidence rides on the same edge; absent is reported as -1 so a
+         * genuine 0.0 stays distinguishable from "not recorded". */
+        *confidence_out = -1.0;
+        const char *conf = strstr(pj, "\"confidence\"");
+        if (conf) {
+            const char *colon = strchr(conf, ':');
+            if (colon) {
+                *confidence_out = strtod(colon + 1, NULL);
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
 /* TOON table for one trace direction: callees[N]{qn,hop,...} with optional
  * risk / test / args columns. `name` is omitted (it is the qn's last
  * segment); the per-item JSON key envelope was 84% of the legacy payload. */
@@ -5989,7 +6186,7 @@ static int tree_hop_cmp_qn(const void *pa, const void *pb) {
 }
 
 static void bfs_to_tree_table(cbm_sb_t *sb, const char *key, cbm_traverse_result_t *tr,
-                              bool include_tests) {
+                              bool include_tests, bool include_evidence) {
     int visible = 0;
     for (int i = 0; i < tr->visited_count; i++) {
         if (!include_tests && is_test_file(tr->visited[i].node.file_path)) {
@@ -5998,8 +6195,12 @@ static void bfs_to_tree_table(cbm_sb_t *sb, const char *key, cbm_traverse_result
         visible++;
     }
     char buf[CBM_SZ_256];
-    snprintf(buf, sizeof(buf), "%s: %d  (rows: name hop; qn = group prefix + \".\" + name)\n", key,
-             visible);
+    snprintf(buf, sizeof(buf),
+             include_evidence
+                 ? "%s: %d  (rows: name hop strategy confidence; qn = group prefix + \".\" + "
+                   "name)\n"
+                 : "%s: %d  (rows: name hop; qn = group prefix + \".\" + name)\n",
+             key, visible);
     cbm_sb_append(sb, buf);
     if (tr->visited_count > 1) {
         qsort(tr->visited, (size_t)tr->visited_count, sizeof(cbm_node_hop_t), tree_hop_cmp_qn);
@@ -6021,7 +6222,26 @@ static void bfs_to_tree_table(cbm_sb_t *sb, const char *key, cbm_traverse_result
             cbm_sb_append(sb, ":\n");
         }
         char row[CBM_SZ_512];
-        snprintf(row, sizeof(row), "  %s %d\n", plen ? qn + plen + 1 : qn, tr->visited[i].hop);
+        const char *ev_class = NULL;
+        double ev_conf = -1.0;
+        if (include_evidence &&
+            bfs_edge_evidence_for_hop(tr, tr->visited[i].node.id, &ev_class, &ev_conf)) {
+            if (ev_conf >= 0.0) {
+                snprintf(row, sizeof(row), "  %s %d %s %.2f\n", plen ? qn + plen + 1 : qn,
+                         tr->visited[i].hop, ev_class, ev_conf);
+            } else {
+                snprintf(row, sizeof(row), "  %s %d %s -\n", plen ? qn + plen + 1 : qn,
+                         tr->visited[i].hop, ev_class);
+            }
+        } else if (include_evidence) {
+            /* The root hop has no inbound edge, and non-CALLS edges record no
+             * strategy. Emit placeholders so the column count stays fixed —
+             * a ragged table is worse to parse than an explicit "-". */
+            snprintf(row, sizeof(row), "  %s %d - -\n", plen ? qn + plen + 1 : qn,
+                     tr->visited[i].hop);
+        } else {
+            snprintf(row, sizeof(row), "  %s %d\n", plen ? qn + plen + 1 : qn, tr->visited[i].hop);
+        }
         cbm_sb_append(sb, row);
     }
 }
@@ -6065,6 +6285,10 @@ static char *handle_trace_call_path(cbm_mcp_server_t *srv, const char *args) {
     }
     bool risk_labels = cbm_mcp_get_bool_arg(args, "risk_labels");
     bool include_tests = cbm_mcp_get_bool_arg(args, "include_tests");
+    /* Off by default: two extra columns on every row is exactly the kind of
+     * inflation the tree format exists to avoid. Opt in when you need to judge
+     * whether an edge is trustworthy. */
+    bool include_evidence = cbm_mcp_get_bool_arg(args, "include_evidence");
 
     if (!func_name) {
         free(project);
@@ -6352,7 +6576,7 @@ static char *handle_trace_call_path(cbm_mcp_server_t *srv, const char *args) {
             if (flat_trace) {
                 bfs_to_toon_table(&sb, "callees", &view_out, risk_labels, include_tests, data_flow);
             } else {
-                bfs_to_tree_table(&sb, "callees", &view_out, include_tests);
+                bfs_to_tree_table(&sb, "callees", &view_out, include_tests, include_evidence);
             }
         }
         if (do_inbound) {
@@ -6360,7 +6584,7 @@ static char *handle_trace_call_path(cbm_mcp_server_t *srv, const char *args) {
             if (flat_trace) {
                 bfs_to_toon_table(&sb, "callers", &view_in, risk_labels, include_tests, data_flow);
             } else {
-                bfs_to_tree_table(&sb, "callers", &view_in, include_tests);
+                bfs_to_tree_table(&sb, "callers", &view_in, include_tests, include_evidence);
             }
         }
         if (more_rows) {
@@ -7571,11 +7795,46 @@ static char *index_args_with_repo_path(const char *args, const char *canonical_r
     return rewritten;
 }
 
+/* #1211: index_repository requires repo_path, but list_projects only ever
+ * advertises the project NAME, and every read tool accepts that name back via
+ * get_project_arg's "project"/"project_name"/"project_id"/"projectName"
+ * aliases (mcp.c:1385). Re-indexing an already-indexed project by that same
+ * name had no resolution path and fell straight to "repo_path is required".
+ * Look up the project's own stored root_path (list_projects proves it's on
+ * file) before giving up. Query-only open, always closed here: this never
+ * creates a store or touches srv->store/srv->current_project, so it cannot
+ * disturb whatever project the server has cached. */
+static char *resolved_repo_path_from_project_arg(const char *args) {
+    char *project = get_project_arg(args);
+    if (!project) {
+        return NULL;
+    }
+    char db_path[CBM_SZ_1K];
+    project_db_path(project, db_path, sizeof(db_path));
+    cbm_store_t *store = db_path[0] ? cbm_store_open_path_query(db_path) : NULL;
+    char *root_path = NULL;
+    if (store) {
+        cbm_project_t proj = {0};
+        if (cbm_store_get_project(store, project, &proj) == CBM_STORE_OK) {
+            root_path = proj.root_path ? heap_strdup(proj.root_path) : NULL;
+            cbm_project_free_fields(&proj);
+        }
+        cbm_store_close(store);
+    }
+    free(project);
+    return root_path;
+}
+
 static char *handle_index_repository(cbm_mcp_server_t *srv, const char *args) {
     char *repo_path = cbm_mcp_get_string_arg(args, "repo_path");
     char *mode_str = cbm_mcp_get_string_arg(args, "mode");
     char *name_override = cbm_mcp_get_string_arg(args, "name");
     cbm_normalize_path_sep(repo_path);
+
+    if (!repo_path) {
+        repo_path = resolved_repo_path_from_project_arg(args);
+        cbm_normalize_path_sep(repo_path);
+    }
 
     if (!repo_path) {
         free(mode_str);
@@ -9629,19 +9888,77 @@ static int mcp_run_shell_command_cancellable(cbm_mcp_server_t *srv, const char *
     return contained ? 0 : -1;
 }
 
-/* Collect BFS seed ids: every symbol DEFINED in a changed file (everything but
- * the structural container labels — those have no CALLS edges). These anchor
- * the multi-source impact traversal. */
+/* Does `node`'s line range overlap any recorded hunk for `file`? Used to scope
+ * seed detection to the actually-changed lines rather than the whole file.
+ * Non-static (declared in mcp_internal.h) so tests can exercise the overlap
+ * logic directly, matching this file's existing white-box test hooks. */
+bool cbm_detect_node_in_hunks(const cbm_node_t *node, const cbm_changed_hunk_t *hunks,
+                              int hunk_count, const char *file) {
+    for (int h = 0; h < hunk_count; h++) {
+        if (strcmp(hunks[h].path, file) == 0 && node->start_line <= hunks[h].end_line &&
+            node->end_line >= hunks[h].start_line) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Collect BFS seed ids for one changed file (everything but the structural
+ * container labels — those have no CALLS edges). These anchor the
+ * multi-source impact traversal.
+ *
+ * When `hunks` has at least one entry for `file`, only definitions whose line
+ * range overlaps a hunk become seeds — a one-line edit inside a single
+ * function no longer seeds every other definition in the file. When no hunk
+ * is recorded for `file` (a brand-new/untracked file has no comparable
+ * "before" state, or the hunk fetch failed/was skipped), every non-container
+ * definition in the file is a seed — the previous, whole-file behavior — so
+ * this is a precision improvement, not a new failure mode. */
+/* Structural container labels carry no CALLS edges and span the whole file, so
+ * they are never seeds. Shared by the seeding loop and the overlap probe. */
+static bool detect_is_seedable_label(const char *lb) {
+    return lb && strcmp(lb, "File") != 0 && strcmp(lb, "Folder") != 0 &&
+           strcmp(lb, "Project") != 0 && strcmp(lb, "Module") != 0 && strcmp(lb, "Package") != 0 &&
+           strcmp(lb, "Section") != 0;
+}
+
 static void detect_collect_seeds(cbm_store_t *store, const char *project, const char *file,
-                                 int64_t **seeds, int *n, int *cap) {
+                                 const cbm_changed_hunk_t *hunks, int hunk_count, int64_t **seeds,
+                                 int *n, int *cap) {
     cbm_node_t *nodes = NULL;
     int ncount = 0;
     cbm_store_find_nodes_by_file(store, project, file, &nodes, &ncount);
+    bool scope_to_hunks = false;
+    for (int h = 0; h < hunk_count; h++) {
+        if (strcmp(hunks[h].path, file) == 0) {
+            scope_to_hunks = true;
+            break;
+        }
+    }
+    /* A file can have hunks yet no SEEDABLE definition overlapping any of them:
+     * an import-only edit, a module-level constant, or a change above the first
+     * definition all land outside every definition's line range. Scoping would
+     * then drop the file from the seed set entirely — strictly worse recall
+     * than the whole-file behavior this replaces. Probe for an overlap first
+     * and keep whole-file seeding for that file when there is none.
+     *
+     * The probe must apply the same label filter as the seeding loop below:
+     * container nodes span the whole file (a Module node is lines 1..EOF), so
+     * counting them would report an overlap for every hunk and defeat the
+     * fallback entirely. */
+    if (scope_to_hunks) {
+        bool any_overlap = false;
+        for (int i = 0; i < ncount && !any_overlap; i++) {
+            any_overlap = detect_is_seedable_label(nodes[i].label) &&
+                          cbm_detect_node_in_hunks(&nodes[i], hunks, hunk_count, file);
+        }
+        scope_to_hunks = any_overlap;
+    }
     for (int i = 0; i < ncount; i++) {
-        const char *lb = nodes[i].label;
-        if (lb && strcmp(lb, "File") != 0 && strcmp(lb, "Folder") != 0 &&
-            strcmp(lb, "Project") != 0 && strcmp(lb, "Module") != 0 && strcmp(lb, "Package") != 0 &&
-            strcmp(lb, "Section") != 0) {
+        if (detect_is_seedable_label(nodes[i].label)) {
+            if (scope_to_hunks && !cbm_detect_node_in_hunks(&nodes[i], hunks, hunk_count, file)) {
+                continue;
+            }
             if (*n >= *cap) {
                 *cap = *cap ? *cap * 2 : 16;
                 *seeds = safe_realloc(*seeds, (size_t)*cap * sizeof(int64_t));
@@ -9928,6 +10245,76 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
     int seed_count = 0;
     int seed_cap = 0;
 
+    /* Hunk line ranges (unified=0 diff), used to scope seed detection to the
+     * actually-changed lines instead of every definition in a changed file
+     * (see detect_collect_seeds). Best-effort: any failure here just leaves
+     * `hunks` empty and every file falls back to its previous whole-file
+     * seeding — this is a precision improvement, not a correctness
+     * dependency, so it is never treated as a request-level failure.
+     *
+     * Coordinate systems: `base...HEAD` hunks carry HEAD-side line numbers,
+     * the worktree diff carries worktree-side ones, and node line ranges come
+     * from the indexed snapshot. These agree while the index is fresh — the
+     * watcher reindexes on HEAD movement and on a dirty tree — but a stale
+     * index combined with insertions earlier in the file shifts the node lines
+     * relative to the hunks and can mis-scope. The failure is bounded by
+     * detect_collect_seeds' zero-overlap fallback: a file whose definitions all
+     * miss reverts to whole-file seeding rather than dropping out. */
+    cbm_changed_hunk_t *hunks = NULL;
+    int hunk_count = 0;
+    if (want_symbols) {
+        char hunk_cmd[CBM_SZ_2K];
+#ifdef _WIN32
+        snprintf(hunk_cmd, sizeof(hunk_cmd),
+                 "git -C \"%s\" diff --unified=0 \"%s\"...HEAD 2>NUL & "
+                 "git -C \"%s\" diff --unified=0 2>NUL",
+                 root_path, base_branch, root_path);
+#else
+        snprintf(hunk_cmd, sizeof(hunk_cmd),
+                 "{ git -C '%s' diff --unified=0 '%s'...HEAD 2>/dev/null; "
+                 "git -C '%s' diff --unified=0 2>/dev/null; }",
+                 root_path, base_branch, root_path);
+#endif
+        char hunk_output_path[CBM_SZ_2K] = {0};
+        cbm_proc_result_t hunk_result = {0};
+        int hunk_run =
+            mcp_run_shell_command_cancellable(srv, hunk_cmd, hunk_output_path, &hunk_result);
+        bool hunk_cancelled = hunk_result.cancellation_requested || mcp_request_cancelled(srv);
+        FILE *hfp = (!hunk_cancelled && hunk_run == 0) ? cbm_fopen(hunk_output_path, "rb") : NULL;
+        if (hfp) {
+            (void)fseek(hfp, 0, SEEK_END);
+            long hsz = ftell(hfp);
+            if (hsz > 0) {
+                (void)fseek(hfp, 0, SEEK_SET);
+                char *hbuf = malloc((size_t)hsz + SKIP_ONE);
+                if (hbuf) {
+                    size_t hread = fread(hbuf, SKIP_ONE, (size_t)hsz, hfp);
+                    hbuf[hread] = '\0';
+                    enum { HUNK_CAP = 4096 };
+                    hunks = safe_realloc(NULL, (size_t)HUNK_CAP * sizeof(cbm_changed_hunk_t));
+                    hunk_count = cbm_parse_hunks(hbuf, hunks, HUNK_CAP);
+                    /* A filled buffer means the diff was truncated: the hunks
+                     * past the cap are gone, so files captured only partially
+                     * would still look scoped and silently under-seed. Drop
+                     * scoping for the whole request rather than under-report a
+                     * large refactor — whole-file seeding is the safe side. */
+                    if (hunk_count >= HUNK_CAP) {
+                        cbm_log_info("detect_changes.hunks", "action", "scoping_disabled", "reason",
+                                     "hunk_cap_reached");
+                        free(hunks);
+                        hunks = NULL;
+                        hunk_count = 0;
+                    }
+                    free(hbuf);
+                }
+            }
+            (void)fclose(hfp);
+        }
+        if (hunk_output_path[0]) {
+            (void)cbm_unlink(hunk_output_path);
+        }
+    }
+
     char line[CBM_SZ_1K];
     while (fgets(line, sizeof(line), fp)) {
         size_t len = strlen(line);
@@ -9970,7 +10357,8 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
         }
         files[file_count++] = heap_strdup(path_line);
         if (want_symbols) {
-            detect_collect_seeds(store, project, path_line, &seeds, &seed_count, &seed_cap);
+            detect_collect_seeds(store, project, path_line, hunks, hunk_count, &seeds, &seed_count,
+                                 &seed_cap);
         }
     }
     (void)fclose(fp);
@@ -10016,6 +10404,7 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
             }
             free(files);
             free(seeds);
+            free(hunks);
             free(direction);
             free(root_path);
             free(project);
@@ -10173,6 +10562,7 @@ static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
     }
     free(files);
     free(seeds);
+    free(hunks);
     free(direction);
     free(root_path);
     free(project);
@@ -10258,6 +10648,28 @@ static char *adr_read_legacy_file(const char *root_path) {
     "then draft and store. Sections: PURPOSE, STACK, ARCHITECTURE, "               \
     "PATTERNS, TRADEOFFS, PHILOSOPHY."
 
+/* resolve_store opens file-backed projects query-only. A mutation must release
+ * that reader before opening a dedicated writer because atomic publication uses
+ * a self-contained DELETE-mode database that switches back to WAL on write. */
+static cbm_store_t *open_adr_store_for_write(cbm_mcp_server_t *srv, cbm_store_t *resolved,
+                                             cbm_store_t **owned_rw) {
+    if (!srv || !resolved || !owned_rw) {
+        return NULL;
+    }
+    const char *resolved_db_path = cbm_store_db_path(resolved);
+    if (!resolved_db_path) {
+        return resolved;
+    }
+    char *rw_path = heap_strdup(resolved_db_path);
+    if (!rw_path) {
+        return NULL;
+    }
+    invalidate_cached_store(srv);
+    *owned_rw = cbm_store_open_path(rw_path);
+    free(rw_path);
+    return *owned_rw;
+}
+
 static char *handle_manage_adr(cbm_mcp_server_t *srv, const char *args) {
     char *project = get_project_arg(args);
     char *mode_str = cbm_mcp_get_string_arg(args, "mode");
@@ -10267,8 +10679,32 @@ static char *handle_manage_adr(cbm_mcp_server_t *srv, const char *args) {
         mode_str = heap_strdup("get");
     }
 
+    /* `sections` used to be advertised as an input argument, but it was never
+     * consumed: mode=update still replaced the whole document. Reject the old
+     * shape explicitly before opening a store so a stale client cannot mistake
+     * a whole-document replacement for a section-scoped update. */
+    bool has_sections_arg = false;
+    yyjson_doc *args_doc = yyjson_read(args, strlen(args), 0);
+    if (args_doc) {
+        yyjson_val *args_root = yyjson_doc_get_root(args_doc);
+        has_sections_arg =
+            args_root && yyjson_is_obj(args_root) && yyjson_obj_get(args_root, "sections") != NULL;
+        yyjson_doc_free(args_doc);
+    }
+    if (has_sections_arg) {
+        free(project);
+        free(mode_str);
+        free(content);
+        return cbm_mcp_text_result(
+            "{\"status\":\"invalid_arguments\",\"error\":\"The sections argument is not an "
+            "update primitive and has been removed. No ADR write was performed.\"}",
+            true);
+    }
+
+    bool write_request =
+        content && (strcmp(mode_str, "update") == 0 || strcmp(mode_str, "store") == 0);
     bool mutation_held = false;
-    if (project) {
+    if (write_request && project) {
         mutation_held = mcp_project_mutation_begin(srv, project);
         if (!mutation_held) {
             free(project);
@@ -10289,11 +10725,21 @@ static char *handle_manage_adr(cbm_mcp_server_t *srv, const char *args) {
     /* ADRs are stored in the SQLite store (project_summaries), the SAME
      * backend the UI /api/adr endpoints use — so writes via the MCP tool and
      * the UI are visible to each other (#256). */
-    cbm_store_t *resolved = resolve_store_internal(srv, project, mutation_held);
+    store_recovery_status_t recovery_status = STORE_RECOVERY_NONE;
+    cbm_store_t *resolved =
+        resolve_store_internal(srv, project, mutation_held, !write_request, &recovery_status);
     if (!resolved) {
-        char *err = build_no_store_error(project);
-        char *res = cbm_mcp_text_result(err, true);
-        free(err);
+        char *res = NULL;
+        if (recovery_status == STORE_RECOVERY_BUSY) {
+            res = cbm_mcp_text_result("project is busy; retry after indexing", true);
+        } else if (recovery_status == STORE_RECOVERY_TRY_GUARD_UNAVAILABLE) {
+            res =
+                cbm_mcp_text_result("project recovery requires a nonblocking mutation guard", true);
+        } else {
+            char *err = build_no_store_error(project);
+            res = cbm_mcp_text_result(err, true);
+            free(err);
+        }
         if (mutation_held) {
             mcp_project_mutation_end(srv, project);
         }
@@ -10303,66 +10749,57 @@ static char *handle_manage_adr(cbm_mcp_server_t *srv, const char *args) {
         return res;
     }
 
-    /* resolve_store opens file-backed projects READ-ONLY (query stores must
-     * not mutate the DB). manage_adr is the only resolve_store caller that
-     * WRITES, so it needs a writable handle. For a file-backed project open a
-     * dedicated read-write handle to the same DB file (the project is verified
-     * to exist via resolve_store, so cbm_store_open_path won't create a ghost
-     * DB). For an in-memory / embedded store (db_path == NULL) the resolved
-     * store is already writable — use it directly. */
     cbm_store_t *store = resolved;
     cbm_store_t *owned_rw = NULL;
-    const char *resolved_db_path = cbm_store_db_path(resolved);
-    if (resolved_db_path) {
-        /* Atomic publication leaves a self-contained DELETE-mode database.
-         * Opening the writer switches it back to WAL, which requires an
-         * exclusive lock and therefore fails while resolve_store's read-only
-         * handle is still open. Copy the ACTUAL resolved path first (it may be
-         * a drifted-filename fallback), then release that cached reader before
-         * opening the writer. Request-scoped queries reopen it when needed. */
-        char *rw_path = heap_strdup(resolved_db_path);
-        if (!rw_path) {
+    if (write_request) {
+        store = open_adr_store_for_write(srv, resolved, &owned_rw);
+        if (!store) {
             if (mutation_held) {
                 mcp_project_mutation_end(srv, project);
             }
             free(project);
             free(mode_str);
             free(content);
-            return cbm_mcp_text_result("failed to allocate ADR store path", true);
+            return cbm_mcp_text_result("failed to open writable ADR store", true);
         }
-        invalidate_cached_store(srv);
-        owned_rw = cbm_store_open_path(rw_path);
-        free(rw_path);
-        if (!owned_rw) {
-            char *err = build_no_store_error(project);
-            char *res = cbm_mcp_text_result(err, true);
-            free(err);
-            if (mutation_held) {
-                mcp_project_mutation_end(srv, project);
-            }
-            free(project);
-            free(mode_str);
-            free(content);
-            return res;
-        }
-        store = owned_rw;
     }
 
     /* One-time migration: older versions wrote ADRs to a file at
-     * <root>/.codebase-memory/adr.md. If the store has no ADR yet but that
-     * legacy file exists, import it so nothing is lost on upgrade. */
+     * <root>/.codebase-memory/adr.md. A read never waits for the project lease:
+     * it returns the legacy content immediately and attempts migration only if
+     * a nonblocking acquire succeeds. */
     cbm_adr_t adr;
     memset(&adr, 0, sizeof(adr));
     bool have_adr = (cbm_store_adr_get(store, project, &adr) == CBM_STORE_OK);
-    if (!have_adr) {
+    char *legacy = NULL;
+    if (!have_adr && !write_request) {
         char *root_path = project_root_from_store(store, project);
-        char *legacy = adr_read_legacy_file(root_path);
+        legacy = adr_read_legacy_file(root_path);
         free(root_path);
-        if (legacy) {
-            if (cbm_store_adr_store(store, project, legacy) == CBM_STORE_OK) {
-                have_adr = (cbm_store_adr_get(store, project, &adr) == CBM_STORE_OK);
+        if (legacy && mcp_project_mutation_try_begin(srv, project)) {
+            if (!mcp_request_cancelled(srv)) {
+                /* A publisher may have completed before the lease was granted.
+                 * File-backed stores must reopen after acquisition and trust
+                 * only that generation. Embedded stores have no publication
+                 * boundary, so retain their live handle. */
+                if (cbm_store_db_path(resolved)) {
+                    invalidate_cached_store(srv);
+                    resolved = NULL;
+                    store = NULL;
+                    resolved = resolve_store_internal(srv, project, true, false, NULL);
+                }
+                if (resolved) {
+                    store = open_adr_store_for_write(srv, resolved, &owned_rw);
+                    if (store) {
+                        have_adr = (cbm_store_adr_get(store, project, &adr) == CBM_STORE_OK);
+                        if (!have_adr &&
+                            cbm_store_adr_store(store, project, legacy) == CBM_STORE_OK) {
+                            have_adr = (cbm_store_adr_get(store, project, &adr) == CBM_STORE_OK);
+                        }
+                    }
+                }
             }
-            free(legacy);
+            mcp_project_mutation_end(srv, project);
         }
     }
 
@@ -10371,18 +10808,20 @@ static char *handle_manage_adr(cbm_mcp_server_t *srv, const char *args) {
     yyjson_mut_doc_set_root(doc, root_obj);
 
     bool is_error = false;
-    if ((strcmp(mode_str, "update") == 0 || strcmp(mode_str, "store") == 0) && content) {
+    const char *adr_content = have_adr ? adr.content : legacy;
+    if (write_request) {
         if (cbm_store_adr_store(store, project, content) == CBM_STORE_OK) {
             yyjson_mut_obj_add_str(doc, root_obj, "status", "updated");
+            yyjson_mut_obj_add_str(doc, root_obj, "semantics", "whole_document_replaced");
         } else {
             yyjson_mut_obj_add_str(doc, root_obj, "status", "write_error");
             is_error = true;
         }
     } else if (strcmp(mode_str, "sections") == 0) {
-        adr_list_sections_from_content(doc, root_obj, have_adr ? adr.content : NULL);
+        adr_list_sections_from_content(doc, root_obj, adr_content);
     } else { /* get */
-        if (have_adr && adr.content) {
-            yyjson_mut_obj_add_strcpy(doc, root_obj, "content", adr.content);
+        if (adr_content) {
+            yyjson_mut_obj_add_strcpy(doc, root_obj, "content", adr_content);
         } else {
             yyjson_mut_obj_add_str(doc, root_obj, "content", "");
             yyjson_mut_obj_add_str(doc, root_obj, "status", "no_adr");
@@ -10401,6 +10840,7 @@ static char *handle_manage_adr(cbm_mcp_server_t *srv, const char *args) {
     if (mutation_held) {
         mcp_project_mutation_end(srv, project);
     }
+    free(legacy);
     free(project);
     free(mode_str);
     free(content);
