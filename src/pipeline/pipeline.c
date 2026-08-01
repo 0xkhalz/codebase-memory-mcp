@@ -1541,8 +1541,17 @@ static int quarantine_existing_generation(const char *db_path,
     return CBM_PIPELINE_PERSIST_FAILED;
 }
 
+/* `quarantine_invalid` separates the two callers, which own very different
+ * destinations. The publishing wrapper passes true: its destination is the
+ * user's live database, and bytes that are not a readable database are the only
+ * evidence of what went wrong, so they are moved aside rather than overwritten.
+ * publish_generation passes false: its destination is a private staging file
+ * this process created moments ago, so an unreadable one is our own debris --
+ * parking that under a .corrupt name leaves a file in the database directory
+ * that nothing ever collects and that no one can interpret. */
 static int prepare_existing_generation_for_replace(const char *db_path,
-                                                   cbm_replacement_prepare_t *prepared) {
+                                                   cbm_replacement_prepare_t *prepared,
+                                                   bool quarantine_invalid) {
     if (!prepared) {
         return CBM_PIPELINE_PERSIST_FAILED;
     }
@@ -1554,6 +1563,10 @@ static int prepare_existing_generation_for_replace(const char *db_path,
         }
         int seal_rc = cbm_store_seal_existing_path_for_replace(db_path);
         if (seal_rc == CBM_STORE_NOT_FOUND) {
+            if (!quarantine_invalid) {
+                (void)cbm_unlink(db_path);
+                return cbm_remove_db_sidecars(db_path) == 0 ? 0 : CBM_PIPELINE_PERSIST_FAILED;
+            }
             return quarantine_existing_generation(db_path, prepared);
         }
         if (seal_rc != CBM_STORE_OK) {
@@ -1659,7 +1672,9 @@ int cbm_pipeline_publish_generation(const cbm_pipeline_generation_t *generation)
         return CBM_PIPELINE_ABORT_PRESERVE_DB;
     }
     cbm_replacement_prepare_t prepared = {0};
-    if (prepare_existing_generation_for_replace(generation->final_db_path, &prepared) != 0) {
+    /* The destination here is the caller's staging file, not the live database:
+     * the publishing wrapper owns quarantining that. */
+    if (prepare_existing_generation_for_replace(generation->final_db_path, &prepared, false) != 0) {
         discard_generation_stage(stage_path);
         free(stage_path);
         return CBM_PIPELINE_PERSIST_FAILED;
@@ -2169,27 +2184,47 @@ static bool db_sidecars_absent(const char *db_path) {
     return true;
 }
 
-static bool prepare_publish_destination(const char *final_path, bool final_existed,
-                                        bool backup_succeeded) {
+/* Ready the real destination to receive the staged generation. Returns 0, or a
+ * CBM_PIPELINE_* code the caller propagates.
+ *
+ * `prepared` records whether the previous destination was moved aside, so a
+ * failed rename can put it back. It is zeroed here and is only meaningful on a
+ * 0 return. */
+static int prepare_publish_destination(const char *final_path, bool final_existed,
+                                       bool backup_succeeded,
+                                       cbm_replacement_prepare_t *prepared) {
+    memset(prepared, 0, sizeof(*prepared));
     struct stat current_st;
     bool final_exists_now = stat(final_path, &current_st) == 0;
     if (final_exists_now != final_existed) {
-        return false;
+        /* The destination appeared or vanished while we were indexing. Someone
+         * else owns it now; leave whatever is there alone. */
+        return CBM_PIPELINE_ABORT_PRESERVE_DB;
     }
     if (!final_exists_now) {
         /* A crashed generation can leave sidecars without a main file. */
-        return cbm_remove_db_sidecars(final_path) == 0;
+        return cbm_remove_db_sidecars(final_path) == 0 ? 0 : CBM_PIPELINE_PERSIST_FAILED;
     }
     if (!backup_succeeded) {
-        bool safe_to_replace = db_sidecars_absent(final_path);
-        if (!safe_to_replace) {
+        /* Sidecars alongside an un-copyable destination may hold the only
+         * committed pages; refuse rather than drop them. */
+        if (!db_sidecars_absent(final_path)) {
             cbm_log_error("pipeline.err", "phase", "publish", "reason",
                           "backup_failed_sidecars_preserved", "path", final_path);
+            return CBM_PIPELINE_PERSIST_FAILED;
         }
-        return safe_to_replace;
+        /* The destination could not be copied. If it is not a readable SQLite
+         * database it is corrupt, and the publishing rename would destroy the
+         * only copy of those bytes -- so move it aside under a fresh .corrupt
+         * name first, never overwriting an earlier quarantine. A destination
+         * that IS valid (the backup failed for some other reason) is sealed and
+         * replaced as usual, never renamed away. */
+        return prepare_existing_generation_for_replace(final_path, prepared, true);
     }
     return cbm_store_prepare_path_for_replace(final_path) == CBM_STORE_OK &&
-           cbm_remove_db_sidecars(final_path) == 0;
+                   cbm_remove_db_sidecars(final_path) == 0
+               ? 0
+               : CBM_PIPELINE_PERSIST_FAILED;
 }
 
 static int seal_staging_db(const char *staging_path) {
@@ -2266,11 +2301,28 @@ int cbm_pipeline_run(cbm_pipeline_t *p) {
     free(p->db_path);
     p->db_path = configured_db_path;
 
-    if (rc != 0 || check_cancel(p) || seal_staging_db(staging_path) != 0) {
+    /* Report WHY the run stopped. Everything below happens before the final
+     * rename, so the live database is still the previous generation and an
+     * abort is genuinely non-destructive -- a caller that cannot tell an
+     * aborted run from a failed persist cannot tell whether its data survived.
+     * The staging file is discarded on every one of these paths. */
+    if (rc != 0) {
         cleanup_staging_db(staging_path);
         free(staging_path);
         free(final_path);
-        return CBM_NOT_FOUND;
+        return rc;
+    }
+    if (check_cancel(p)) {
+        cleanup_staging_db(staging_path);
+        free(staging_path);
+        free(final_path);
+        return CBM_PIPELINE_ABORT_PRESERVE_DB;
+    }
+    if (seal_staging_db(staging_path) != 0) {
+        cleanup_staging_db(staging_path);
+        free(staging_path);
+        free(final_path);
+        return CBM_PIPELINE_PERSIST_FAILED;
     }
 
     if (p->before_publish_hook) {
@@ -2280,7 +2332,7 @@ int cbm_pipeline_run(cbm_pipeline_t *p) {
         cleanup_staging_db(staging_path);
         free(staging_path);
         free(final_path);
-        return CBM_NOT_FOUND;
+        return CBM_PIPELINE_ABORT_PRESERVE_DB;
     }
 
     /* A test hook may inspect the DB through SQLite and re-enable WAL mode;
@@ -2289,17 +2341,30 @@ int cbm_pipeline_run(cbm_pipeline_t *p) {
         cleanup_staging_db(staging_path);
         free(staging_path);
         free(final_path);
-        return CBM_NOT_FOUND;
+        return CBM_PIPELINE_PERSIST_FAILED;
     }
 
-    if (!prepare_publish_destination(final_path, final_existed, backup_succeeded) ||
-        (p->rename_hook ? p->rename_hook(staging_path, final_path, p->rename_hook_ctx)
-                        : cbm_rename_replace(staging_path, final_path)) != 0) {
+    cbm_replacement_prepare_t prepared = {0};
+    int prepare_rc = prepare_publish_destination(final_path, final_existed, backup_succeeded,
+                                                 &prepared);
+    if (prepare_rc != 0) {
         cbm_log_error("pipeline.err", "phase", "publish", "path", final_path);
         cleanup_staging_db(staging_path);
         free(staging_path);
         free(final_path);
-        return CBM_NOT_FOUND;
+        return prepare_rc;
+    }
+    if ((p->rename_hook ? p->rename_hook(staging_path, final_path, p->rename_hook_ctx)
+                        : cbm_rename_replace(staging_path, final_path)) != 0) {
+        cbm_log_error("pipeline.err", "phase", "publish", "path", final_path);
+        /* Put a quarantined destination back: the publish did not happen, so
+         * leaving the previous generation parked under .corrupt would present
+         * the caller with no database at all. */
+        (void)rollback_quarantined_generation(final_path, &prepared);
+        cleanup_staging_db(staging_path);
+        free(staging_path);
+        free(final_path);
+        return CBM_PIPELINE_PERSIST_FAILED;
     }
 
     rc = export_after_publish(p, final_path, was_incremental);

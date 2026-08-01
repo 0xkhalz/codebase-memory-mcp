@@ -9731,7 +9731,10 @@ TEST(cancelled_full_reindex_preserves_committed_db) {
     ASSERT_TRUE(hook.staging_existed);
     ASSERT_TRUE(hook.staging_was_valid);
     ASSERT_GT(hook.staged_candidates, 0); /* anti-vacuous: new full output was staged */
-    ASSERT_EQ(rc, -1);
+    /* Cancelling at the publish boundary aborts before the rename, so the
+     * committed database is untouched -- which is exactly what this code says.
+     * It was a bare -1 while every publish failure collapsed to one value. */
+    ASSERT_EQ(rc, CBM_PIPELINE_ABORT_PRESERVE_DB);
     ASSERT_TRUE(live_valid);
     ASSERT_EQ(nodes_after, baseline_nodes);
     ASSERT_EQ(helper_after, baseline_helper);
@@ -9796,7 +9799,9 @@ TEST(cancelled_incremental_reindex_preserves_committed_db) {
     ASSERT_TRUE(hook.staging_existed);
     ASSERT_TRUE(hook.staging_was_valid);
     ASSERT_GT(hook.staged_candidates, 0); /* anti-vacuous: changed output was staged */
-    ASSERT_EQ(rc, -1);
+    /* As above: an incremental run cancelled at the publish boundary preserves
+     * the committed database, and now reports that specifically. */
+    ASSERT_EQ(rc, CBM_PIPELINE_ABORT_PRESERVE_DB);
     ASSERT_TRUE(live_valid);
     ASSERT_EQ(nodes_after, baseline_nodes);
     ASSERT_EQ(helper_after, baseline_helper);
