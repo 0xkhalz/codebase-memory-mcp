@@ -13,6 +13,7 @@
 #include "../src/foundation/compat_thread.h"
 #include "test_framework.h"
 #include "test_helpers.h"
+#include <cli/agent_profiles.h>
 #include <cli/cli.h>
 #include <cli/progress_sink.h>
 #include <daemon/bootstrap.h>
@@ -4894,11 +4895,15 @@ TEST(cli_durable_profiles_follow_current_vendor_paths) {
     files_ok = files_ok && test_file_contains_all(path, claude_terms, 7U);
 
     snprintf(path, sizeof(path), "%s/agents/codebase-memory.toml", codex_home);
-    const char *const codex_terms[] = {
-        "name = \"codebase-memory\"",        "description = ",
-        "developer_instructions = ",         "sandbox_mode = \"read-only\"",
-        "[mcp_servers.codebase-memory-mcp]", "check_index_coverage"};
-    files_ok = files_ok && test_file_contains_all(path, codex_terms, 6U);
+    const char *const codex_terms[] = {"name = \"codebase-memory\"",
+                                       "description = ",
+                                       "developer_instructions = ",
+                                       "sandbox_mode = \"read-only\"",
+                                       "[mcp_servers.codebase-memory-mcp]",
+                                       "command = \"/opt/codebase-memory-mcp\"",
+                                       "args = [\"--tool-profile=analysis\"]",
+                                       "check_index_coverage"};
+    files_ok = files_ok && test_file_contains_all(path, codex_terms, 8U);
     char *profile = read_test_file_alloc(path);
     files_ok = files_ok && profile && !strstr(profile, "model =") &&
                !strstr(profile, "index_repository") && !strstr(profile, "delete_project") &&
@@ -5371,25 +5376,40 @@ TEST(cli_tiered_codex_profiles_migrate_preserve_and_uninstall) {
         "name = \"codebase-memory-scout\"\nuser_note = \"preserve scout\"\n";
     write_test_file(verify_path, legacy_verify);
     write_test_file(scout_path, foreign_scout);
+    char *rc1_auditor = cbm_render_graph_profile_codex_rc1(CBM_GRAPH_TIER_AUDIT);
+    if (!rc1_auditor)
+        FAIL("rc.1 auditor rendering must be available");
+    write_test_file(auditor_path, rc1_auditor);
+    free(rc1_auditor);
 
-    char *plan = cbm_build_install_plan_json(tmpdir, "/opt/codebase-memory-mcp");
+    /* Uninstall renders expected content with the installed binary path, so
+     * install with that same path to exercise exact-content removal. */
+    char installed_binary[640];
+    char expected_command[768];
+    snprintf(installed_binary, sizeof(installed_binary), "%s/.local/bin/codebase-memory-mcp",
+             tmpdir);
+    snprintf(expected_command, sizeof(expected_command), "command = \"%s\"", installed_binary);
+    char *plan = cbm_build_install_plan_json(tmpdir, installed_binary);
     bool plan_ok =
         plan && strstr(plan, scout_path) && strstr(plan, verify_path) && strstr(plan, auditor_path);
     free(plan);
 
-    int install_rc = cbm_install_agent_configs(tmpdir, "/opt/codebase-memory-mcp", false, false);
+    int install_rc = cbm_install_agent_configs(tmpdir, installed_binary, false, false);
     char *scout = read_test_file_alloc(scout_path);
     char *verify = read_test_file_alloc(verify_path);
     char *auditor = read_test_file_alloc(auditor_path);
-    bool installed = install_rc != 0 && scout && strcmp(scout, foreign_scout) == 0 && verify &&
-                     strcmp(verify, legacy_verify) != 0 && strstr(verify, "Tier 2") &&
-                     strstr(verify, "name = \"codebase-memory\"") &&
-                     strstr(verify, "check_index_coverage") && auditor &&
-                     strstr(auditor, "Tier 3") && strstr(auditor, "check_index_coverage") &&
-                     !strstr(verify, "index_repository") && !strstr(verify, "delete_project") &&
-                     !strstr(verify, "manage_adr") && !strstr(verify, "ingest_traces") &&
-                     !strstr(auditor, "index_repository") && !strstr(auditor, "delete_project") &&
-                     !strstr(auditor, "manage_adr") && !strstr(auditor, "ingest_traces");
+    bool installed =
+        install_rc != 0 && scout && strcmp(scout, foreign_scout) == 0 && verify &&
+        strcmp(verify, legacy_verify) != 0 && strstr(verify, "Tier 2") &&
+        strstr(verify, "name = \"codebase-memory\"") && strstr(verify, expected_command) &&
+        strstr(verify, "args = [\"--tool-profile=analysis\"]") &&
+        strstr(verify, "check_index_coverage") && auditor && strstr(auditor, expected_command) &&
+        strstr(auditor, "args = [\"--tool-profile=analysis\"]") && strstr(auditor, "Tier 3") &&
+        strstr(auditor, "check_index_coverage") && !strstr(verify, "index_repository") &&
+        !strstr(verify, "delete_project") && !strstr(verify, "manage_adr") &&
+        !strstr(verify, "ingest_traces") && !strstr(auditor, "index_repository") &&
+        !strstr(auditor, "delete_project") && !strstr(auditor, "manage_adr") &&
+        !strstr(auditor, "ingest_traces");
     free(scout);
     free(verify);
     free(auditor);

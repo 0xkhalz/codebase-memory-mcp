@@ -7390,10 +7390,17 @@ static void install_tiered_agent_profiles(cbm_tiered_profile_set_t profiles, boo
             access == CBM_GRAPH_ACCESS_DIRECT ? CBM_GRAPH_ACCESS_HANDOFF : CBM_GRAPH_ACCESS_DIRECT;
         char *alternate = cbm_render_graph_profile(profiles.dialect, tier, alternate_access,
                                                    profiles.binary_path);
-        const char *released[2];
+        char *codex_rc1 =
+            profiles.dialect == CBM_GRAPH_DIALECT_CODEX && access == CBM_GRAPH_ACCESS_DIRECT
+                ? cbm_render_graph_profile_codex_rc1(tier)
+                : NULL;
+        const char *released[3];
         size_t released_count = 0U;
         if (alternate) {
             released[released_count++] = alternate;
+        }
+        if (codex_rc1) {
+            released[released_count++] = codex_rc1;
         }
         if (tier == CBM_GRAPH_TIER_VERIFY && profiles.legacy_verify_content) {
             released[released_count++] = profiles.legacy_verify_content;
@@ -7401,6 +7408,7 @@ static void install_tiered_agent_profiles(cbm_tiered_profile_set_t profiles, boo
         int result = prepare_config_parent(path)
                          ? cbm_text_migrate_owned_document(path, current, released, released_count)
                          : CLI_ERR;
+        free(codex_rc1);
         free(alternate);
         free(current);
         if (result != CLI_OK) {
@@ -7437,15 +7445,23 @@ static void uninstall_tiered_agent_profiles(cbm_tiered_profile_set_t profiles, b
             access == CBM_GRAPH_ACCESS_DIRECT ? CBM_GRAPH_ACCESS_HANDOFF : CBM_GRAPH_ACCESS_DIRECT;
         char *alternate = cbm_render_graph_profile(profiles.dialect, tier, alternate_access,
                                                    profiles.binary_path);
-        const char *released[2];
+        char *codex_rc1 =
+            profiles.dialect == CBM_GRAPH_DIALECT_CODEX && access == CBM_GRAPH_ACCESS_DIRECT
+                ? cbm_render_graph_profile_codex_rc1(tier)
+                : NULL;
+        const char *released[3];
         size_t released_count = 0U;
         if (alternate) {
             released[released_count++] = alternate;
+        }
+        if (codex_rc1) {
+            released[released_count++] = codex_rc1;
         }
         if (tier == CBM_GRAPH_TIER_VERIFY && profiles.legacy_verify_content) {
             released[released_count++] = profiles.legacy_verify_content;
         }
         int result = cbm_text_remove_owned_document_any(path, current, released, released_count);
+        free(codex_rc1);
         free(alternate);
         free(current);
         if (result < CLI_OK) {
@@ -10050,11 +10066,13 @@ static void uninstall_cli_agents(const cbm_detected_agents_t *agents, const char
         char ip[CLI_BUF_1K];
         char skills_dir[CLI_BUF_1K];
         char ap[CLI_BUF_1K];
+        char installed_binary[CLI_BUF_1K];
         cbm_codex_config_dir(home, config_dir, sizeof(config_dir));
         snprintf(cp, sizeof(cp), "%s/config.toml", config_dir);
         snprintf(ip, sizeof(ip), "%s/AGENTS.md", config_dir);
         snprintf(skills_dir, sizeof(skills_dir), "%s/skills", config_dir);
         snprintf(ap, sizeof(ap), "%s/agents/codebase-memory.toml", config_dir);
+        cbm_agent_installed_binary_path(home, installed_binary, sizeof(installed_binary));
         uninstall_agent_mcp_instr((mcp_uninstall_args_t){"Codex CLI", cp, ip}, dry_run,
                                   cbm_remove_codex_mcp_owned);
         uninstall_agent_skill("Codex CLI", skills_dir, dry_run);
@@ -10062,6 +10080,7 @@ static void uninstall_cli_agents(const cbm_detected_agents_t *agents, const char
             (cbm_tiered_profile_set_t){
                 .label = "Codex CLI",
                 .verify_path = ap,
+                .binary_path = installed_binary,
                 .legacy_verify_content = legacy_codex_verify_agent_content,
                 .dialect = CBM_GRAPH_DIALECT_CODEX,
             },
@@ -10071,10 +10090,8 @@ static void uninstall_cli_agents(const cbm_detected_agents_t *agents, const char
                 record_agent_config_error(true, "Codex CLI", "hook_uninstall", cp);
             }
             char hooks_json[CLI_BUF_1K];
-            char installed_binary[CLI_BUF_1K];
             char hook_command[CLI_BUF_8K];
             snprintf(hooks_json, sizeof(hooks_json), "%s/hooks.json", config_dir);
-            cbm_agent_installed_binary_path(home, installed_binary, sizeof(installed_binary));
             if (cbm_file_exists(hooks_json) &&
                 (cbm_build_augment_command(installed_binary, hook_command, sizeof(hook_command)) !=
                      CLI_OK ||
