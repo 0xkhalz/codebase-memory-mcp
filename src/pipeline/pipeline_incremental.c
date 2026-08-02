@@ -906,7 +906,6 @@ static void incr_free_edge_capture(cbm_edge_capture_t *cap) {
 
 /* ── Persist file hashes ─────────────────────────────────────────── */
 
-
 /* ── Registry seed visitor ────────────────────────────────────────── */
 
 /* Labels the full-index definition pass seeds into the registry

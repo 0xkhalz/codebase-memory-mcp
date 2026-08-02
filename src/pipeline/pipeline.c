@@ -2191,8 +2191,7 @@ static bool db_sidecars_absent(const char *db_path) {
  * failed rename can put it back. It is zeroed here and is only meaningful on a
  * 0 return. */
 static int prepare_publish_destination(const char *final_path, bool final_existed,
-                                       bool backup_succeeded,
-                                       cbm_replacement_prepare_t *prepared) {
+                                       bool backup_succeeded, cbm_replacement_prepare_t *prepared) {
     memset(prepared, 0, sizeof(*prepared));
     struct stat current_st;
     bool final_exists_now = stat(final_path, &current_st) == 0;
@@ -2345,8 +2344,8 @@ int cbm_pipeline_run(cbm_pipeline_t *p) {
     }
 
     cbm_replacement_prepare_t prepared = {0};
-    int prepare_rc = prepare_publish_destination(final_path, final_existed, backup_succeeded,
-                                                 &prepared);
+    int prepare_rc =
+        prepare_publish_destination(final_path, final_existed, backup_succeeded, &prepared);
     if (prepare_rc != 0) {
         cbm_log_error("pipeline.err", "phase", "publish", "path", final_path);
         cleanup_staging_db(staging_path);

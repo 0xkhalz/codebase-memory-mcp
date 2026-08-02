@@ -139,18 +139,20 @@ int cbm_path_info_utf8(const char *path, cbm_path_info_t *out) {
     out->is_directory = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
     out->is_symlink = (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
     out->is_regular = !out->is_directory && !out->is_symlink;
-    ULARGE_INTEGER file_size;
-    file_size.LowPart = data.nFileSizeLow;
-    file_size.HighPart = data.nFileSizeHigh;
-    out->size = (int64_t)file_size.QuadPart;
-    ULARGE_INTEGER written;
-    written.LowPart = data.ftLastWriteTime.dwLowDateTime;
-    written.HighPart = data.ftLastWriteTime.dwHighDateTime;
+    /* Compose the 64-bit values arithmetically rather than through
+     * ULARGE_INTEGER. Writing .LowPart/.HighPart and reading .QuadPart is
+     * correct -- it is a union -- but cppcheck does not model that aliasing and
+     * reports all four halves as assigned-but-never-read. This form says the
+     * same thing without the union, so the checker needs no exception. */
+    uint64_t file_size = ((uint64_t)data.nFileSizeHigh << 32) | (uint64_t)data.nFileSizeLow;
+    out->size = (int64_t)file_size;
+    uint64_t written = ((uint64_t)data.ftLastWriteTime.dwHighDateTime << 32) |
+                       (uint64_t)data.ftLastWriteTime.dwLowDateTime;
     enum { NANOSECONDS_PER_WINDOWS_TICK = 100 };
     const uint64_t windows_to_unix_ticks = UINT64_C(116444736000000000);
     out->mtime_ns =
-        written.QuadPart >= windows_to_unix_ticks
-            ? (int64_t)((written.QuadPart - windows_to_unix_ticks) * NANOSECONDS_PER_WINDOWS_TICK)
+        written >= windows_to_unix_ticks
+            ? (int64_t)((written - windows_to_unix_ticks) * NANOSECONDS_PER_WINDOWS_TICK)
             : 0;
     return 0;
 }

@@ -1467,8 +1467,7 @@ static TSNode paren_wrapped_direct_argument_site(TSNode node, TSNode parent, TST
      * extra parent resolution. Walking up with ts_node_parent here instead
      * costs one slow fallback per identifier in the file, which the linearity
      * guard in test_extraction.c rightly rejects. */
-    if (ts_node_is_null(parent) ||
-        strcmp(ts_node_type(parent), "parenthesized_expression") != 0) {
+    if (ts_node_is_null(parent) || strcmp(ts_node_type(parent), "parenthesized_expression") != 0) {
         return (TSNode){0};
     }
     TSNode site = node;
