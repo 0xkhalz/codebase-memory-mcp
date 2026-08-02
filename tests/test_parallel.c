@@ -244,6 +244,15 @@ static cbm_gbuf_t *run_sequential_with_lsp_cross_and_mutator(
     }
     free(cache);
     cbm_registry_free(reg);
+    /* The cross pass builds its shared registries in the caller-owned
+     * ctx->seq_cross_arena precisely so they outlive pass_calls; production's
+     * run_sequential_pipeline destroys that arena after all passes, and this
+     * harness must too -- LSan flagged the whole registry arena (stdlib
+     * registrations included) leaking per test. */
+    if (ctx.seq_cross_arena_live) {
+        cbm_arena_destroy(&ctx.seq_cross_arena);
+        ctx.seq_cross_arena_live = false;
+    }
     return gbuf;
 }
 

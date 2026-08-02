@@ -1734,12 +1734,19 @@ static int dump_and_persist_hashes(cbm_pipeline_t *p, const cbm_file_hash_t *bas
     if (cbm_pipeline_build_fresh_semantic_manifest(p->project_name, p->repo_path, p->mode,
                                                    &manifest, &manifest_count) != 0) {
         cbm_log_error("pipeline.err", "phase", "semantic_manifest");
+        /* db_path and db_dir are this function's strdups; the success tail and
+         * the publish-failure return release them, and these two aborts must
+         * too -- LSan caught exactly these paths leaking both strings. */
+        free(db_dir);
+        free(db_path);
         return CBM_PIPELINE_ABORT_PRESERVE_DB;
     }
     if (!cbm_pipeline_semantic_manifests_equal(baseline_manifest, baseline_count, manifest,
                                                manifest_count)) {
         cbm_log_warn("pipeline.abort", "reason", "semantic_inputs_changed");
         cbm_pipeline_free_semantic_manifest(manifest, manifest_count);
+        free(db_dir);
+        free(db_path);
         return CBM_PIPELINE_ABORT_PRESERVE_DB;
     }
 
