@@ -1534,8 +1534,14 @@ TEST(repro_python_parenthesized_function_value_is_exact_reference) {
                                  "    pass\n"
                                  "def argument():\n"
                                  "    accept((handler))\n";
+    /* The occurrence is the outermost parenthesised direct argument, matching
+     * what the bound-method form in test_call_reference_contract.c already
+     * uses. The span originally written here, "((handler))", is the argument
+     * LIST -- one byte wider on each side, matching neither the usage carrier
+     * nor the semantic row, and per-argument it would collide for any call
+     * with more than one argument. */
     int rc = rp_assert_python_exact_reference_occurrence(
-        "parenthesized_reference.py", source, "accept((handler))", "((handler))", "handler");
+        "parenthesized_reference.py", source, "accept((handler))", "(handler)", "handler");
     if (rc != 0)
         return rc;
     PASS();

@@ -1456,6 +1456,50 @@ static TSNode csharp_callable_value_site(TSNode node) {
     return is_direct_argument_value(site) ? node : (TSNode){0};
 }
 
+/* Climb out of the parentheses wrapping a direct argument and return the
+ * outermost wrapper, or null when the node is not a parenthesised direct
+ * argument. Mirrors python_direct_callable_attribute_site so the bare
+ * identifier and bound method forms agree on one occurrence. */
+static TSNode paren_wrapped_direct_argument_site(TSNode node, TSNode parent, TSTreeCursor *cursor,
+                                                 WalkState *state) {
+    /* The caller already resolved `parent`; checking its kind first keeps the
+     * common case (an identifier that is not parenthesised at all) free of any
+     * extra parent resolution. Walking up with ts_node_parent here instead
+     * costs one slow fallback per identifier in the file, which the linearity
+     * guard in test_extraction.c rightly rejects. */
+    if (ts_node_is_null(parent) ||
+        strcmp(ts_node_type(parent), "parenthesized_expression") != 0) {
+        return (TSNode){0};
+    }
+    TSNode site = node;
+    TSNode wrapper = parent;
+    for (int depth = 0; depth < 64; depth++) {
+        TSNode inner = ts_node_child_by_field_name(wrapper, TS_FIELD("expression"));
+        if (ts_node_is_null(inner) && ts_node_named_child_count(wrapper) == 1) {
+            inner = ts_node_named_child(wrapper, 0);
+        }
+        if (ts_node_is_null(inner) || !ts_node_eq(inner, site)) {
+            return (TSNode){0};
+        }
+        site = wrapper;
+        TSNode next = {0};
+        const char *field = NULL;
+        if (cursor) {
+            if (!occurrence_parent(cursor, site, &next, &field)) {
+                next = (TSNode){0};
+            }
+        } else {
+            usage_slow_parent_fallback_test_note();
+            next = ts_node_parent(site);
+        }
+        if (ts_node_is_null(next) || strcmp(ts_node_type(next), "parenthesized_expression") != 0) {
+            break;
+        }
+        wrapper = next;
+    }
+    return is_direct_argument_value_walk(site, state) ? site : (TSNode){0};
+}
+
 static TSNode call_reference_candidate_site(CBMExtractCtx *ctx, TSNode node, const char *name,
                                             WalkState *state) {
     if (!ctx || !name || !language_may_stamp_exact_callable_value_candidate(ctx->language)) {
@@ -1512,10 +1556,20 @@ static TSNode call_reference_candidate_site(CBMExtractCtx *ctx, TSNode node, con
     if (ctx->language == CBM_LANG_CSHARP) {
         return csharp_callable_value_site(node);
     }
-    return (strcmp(kind, "identifier") == 0 || strcmp(kind, "simple_identifier") == 0) &&
-                   is_direct_argument_value_walk(node, state)
-               ? node
-               : (TSNode){0};
+    if (strcmp(kind, "identifier") != 0 && strcmp(kind, "simple_identifier") != 0) {
+        return (TSNode){0};
+    }
+    if (is_direct_argument_value_walk(node, state)) {
+        return node;
+    }
+    /* `f((handler))` passes handler just as directly as `f(handler)`. The
+     * semantic row is recorded on the outermost parenthesised wrapper -- the
+     * site python_direct_callable_attribute_site already returns for the bound
+     * method form -- so climb to that same wrapper here. A bare identifier
+     * previously stopped at the parentheses and became no candidate at all, so
+     * the occurrence-exact join had nothing to join and a parenthesised
+     * callable argument produced no reference. */
+    return paren_wrapped_direct_argument_site(node, parent, cursor, state);
 }
 
 static char *reference_name(CBMExtractCtx *ctx, TSNode node) {

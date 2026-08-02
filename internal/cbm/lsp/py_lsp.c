@@ -841,7 +841,8 @@ static void py_emit_resolved_call(PyLSPContext *ctx, const char *callee_qn, cons
 }
 
 static void py_emit_resolved_reference(PyLSPContext *ctx, const char *callee_qn,
-                                       const char *source_name, TSNode site) {
+                                       const char *source_name, TSNode site,
+                                       const char *strategy) {
     if (!ctx || !ctx->resolved_calls || !callee_qn || !ctx->enclosing_func_qn ||
         ts_node_is_null(site)) {
         return;
@@ -860,7 +861,7 @@ static void py_emit_resolved_reference(PyLSPContext *ctx, const char *callee_qn,
     CBMResolvedCall rc = {0};
     rc.caller_qn = ctx->enclosing_func_qn;
     rc.callee_qn = cbm_arena_strdup(ctx->arena, callee_qn);
-    rc.strategy = "lsp_callable_value_reference";
+    rc.strategy = strategy ? strategy : "lsp_callable_value_reference";
     rc.confidence = 0.97f;
     const char *leaf = strrchr(callee_qn, '.');
     leaf = leaf ? leaf + 1 : callee_qn;
@@ -915,7 +916,16 @@ static const char *py_exact_imported_reference_candidate(PyLSPContext *ctx,
 /* Return one graph target only for an expression whose callable identity is
  * statically exact. Complex containers/conditionals deliberately return NULL
  * so their constituent function names stay ordinary USAGE. */
-static const char *py_exact_callable_target(PyLSPContext *ctx, TSNode node) {
+/* `occurrence_out` receives the node the callable name actually occupies after
+ * parentheses are stripped, so a caller can record the reference at the same
+ * occurrence the usage carrier uses. `lexical_alias_out` reports that the name
+ * was proven through a lexical binding rather than a module symbol -- see
+ * py_resolve_value_references_at for why that distinction decides a strategy.
+ * Both are optional. */
+static const char *py_exact_callable_target_ex(PyLSPContext *ctx, TSNode node,
+                                               TSNode *occurrence_out, bool *lexical_alias_out) {
+    if (lexical_alias_out)
+        *lexical_alias_out = false;
     if (!ctx || ctx->callable_value_proof_disabled || ts_node_is_null(node))
         return NULL;
 
@@ -928,12 +938,26 @@ static const char *py_exact_callable_target(PyLSPContext *ctx, TSNode node) {
         node = ts_node_named_child(node, 0);
         kind = ts_node_type(node);
     }
+    if (occurrence_out)
+        *occurrence_out = node;
     if (strcmp(kind, "identifier") == 0) {
         char *name = py_node_text(ctx, node);
         if (!name)
             return NULL;
         if (cbm_scope_contains(ctx->current_scope, name)) {
-            return cbm_scope_lookup_callable(ctx->current_scope, name);
+            const char *bound = cbm_scope_lookup_callable(ctx->current_scope, name);
+            if (bound && lexical_alias_out) {
+                /* A lexical binding that does NOT simply name the module symbol
+                 * of the same spelling is an alias introduced in this body. Only
+                 * that case may claim the alias strategy; a module function
+                 * referenced by its own name keeps the plain value-reference
+                 * strategy it has always had. */
+                const CBMRegisteredFunc *module_symbol =
+                    cbm_registry_lookup_symbol(ctx->registry, ctx->module_qn, name);
+                *lexical_alias_out = !module_symbol || !module_symbol->qualified_name ||
+                                     strcmp(module_symbol->qualified_name, bound) != 0;
+            }
+            return bound;
         }
         const CBMRegisteredFunc *f =
             cbm_registry_lookup_symbol(ctx->registry, ctx->module_qn, name);
@@ -968,6 +992,10 @@ static const char *py_exact_callable_target(PyLSPContext *ctx, TSNode node) {
     return NULL;
 }
 
+static const char *py_exact_callable_target(PyLSPContext *ctx, TSNode node) {
+    return py_exact_callable_target_ex(ctx, node, NULL, NULL);
+}
+
 static void py_resolve_value_references_at(PyLSPContext *ctx, TSNode call) {
     if (!ctx || ctx->callable_value_proof_disabled)
         return;
@@ -986,10 +1014,15 @@ static void py_resolve_value_references_at(PyLSPContext *ctx, TSNode call) {
         if (strcmp(kind, "identifier") != 0 && strcmp(kind, "attribute") != 0 &&
             strcmp(kind, "parenthesized_expression") != 0)
             continue;
-        const char *target = py_exact_callable_target(ctx, arg);
+        bool lexical_alias = false;
+        const char *target = py_exact_callable_target_ex(ctx, arg, NULL, &lexical_alias);
         char *source_name = py_node_text(ctx, arg);
         if (target) {
-            py_emit_resolved_reference(ctx, target, source_name, arg);
+            /* `arg` is the outermost direct-argument node, parentheses included,
+             * which is the occurrence the usage carrier also reports. */
+            py_emit_resolved_reference(ctx, target, source_name, arg,
+                                       lexical_alias ? "lsp_callable_alias"
+                                                     : "lsp_callable_value_reference");
             continue;
         }
         const char *candidate = strcmp(kind, "identifier") == 0
@@ -4307,6 +4340,44 @@ static void py_invalidate_binding_target(PyLSPContext *ctx, TSNode target, int d
         py_invalidate_binding_target(ctx, ts_node_named_child(target, i), depth + 1);
 }
 
+/* An assignment expression binds in the CONTAINING scope (PEP 572), which is
+ * what separates it from every other binder a comprehension can hold: the
+ * iteration variables are private to the comprehension, the walrus is not.
+ *
+ * This exists because a module-level expression statement is resolved for calls
+ * rather than scanned for bindings, so `(callback := 0)` and
+ * `[(callback := 0) for _ in (0,)]` reached no binder at all and left an
+ * imported name looking exactly bound after Python had already rebound it --
+ * proof fabricated from a name that no longer refers to the callable.
+ *
+ * A lambda, function or class body owns its own walrus targets, so those are
+ * not walked. The value side is, because a walrus can nest inside one. */
+static void py_invalidate_walrus_bindings(PyLSPContext *ctx, TSNode node, int depth) {
+    if (!ctx || ts_node_is_null(node))
+        return;
+    if (depth > 64) {
+        py_disable_callable_value_proof(ctx);
+        return;
+    }
+    const char *kind = ts_node_type(node);
+    if (strcmp(kind, "lambda") == 0 || strcmp(kind, "function_definition") == 0 ||
+        strcmp(kind, "class_definition") == 0) {
+        return;
+    }
+    if (strcmp(kind, "named_expression") == 0 || strcmp(kind, "assignment_expression") == 0) {
+        TSNode name = ts_node_child_by_field_name(node, "name", 4);
+        if (ts_node_is_null(name))
+            name = ts_node_child_by_field_name(node, "left", 4);
+        if (ts_node_is_null(name))
+            py_disable_callable_value_proof(ctx);
+        else
+            py_invalidate_binding_target(ctx, name, depth + 1);
+    }
+    uint32_t count = ts_node_named_child_count(node);
+    for (uint32_t i = 0; i < count; i++)
+        py_invalidate_walrus_bindings(ctx, ts_node_named_child(node, i), depth + 1);
+}
+
 /* Match patterns mix value expressions and capture targets. Skip the class
  * expression in `case Type(...)` and keyword labels, while invalidating every
  * nested capture/as/star target that may replace a module binding. */
@@ -4379,10 +4450,28 @@ static void py_invalidate_possible_bindings(PyLSPContext *ctx, TSNode node, int 
         return;
     }
     const char *kind = ts_node_type(node);
-    if (strcmp(kind, "lambda") == 0 || strcmp(kind, "list_comprehension") == 0 ||
-        strcmp(kind, "set_comprehension") == 0 ||
+    if (strcmp(kind, "lambda") == 0) {
+        return;
+    }
+    /* A comprehension's iteration variables are private to it, so it is not
+     * scanned as an ordinary binder -- but a walrus inside one still binds out
+     * here, and skipping the whole node missed that. */
+    if (strcmp(kind, "list_comprehension") == 0 || strcmp(kind, "set_comprehension") == 0 ||
         strcmp(kind, "dictionary_comprehension") == 0 ||
         strcmp(kind, "generator_expression") == 0) {
+        py_invalidate_walrus_bindings(ctx, node, depth + 1);
+        return;
+    }
+    /* PEP 695 `type X = ...` binds X in the enclosing scope. Only the left side
+     * is a target; the right is a type expression. */
+    if (strcmp(kind, "type_alias_statement") == 0) {
+        TSNode left = ts_node_child_by_field_name(node, "left", 4);
+        if (ts_node_is_null(left) && ts_node_named_child_count(node) > 0)
+            left = ts_node_named_child(node, 0);
+        if (ts_node_is_null(left))
+            py_disable_callable_value_proof(ctx);
+        else
+            py_invalidate_binding_target(ctx, left, depth + 1);
         return;
     }
     if (strcmp(kind, "function_definition") == 0 || strcmp(kind, "class_definition") == 0) {
@@ -4616,6 +4705,12 @@ void py_lsp_process_file(PyLSPContext *ctx, TSNode root) {
                     py_bind_module_class(ctx, def);
             }
         } else if (strcmp(ck, "expression_statement") == 0) {
+            /* An expression statement is resolved for calls, not scanned as a
+             * binder -- but an assignment expression anywhere inside it does
+             * rebind a module name, so take those targets first. Doing it
+             * before resolution fails closed for the rest of the statement,
+             * which is the safe direction. */
+            py_invalidate_walrus_bindings(ctx, c, 0);
             /* The recursive walker reaches a wrapped assignment and applies
              * its binding exactly once here, at module execution time. It also
              * preserves top-level call edges without replaying the assignment
