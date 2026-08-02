@@ -992,10 +992,6 @@ static const char *py_exact_callable_target_ex(PyLSPContext *ctx, TSNode node,
     return NULL;
 }
 
-static const char *py_exact_callable_target(PyLSPContext *ctx, TSNode node) {
-    return py_exact_callable_target_ex(ctx, node, NULL, NULL);
-}
-
 static void py_resolve_value_references_at(PyLSPContext *ctx, TSNode call) {
     if (!ctx || ctx->callable_value_proof_disabled)
         return;
@@ -2225,8 +2221,24 @@ static void py_process_statement(PyLSPContext *ctx, TSNode node) {
 
         const CBMType *rhs_type =
             ts_node_is_null(right) ? cbm_type_unknown() : py_eval_expr_type(ctx, right);
+        bool rhs_lexical_alias = false;
         const char *rhs_callable =
-            ts_node_is_null(right) ? NULL : py_exact_callable_target(ctx, right);
+            ts_node_is_null(right)
+                ? NULL
+                : py_exact_callable_target_ex(ctx, right, NULL, &rhs_lexical_alias);
+        /* A proven callable value on the right of an assignment is a reference
+         * to that callable, exactly as it would be as a call argument -- the
+         * policy is proven exact value => CALL_REFERENCE, and `cb = handler`
+         * proves it or the alias binding below could not be created. Bare
+         * identifier RHS only, in lockstep with the usage-carrier rule in
+         * extract_usages.c; the strategy distinction mirrors the argument path
+         * so a shadowed source name still satisfies the local-shadow guard. */
+        if (rhs_callable && strcmp(ts_node_type(right), "identifier") == 0) {
+            char *rhs_name = py_node_text(ctx, right);
+            py_emit_resolved_reference(ctx, rhs_callable, rhs_name, right,
+                                       rhs_lexical_alias ? "lsp_callable_alias"
+                                                         : "lsp_callable_value_reference");
+        }
 
         // Annotated assignment: x: T = expr — annotation wins.
         bool has_annotation = !ts_node_is_null(ann);

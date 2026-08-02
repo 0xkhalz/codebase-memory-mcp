@@ -1558,6 +1558,17 @@ static TSNode call_reference_candidate_site(CBMExtractCtx *ctx, TSNode node, con
     if (strcmp(kind, "identifier") != 0 && strcmp(kind, "simple_identifier") != 0) {
         return (TSNode){0};
     }
+    /* Python: the right-hand side of `callback = handler` is a genuine value
+     * occurrence of handler, and when the LSP proves its exact callable
+     * identity it becomes a CALL_REFERENCE like any proven argument value
+     * (maintainer decision on the local-alias fixture). Bare identifier RHS
+     * only, in lockstep with the row py_lsp.c emits -- a candidate the LSP
+     * never matches would change nothing, but the asymmetry would be a trap. */
+    if (ctx->language == CBM_LANG_PYTHON && !ts_node_is_null(parent) &&
+        strcmp(ts_node_type(parent), "assignment") == 0) {
+        TSNode right = ts_node_child_by_field_name(parent, TS_FIELD("right"));
+        return !ts_node_is_null(right) && ts_node_eq(right, node) ? node : (TSNode){0};
+    }
     if (is_direct_argument_value_walk(node, state)) {
         return node;
     }

@@ -1308,7 +1308,10 @@ _Static_assert(MATRIX_LANGUAGE_COUNT == 46,
 enum { MATRIX_B_ROW_COUNT = 0 MATRIX_B_LANGUAGE_ROWS(MATRIX_B_COUNT_ROW) };
 #undef MATRIX_B_COUNT_ROW
 
-_Static_assert(MATRIX_B_ROW_COUNT == MATRIX_LANGUAGE_COUNT,
+/* Cast both sides: they are enumerators of two different anonymous enums, and
+ * GCC rejects comparing those under -Werror=enum-compare (clang accepts it, so
+ * only the Linux leg sees the difference). */
+_Static_assert((int)MATRIX_B_ROW_COUNT == (int)MATRIX_LANGUAGE_COUNT,
                "matrix B suite and language-row count must stay synchronized");
 
 size_t repro_call_argument_matrix_b_copy_language_ids(CBMLanguage *language_ids, size_t capacity) {

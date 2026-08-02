@@ -1548,6 +1548,13 @@ TEST(repro_python_parenthesized_function_value_is_exact_reference) {
 }
 
 TEST(repro_python_local_callable_alias_value_is_exact_reference) {
+    /* Both occurrences of handler inside `argument` are proven exact callable
+     * values -- the alias use in accept(callback) AND the right-hand side of
+     * `callback = handler` (maintainer decision: a proven RHS is a
+     * CALL_REFERENCE, not an ordinary USAGE). The graph deduplicates edges by
+     * (src, tgt, type), so the two occurrences surface as ONE CALL_REFERENCE
+     * edge and zero USAGE edges, which is exactly what the shared helper
+     * asserts. */
     static const char source[] = "def handler():\n"
                                  "    pass\n"
                                  "def accept(fn):\n"
