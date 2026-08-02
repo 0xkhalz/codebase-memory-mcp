@@ -106,8 +106,15 @@ static bool is_reference_node(TSNode node, CBMLanguage lang) {
 
     /* Some grammars expose the sigil/scope as a named wrapper around a generic
      * identifier. Keep exactly one occurrence: the wrapper carries the source
-     * spelling that resolution needs (`$watched`, `a:watched`). */
-    if (strcmp(kind, "identifier") == 0) {
+     * spelling that resolution needs (`$watched`, `a:watched`).
+     *
+     * The language gate MUST precede the parent fetch: ts_node_parent descends
+     * from the root (O(depth)), and fetching it for every identifier in every
+     * language made deep-nesting extraction quadratic across the board (the
+     * stack_overflow deep tests went 0-1s -> 39-119s and blew the suite
+     * budget on every non-M4 venue). */
+    if ((lang == CBM_LANG_PUPPET || lang == CBM_LANG_VIMSCRIPT) &&
+        strcmp(kind, "identifier") == 0) {
         TSNode parent = ts_node_parent(node);
         if (!ts_node_is_null(parent) &&
             ((lang == CBM_LANG_PUPPET && strcmp(ts_node_type(parent), "variable") == 0) ||

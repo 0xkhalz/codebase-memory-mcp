@@ -59,6 +59,20 @@ typedef struct {
     CBMInvocationKind invocation_kind;
     TSNode callee_expr;
     TSNode callee_leaf;
+    /* The complete walk-state tuple this frame displaced, restored verbatim on
+     * pop. Saving the full tuple makes push and pop O(1) and kind-agnostic;
+     * the previous design recomputed the state by iterating the WHOLE scope
+     * stack on every code-bearing node, which is O(depth) per node and turned
+     * the deep-nesting torture tests quadratic (0-1s on main, 39-119s here,
+     * suite-budget kills on every non-M4 venue). */
+    const char *prev_enclosing_func_qn;
+    const char *prev_enclosing_class_qn;
+    CBMInvocationKind prev_invocation_kind;
+    TSNode prev_callee_expr;
+    TSNode prev_callee_leaf;
+    bool prev_inside_import;
+    int prev_loop_depth;
+    int prev_branch_depth;
 } CBMWalkScope;
 
 typedef enum {

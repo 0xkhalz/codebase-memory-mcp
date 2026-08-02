@@ -123,13 +123,49 @@ static bool push_scope(WalkState *state, uint8_t kind, uint32_t depth, const cha
     if (!ensure_scope_capacity(state)) {
         return false;
     }
-    state->scopes[state->scope_top].kind = kind;
-    state->scopes[state->scope_top].depth = depth;
-    state->scopes[state->scope_top].qn = qn;
-    state->scopes[state->scope_top].lexical_scope_id = 0;
-    state->scopes[state->scope_top].invocation_kind = CBM_INVOCATION_NONE;
-    state->scopes[state->scope_top].callee_expr = (TSNode){0};
-    state->scopes[state->scope_top].callee_leaf = (TSNode){0};
+    CBMWalkScope *f = &state->scopes[state->scope_top];
+    f->kind = kind;
+    f->depth = depth;
+    f->qn = qn;
+    f->lexical_scope_id = 0;
+    f->invocation_kind = CBM_INVOCATION_NONE;
+    f->callee_expr = (TSNode){0};
+    f->callee_leaf = (TSNode){0};
+    /* Save the complete displaced tuple, then apply this frame's effect --
+     * pop_expired_scopes restores verbatim. O(1) either way; see the
+     * CBMWalkScope comment for the quadratic recompute this replaces. */
+    f->prev_enclosing_func_qn = state->enclosing_func_qn;
+    f->prev_enclosing_class_qn = state->enclosing_class_qn;
+    f->prev_invocation_kind = state->invocation_kind;
+    f->prev_callee_expr = state->callee_expr;
+    f->prev_callee_leaf = state->callee_leaf;
+    f->prev_inside_import = state->inside_import;
+    f->prev_loop_depth = state->loop_depth;
+    f->prev_branch_depth = state->branch_depth;
+    switch (kind) {
+    case SCOPE_FUNC:
+        state->enclosing_func_qn = qn;
+        break;
+    case SCOPE_CLASS:
+    case SCOPE_NAMESPACE:
+        state->enclosing_class_qn = qn;
+        break;
+    case SCOPE_CALL:
+        /* The invocation triple is applied by push_call_scope once the caller
+         * has filled the frame fields. */
+        break;
+    case SCOPE_IMPORT:
+        state->inside_import = true;
+        break;
+    case SCOPE_LOOP:
+        state->loop_depth++;
+        break;
+    case SCOPE_BRANCH:
+        state->branch_depth++;
+        break;
+    default:
+        break;
+    }
     state->scope_top++;
     return true;
 }
@@ -203,52 +239,27 @@ static void push_call_scope(WalkState *state, uint32_t depth,
     state->scopes[state->scope_top - SKIP_ONE].invocation_kind = invocation->kind;
     state->scopes[state->scope_top - SKIP_ONE].callee_expr = invocation->callee_expr;
     state->scopes[state->scope_top - SKIP_ONE].callee_leaf = invocation->callee_leaf;
+    /* Apply the CALL effect (push_scope saved the displaced tuple already;
+     * the frame fields had to be filled first). */
+    state->invocation_kind = invocation->kind;
+    state->callee_expr = invocation->callee_expr;
+    state->callee_leaf = invocation->callee_leaf;
 }
 
-// Pop scopes that we've ascended out of (depth >= current cursor depth).
+// Pop scopes that we've ascended out of (depth >= current cursor depth),
+// restoring the walk-state tuple each frame displaced. LIFO order keeps the
+// restores exact; O(1) per frame.
 static void pop_expired_scopes(WalkState *state, uint32_t cur_depth) {
     while (state->scope_top > 0 && state->scopes[state->scope_top - SKIP_ONE].depth >= cur_depth) {
-        state->scope_top--;
-    }
-}
-
-// Recompute state flags from the current scope stack.
-static void recompute_state(WalkState *state, const char *module_qn) {
-    state->enclosing_func_qn = module_qn;
-    state->enclosing_class_qn = NULL;
-    state->invocation_kind = CBM_INVOCATION_NONE;
-    state->callee_expr = (TSNode){0};
-    state->callee_leaf = (TSNode){0};
-    state->inside_import = false;
-    state->loop_depth = 0;
-    state->branch_depth = 0;
-
-    for (int i = 0; i < state->scope_top; i++) {
-        switch (state->scopes[i].kind) {
-        case SCOPE_FUNC:
-            state->enclosing_func_qn = state->scopes[i].qn;
-            break;
-        case SCOPE_CLASS:
-        case SCOPE_NAMESPACE:
-            state->enclosing_class_qn = state->scopes[i].qn;
-            break;
-        case SCOPE_CALL:
-            state->invocation_kind = state->scopes[i].invocation_kind;
-            state->callee_expr = state->scopes[i].callee_expr;
-            state->callee_leaf = state->scopes[i].callee_leaf;
-            break;
-        case SCOPE_IMPORT:
-            state->inside_import = true;
-            break;
-        case SCOPE_LOOP:
-            state->loop_depth++;
-            break;
-        case SCOPE_BRANCH:
-            state->branch_depth++;
-            break;
-        default:
-            break;
-        }
+        const CBMWalkScope *f = &state->scopes[--state->scope_top];
+        state->enclosing_func_qn = f->prev_enclosing_func_qn;
+        state->enclosing_class_qn = f->prev_enclosing_class_qn;
+        state->invocation_kind = f->prev_invocation_kind;
+        state->callee_expr = f->prev_callee_expr;
+        state->callee_leaf = f->prev_callee_leaf;
+        state->inside_import = f->prev_inside_import;
+        state->loop_depth = f->prev_loop_depth;
+        state->branch_depth = f->prev_branch_depth;
     }
 }
 
@@ -2089,6 +2100,16 @@ void cbm_extract_unified(CBMExtractCtx *ctx) {
     state.lexical_scope_capacity = INLINE_LEXICAL_SCOPES;
     state.usage_start_index = ctx->result->usages.count;
     state.root_lexical_scope_id = add_lexical_scope(&state, ctx->root, CBM_LEXICAL_SCOPE_MODULE);
+    /* Base walk-state tuple (previously established by the first
+     * recompute_state call): module scope, nothing else active. */
+    state.enclosing_func_qn = ctx->module_qn;
+    state.enclosing_class_qn = NULL;
+    state.invocation_kind = CBM_INVOCATION_NONE;
+    state.callee_expr = (TSNode){0};
+    state.callee_leaf = (TSNode){0};
+    state.inside_import = false;
+    state.loop_depth = 0;
+    state.branch_depth = 0;
 
     uint32_t depth = 0;
 
@@ -2097,12 +2118,12 @@ void cbm_extract_unified(CBMExtractCtx *ctx) {
         bool trivia = is_unified_trivia_node(node);
         if (!trivia) {
             /* Trivia consumes no semantic state. Scope expiry may be deferred
-             * until the next code-bearing node, which recomputes before use. */
+             * until the next code-bearing node; pop restores the displaced
+             * tuple and push applies the new frame's effect, both O(1) --
+             * the old whole-stack recompute here was O(depth) per node and
+             * quadratic on the deep-nesting torture tests. */
             pop_expired_scopes(&state, depth);
-            recompute_state(&state, ctx->module_qn);
-            if (push_pre_node_scope(ctx, node, spec, &state, depth)) {
-                recompute_state(&state, ctx->module_qn);
-            }
+            (void)push_pre_node_scope(ctx, node, spec, &state, depth);
 
             handle_string_constants(ctx, node, &state);
             handle_objectscript_type_map(ctx, node, &state);
