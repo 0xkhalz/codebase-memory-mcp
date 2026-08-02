@@ -434,7 +434,8 @@ EXISTING_C_SRCS = $(EXTRACTION_SRCS) $(LSP_SRCS) $(TS_RUNTIME_SRC) \
 # Vendored trees are deliberately excluded — they are pinned, they carry their
 # own explicit dep lists (LSP_UNITY_DEPS, TS_RUNTIME_DEPS), and globbing tens of
 # thousands of grammar headers would cost more than it protects.
-PROJECT_HDRS = $(wildcard src/*.h src/*/*.h $(CBM_DIR)/*.h tests/*.h tests/repro/*.h)
+PROJECT_HDRS = $(wildcard src/*.h src/*/*.h $(CBM_DIR)/*.h $(CBM_DIR)/lsp/*.h tests/*.h \
+               tests/repro/*.h)
 
 # ── Test sources ─────────────────────────────────────────────────
 
