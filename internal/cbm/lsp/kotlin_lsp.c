@@ -2335,7 +2335,14 @@ static bool kt_identifier_is_value_occurrence(TSNode node) {
         strcmp(kind, "class_declaration") == 0 || strcmp(kind, "object_declaration") == 0 ||
         strcmp(kind, "import") == 0 || strcmp(kind, "import_header") == 0 ||
         strcmp(kind, "package_header") == 0 || strcmp(kind, "user_type") == 0 ||
-        strcmp(kind, "callable_reference") == 0) {
+        strcmp(kind, "callable_reference") == 0 ||
+        /* A single-expression function body (`fun f() = holder::handler`) is an
+         * unconditional context: the expression IS the value, no branch selects
+         * among candidates. Treating it as ambiguous silently dropped the
+         * reference to the name-only registry fallback, whose winner among
+         * same-named symbols is registration order -- readdir order -- and so
+         * differed between platforms. */
+        strcmp(kind, "function_body") == 0) {
         return false;
     }
     if (strcmp(kind, "navigation_expression") == 0) {
@@ -2728,6 +2735,24 @@ const CBMType *kotlin_eval_expr_type(KotlinLSPContext *ctx, TSNode node) {
                         const CBMRegisteredFunc *rf = kotlin_lookup_method(ctx, recv_qn, member);
                         if (rf && rf->qualified_name) {
                             kt_emit_resolved_kind_at(ctx, rf->qualified_name, "lsp_kt_callable_ref",
+                                                     KT_CONF_METHOD, CBM_RESOLVED_CALL_REFERENCE,
+                                                     last);
+                        } else if (!cbm_type_is_unknown(
+                                       kotlin_lookup_property_type(ctx, recv_qn, member))) {
+                            /* The receiver type HAS this member, as a property.
+                             * Emit the row against the property's QN so the
+                             * occurrence is claimed by an exact target: without
+                             * it the occurrence fell to the name-only registry
+                             * fallback, whose winner among same-named symbols
+                             * is registration order -- i.e. readdir order, and
+                             * Windows (lexicographic NTFS) picked a same-named
+                             * FUNCTION from another file where macOS happened
+                             * to pick the property. The property is not a
+                             * callable target, so the join emits USAGE, never
+                             * a fabricated CALL_REFERENCE. */
+                            const char *prop_qn =
+                                cbm_arena_sprintf(ctx->arena, "%s.%s", recv_qn, member);
+                            kt_emit_resolved_kind_at(ctx, prop_qn, "lsp_kt_property_ref",
                                                      KT_CONF_METHOD, CBM_RESOLVED_CALL_REFERENCE,
                                                      last);
                         }
