@@ -1803,6 +1803,10 @@ static int dump_and_persist_hashes(cbm_pipeline_t *p, const cbm_file_hash_t *bas
     free(cov);
     cbm_pipeline_free_semantic_manifest(manifest, manifest_count);
     if (rc != 0) {
+        /* db_path is this function's strdup (resolve_db_path); every return
+         * must release it -- refresh_artifact below only borrows it. LSan on
+         * the Linux leg caught exactly this pair of exits leaking. */
+        free(db_path);
         return rc;
     }
     cbm_log_info("pass.timing", "pass", "dump_and_persist", "elapsed_ms",
@@ -1817,7 +1821,9 @@ static int dump_and_persist_hashes(cbm_pipeline_t *p, const cbm_file_hash_t *bas
     /* The SQLite generation is the commit point. Automatic refresh of an
      * existing artifact is best-effort, but an explicitly requested artifact
      * is caller-visible and must report an export failure. */
-    return cbm_pipeline_refresh_artifact(p, db_path);
+    int artifact_rc = cbm_pipeline_refresh_artifact(p, db_path);
+    free(db_path);
+    return artifact_rc;
 }
 
 /* Run githistory pass. */
