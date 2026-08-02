@@ -17,6 +17,7 @@
 #include "foundation/dump_verify.h"
 #include "foundation/sha256.h"
 #include "foundation/compat_fs.h"
+#include "foundation/win_utf8.h" // cbm_utf8_to_wide (Windows pipeline_test_set_mtime); no-op elsewhere
 #include "discover/userconfig.h"
 
 #include <stdlib.h>
@@ -2060,11 +2061,37 @@ TEST(pipeline_call_reference_sequential_parallel_edge_set_parity) {
     PASS();
 }
 
+#ifdef _WIN32
+/* utimensat/AT_FDCWD do not exist on Windows. Set the same instant through
+ * SetFileTime: FILETIME is 100ns ticks since 1601, the same representation
+ * cbm_path_info_utf8 reads back, so the round-trip loses nothing the
+ * incremental pipeline can observe. */
+static int pipeline_test_set_mtime(const char *path, time_t seconds, long nanoseconds) {
+    uint64_t ticks = (uint64_t)seconds * UINT64_C(10000000) + (uint64_t)nanoseconds / 100U +
+                     UINT64_C(116444736000000000);
+    FILETIME ft = {.dwLowDateTime = (DWORD)(ticks & 0xFFFFFFFFU),
+                   .dwHighDateTime = (DWORD)(ticks >> 32)};
+    wchar_t *wpath = cbm_utf8_to_wide(path);
+    if (!wpath) {
+        return -1;
+    }
+    HANDLE h = CreateFileW(wpath, FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    free(wpath);
+    if (h == INVALID_HANDLE_VALUE) {
+        return -1;
+    }
+    BOOL ok = SetFileTime(h, NULL, &ft, &ft);
+    CloseHandle(h);
+    return ok ? 0 : -1;
+}
+#else
 static int pipeline_test_set_mtime(const char *path, time_t seconds, long nanoseconds) {
     struct timespec times[2] = {{.tv_sec = seconds, .tv_nsec = nanoseconds},
                                 {.tv_sec = seconds, .tv_nsec = nanoseconds}};
     return utimensat(AT_FDCWD, path, times, 0);
 }
+#endif
 
 /* Reindexing a changed callable-value occurrence must replace its exact target,
  * not preserve the old CALL_REFERENCE alongside the new one or regress the new
