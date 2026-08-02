@@ -253,6 +253,13 @@ static cbm_gbuf_t *run_sequential_with_lsp_cross_and_mutator(
         cbm_arena_destroy(&ctx.seq_cross_arena);
         ctx.seq_cross_arena_live = false;
     }
+    if (ctx.seq_cross_def_modules) {
+        for (int i = 0; i < ctx.seq_cross_def_module_count; i++) {
+            free(ctx.seq_cross_def_modules[i]);
+        }
+        free(ctx.seq_cross_def_modules);
+        ctx.seq_cross_def_modules = NULL;
+    }
     return gbuf;
 }
 
