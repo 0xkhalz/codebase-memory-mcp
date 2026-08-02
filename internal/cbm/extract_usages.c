@@ -1558,6 +1558,16 @@ static TSNode call_reference_candidate_site(CBMExtractCtx *ctx, TSNode node, con
     if (strcmp(kind, "identifier") != 0 && strcmp(kind, "simple_identifier") != 0) {
         return (TSNode){0};
     }
+    /* Kotlin: a navigation member read (`obj.member`, and `value::member`,
+     * which the vendored grammar also parses as navigation) is a candidate at
+     * the member occurrence, so a receiver-typed LSP row can claim it instead
+     * of the name-only registry fallback (maintainer decision, option B). With
+     * no row at the occurrence the join finds nothing and behavior is exactly
+     * as before. */
+    if (ctx->language == CBM_LANG_KOTLIN && !ts_node_is_null(parent) &&
+        strcmp(ts_node_type(parent), "navigation_suffix") == 0) {
+        return node;
+    }
     /* Python: the right-hand side of `callback = handler` is a genuine value
      * occurrence of handler, and when the LSP proves its exact callable
      * identity it becomes a CALL_REFERENCE like any proven argument value

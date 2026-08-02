@@ -104,7 +104,7 @@ static CBMTypeRegistry *build_kotlin_cross_registry_for_contract(CBMArena *arena
                                                                  int def_count) {
     CBMTypeRegistry *registry = alloc_test_registry(arena);
     if (registry)
-        cbm_kotlin_register_lsp_defs(arena, registry, defs, def_count);
+        cbm_kotlin_register_lsp_defs(arena, registry, defs, def_count, NULL);
     return registry;
 }
 

@@ -133,6 +133,20 @@ typedef struct KotlinLSPContext {
 
     /* Debug mode (CBM_LSP_DEBUG env). */
     bool debug;
+    /* Cross-file only (NULL per-file): unique short type name -> registered
+     * QN, built from the project defs by cbm_run_kotlin_lsp_cross. Consulted
+     * by kotlin_resolve_class_name before its blind same-package guess, so an
+     * unimported cross-file receiver type ("Holder" defined in Holder.kt,
+     * used in Use.kt) resolves to its real registered QN. An ambiguous short
+     * name maps to a sentinel and resolves nothing (fail closed). Owned by
+     * cbm_run_kotlin_lsp_cross; opaque pointer to avoid a foundation include
+     * in this header. */
+    const void *cross_type_short;
+    /* Cross-file only (NULL per-file): receiver type QN -> KtCrossFieldList,
+     * from cbm_kotlin_register_lsp_defs. Property-reference emission reads
+     * each field's REAL def QN here (kotlin class properties are minted with
+     * module-level QNs, so composing <class>.<member> would miss the node). */
+    const void *cross_field_map;
 } KotlinLSPContext;
 
 /* Initialize a KotlinLSPContext for processing one file. */
@@ -183,8 +197,14 @@ void cbm_run_kotlin_lsp(CBMArena *arena, CBMFileResult *result, const char *sour
  * Mirrors cbm_run_java_lsp_cross. `defs` carries the graph QNs of every
  * project definition so a bare top-level call in file B resolves to the
  * definition node living in file A. Output is appended to `out`. */
+/* out_field_map (optional): receives ownership of the receiver-QN -> field
+ * list map built during registration (opaque CBMHashTable; the caller frees
+ * with cbm_ht_free). Pass NULL to discard it. The forward declaration lives at
+ * file scope -- a struct tag first named inside a prototype would get
+ * prototype scope and conflict with the foundation typedef. */
+struct CBMHashTable;
 void cbm_kotlin_register_lsp_defs(CBMArena *arena, CBMTypeRegistry *reg, const CBMLSPDef *defs,
-                                  int def_count);
+                                  int def_count, struct CBMHashTable **out_field_map);
 
 void cbm_run_kotlin_lsp_cross(CBMArena *arena, const char *source, int source_len,
                               const char *module_qn, CBMLSPDef *defs, int def_count,

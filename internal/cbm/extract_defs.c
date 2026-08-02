@@ -193,7 +193,8 @@ static void extract_class_def(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec
 static void walk_defs(CBMExtractCtx *ctx, TSNode root, const CBMLangSpec *spec, int depth_unused);
 static void extract_variables(CBMExtractCtx *ctx, TSNode root, const CBMLangSpec *spec);
 static void extract_var_names(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec *spec);
-static void extract_class_variables(CBMExtractCtx *ctx, TSNode class_node, const CBMLangSpec *spec);
+static void extract_class_variables(CBMExtractCtx *ctx, TSNode class_node, const char *class_qn,
+                                    const CBMLangSpec *spec);
 static void extract_rust_impl(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec *spec);
 static void extract_class_methods(CBMExtractCtx *ctx, TSNode class_node, const char *class_qn,
                                   const CBMLangSpec *spec);
@@ -4385,7 +4386,7 @@ static void extract_class_def(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec
     extract_class_fields(ctx, node, class_qn, spec);
 
     // Extract class-level variables (field declarations)
-    extract_class_variables(ctx, node, spec);
+    extract_class_variables(ctx, node, class_qn, spec);
 
     // C# 12 primary-constructor parameters: declared on the class line
     // (`class Foo(IBar bar, IBaz baz) : Base { ... }`) and bound to implicit
@@ -5100,6 +5101,11 @@ static void push_var_def_qn(CBMExtractCtx *ctx, const char *name, const char *qn
                                                      qn_name ? qn_name : name, ctx->language);
     def.label = "Variable";
     def.file_path = ctx->rel_path;
+    /* Class-body variables record their declaring class (set by
+     * extract_class_variables); the QN stays module-level as before, so this
+     * is additive metadata that lets cross-file resolution attach the
+     * property to its receiver type. */
+    def.parent_class = ctx->var_parent_class;
     def.start_line = ts_node_start_point(node).row + TS_LINE_OFFSET;
     def.end_line = ts_node_end_point(node).row + TS_LINE_OFFSET;
     def.is_exported = cbm_is_exported(name, ctx->language);
@@ -6583,7 +6589,7 @@ static void extract_class_fields(CBMExtractCtx *ctx, TSNode class_node, const ch
 }
 
 // Extract class-level variables (field declarations inside class bodies)
-static void extract_class_variables(CBMExtractCtx *ctx, TSNode class_node,
+static void extract_class_variables(CBMExtractCtx *ctx, TSNode class_node, const char *class_qn,
                                     const CBMLangSpec *spec) {
     if (!spec->variable_node_types || !spec->variable_node_types[0]) {
         return;
@@ -6594,6 +6600,10 @@ static void extract_class_variables(CBMExtractCtx *ctx, TSNode class_node,
         return;
     }
 
+    /* Record the declaring class on every variable minted from this body (see
+     * push_var_def_qn); saved/restored so module-level minting stays bare. */
+    const char *saved_parent = ctx->var_parent_class;
+    ctx->var_parent_class = class_qn;
     uint32_t count = ts_node_named_child_count(body);
     for (uint32_t i = 0; i < count; i++) {
         TSNode child = ts_node_named_child(body, i);
@@ -6601,6 +6611,7 @@ static void extract_class_variables(CBMExtractCtx *ctx, TSNode class_node,
             extract_var_names(ctx, child, spec);
         }
     }
+    ctx->var_parent_class = saved_parent;
 }
 
 // --- Module node + main walk ---

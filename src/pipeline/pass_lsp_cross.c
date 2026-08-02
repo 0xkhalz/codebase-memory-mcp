@@ -105,7 +105,13 @@ static const char *pxc_map_label(const char *label) {
     if (!label)
         return NULL;
     if (cbm_label_is_type_like(label) || strcmp(label, "Protocol") == 0 ||
-        strcmp(label, "Function") == 0 || strcmp(label, "Method") == 0) {
+        strcmp(label, "Function") == 0 || strcmp(label, "Method") == 0 ||
+        /* Properties reach the cross defs so the Kotlin registrar can attach
+         * them as fields of their receiver type (kotlin_lookup_property_type
+         * was blind across files, leaving property references to the
+         * name-only fallback). Every registrar filters by explicit label, so
+         * the other languages ignore Variable defs untouched. */
+        strcmp(label, "Variable") == 0) {
         return label;
     }
     return NULL;

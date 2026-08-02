@@ -36,6 +36,21 @@
 
 #include "kotlin_lsp.h"
 #include "../helpers.h"
+/* CBMHashTable — cross-registry field bucketing. Relative path: the LSP
+ * amalgamation compiles with -Iinternal/cbm only, not -Isrc. */
+#include "../../../src/foundation/hash_table.h"
+
+/* Growable field list for one receiver type, bucketed per cross-registry call
+ * (see cbm_kotlin_register_lsp_defs). qns carries each field's REAL def QN --
+ * kotlin class properties are minted with module-level QNs, so composing
+ * <class>.<member> would name a node that does not exist. */
+typedef struct {
+    const char **names;
+    const CBMType **types;
+    const char **qns;
+    int count;
+    int cap;
+} KtCrossFieldList;
 #include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -1018,6 +1033,19 @@ const char *kotlin_resolve_class_name(KotlinLSPContext *ctx, const char *name) {
         char *cand = kt_join_dot(ctx->arena, defs[i], name);
         if (ctx->registry && cbm_registry_lookup_type(ctx->registry, cand)) {
             return cand;
+        }
+    }
+
+    /* Cross-file short-name resolution: a project type with this UNIQUE short
+     * name wins over the blind same-package guess below, which composes
+     * <this file's module>.<name> and so can never name a type defined in
+     * another file without an import. Hash lookup, no scan; an ambiguous
+     * short name resolves nothing here (fail closed) and falls through. */
+    if (ctx->cross_type_short) {
+        const char *qn =
+            (const char *)cbm_ht_get((const CBMHashTable *)ctx->cross_type_short, name);
+        if (qn && qn[0]) {
+            return qn;
         }
     }
 
@@ -3191,6 +3219,43 @@ static const CBMType *kt_eval_navigation_expression_type_at(KotlinLSPContext *ct
         kt_emit_delegate_access(ctx, member_text, recv_qn, node, selector);
         const CBMType *pt = kotlin_lookup_property_type(ctx, recv_qn, member_text);
         if (!cbm_type_is_unknown(pt)) {
+            /* A property READ with a proven receiver claims its member
+             * occurrence with an exact row (maintainer decision, option B):
+             * without it the occurrence falls to the name-only registry
+             * fallback, whose winner among same-named symbols is registration
+             * order -- readdir order -- so `holder::handler` (parsed as
+             * navigation by the vendored grammar) borrowed a same-named
+             * FUNCTION from another file on Windows. The property is not a
+             * callable target, so the join can only produce USAGE, never a
+             * fabricated CALL_REFERENCE. Value reads only: when this
+             * navigation is the callee of a call, site is the call node and
+             * the invocation machinery owns the occurrence. */
+            if (ts_node_eq(site, node)) {
+                /* Prefer the field's REAL def QN from the cross field map --
+                 * kotlin class properties are minted with module-level QNs, so
+                 * the composed <class>.<member> form would name a node that
+                 * does not exist and the join would drop the edge. */
+                const char *prop_qn = NULL;
+                if (ctx->cross_field_map) {
+                    const KtCrossFieldList *fl = (const KtCrossFieldList *)cbm_ht_get(
+                        (const CBMHashTable *)ctx->cross_field_map, recv_qn);
+                    for (int fi = 0; fl && fi < fl->count; fi++) {
+                        if (fl->names[fi] && strcmp(fl->names[fi], member_text) == 0) {
+                            prop_qn = fl->qns[fi];
+                            break;
+                        }
+                    }
+                }
+                if (!prop_qn) {
+                    prop_qn = kt_join_dot(ctx->arena, recv_qn, member_text);
+                }
+                if (ctx->debug) {
+                    fprintf(stderr, "[kotlin_lsp] KTPROP recv_qn=%s prop_qn=%s\n", recv_qn,
+                            prop_qn);
+                }
+                kt_emit_resolved_kind_at(ctx, prop_qn, "lsp_kt_property_ref", KT_CONF_METHOD,
+                                         CBM_RESOLVED_CALL_REFERENCE, selector);
+            }
             return pt;
         }
 
@@ -5176,7 +5241,8 @@ static const CBMType *kt_cross_func_sig_with_return(CBMArena *arena, const CBMLS
     return cbm_type_func(arena, NULL, param_types, rets);
 }
 
-static void kt_register_cross_def(CBMTypeRegistry *reg, CBMArena *arena, const CBMLSPDef *d) {
+static void kt_register_cross_def(CBMTypeRegistry *reg, CBMArena *arena, const CBMLSPDef *d,
+                                  const CBMHashTable *field_map) {
     if (!d->qualified_name || !d->short_name || !d->label) {
         return;
     }
@@ -5187,6 +5253,15 @@ static void kt_register_cross_def(CBMTypeRegistry *reg, CBMArena *arena, const C
         rt.qualified_name = d->qualified_name;
         rt.short_name = d->short_name;
         rt.is_interface = (strcmp(d->label, "Interface") == 0) || d->is_interface;
+        if (field_map) {
+            const KtCrossFieldList *fl =
+                (const KtCrossFieldList *)cbm_ht_get((CBMHashTable *)field_map,
+                                                     d->qualified_name);
+            if (fl && fl->count > 0) {
+                rt.field_names = fl->names;
+                rt.field_types = fl->types;
+            }
+        }
         if (d->embedded_types && d->embedded_types[0]) {
             int n = 1;
             for (const char *p = d->embedded_types; *p; p++) {
@@ -5231,9 +5306,75 @@ static void kt_register_cross_def(CBMTypeRegistry *reg, CBMArena *arena, const C
 }
 
 void cbm_kotlin_register_lsp_defs(CBMArena *arena, CBMTypeRegistry *reg, const CBMLSPDef *defs,
-                                  int def_count) {
+                                  int def_count, CBMHashTable **out_field_map) {
+    /* Pass 1: bucket property (Variable) defs by receiver type, so a class
+     * registers WITH its fields. Cross registration previously dropped
+     * properties entirely (pxc_map_label filtered the label), which left
+     * kotlin_lookup_property_type blind across files -- so `holder::handler`
+     * could not be claimed by the receiver-typed resolution and fell to the
+     * name-only fallback (maintainer decision, option B). Hash-bucketed: the
+     * per-type field scan over all defs would be the registry-tail-scan
+     * quadratic pattern. */
+    CBMHashTable *field_map = cbm_ht_create(64);
+    if (field_map) {
+        for (int i = 0; i < def_count; i++) {
+            const CBMLSPDef *d = &defs[i];
+            if (!d->qualified_name || !d->short_name || !d->label ||
+                strcmp(d->label, "Variable") != 0 || !d->receiver_type || !d->receiver_type[0]) {
+                continue;
+            }
+            KtCrossFieldList *fl = (KtCrossFieldList *)cbm_ht_get(field_map, d->receiver_type);
+            if (!fl) {
+                fl = (KtCrossFieldList *)cbm_arena_alloc(arena, sizeof(*fl));
+                if (!fl) {
+                    continue;
+                }
+                memset(fl, 0, sizeof(*fl));
+                cbm_ht_set(field_map, d->receiver_type, fl);
+            }
+            if (fl->count + 1 >= fl->cap) {
+                int new_cap = fl->cap ? fl->cap * 2 : 4;
+                const char **nn =
+                    (const char **)cbm_arena_alloc(arena, (size_t)new_cap * sizeof(*nn));
+                const CBMType **nt =
+                    (const CBMType **)cbm_arena_alloc(arena, (size_t)new_cap * sizeof(*nt));
+                const char **nq =
+                    (const char **)cbm_arena_alloc(arena, (size_t)new_cap * sizeof(*nq));
+                if (!nn || !nt || !nq) {
+                    continue;
+                }
+                if (fl->count > 0) {
+                    memcpy(nn, fl->names, (size_t)fl->count * sizeof(*nn));
+                    memcpy(nt, fl->types, (size_t)fl->count * sizeof(*nt));
+                    memcpy(nq, fl->qns, (size_t)fl->count * sizeof(*nq));
+                }
+                fl->names = nn;
+                fl->types = nt;
+                fl->qns = nq;
+                fl->cap = new_cap;
+            }
+            const CBMType *ft = kt_cross_return_type(arena, d);
+            fl->names[fl->count] = d->short_name;
+            /* The declared type when the def carries one; a generic named type
+             * otherwise, so the field's EXISTENCE is still visible to
+             * kotlin_lookup_property_type's presence gate. */
+            fl->types[fl->count] = ft ? ft : cbm_type_named(arena, "kotlin.Any");
+            fl->qns[fl->count] = d->qualified_name;
+            fl->count++;
+            fl->names[fl->count] = NULL;
+            fl->types[fl->count] = NULL;
+            fl->qns[fl->count] = NULL;
+        }
+    }
     for (int i = 0; i < def_count; i++) {
-        kt_register_cross_def(reg, arena, &defs[i]);
+        kt_register_cross_def(reg, arena, &defs[i], field_map);
+    }
+    if (out_field_map) {
+        /* Ownership transfers: the caller keeps the map alive for the resolve
+         * walk (property references need each field's real def QN). */
+        *out_field_map = field_map;
+    } else {
+        cbm_ht_free(field_map);
     }
 }
 
@@ -5249,8 +5390,11 @@ void cbm_run_kotlin_lsp_cross(CBMArena *arena, const char *source, int source_le
     cbm_registry_init(&reg, arena);
     cbm_kotlin_stdlib_register(&reg, arena);
 
-    /* Register project-wide defs (local + cross-file) under their graph QNs. */
-    cbm_kotlin_register_lsp_defs(arena, &reg, defs, def_count);
+    /* Register project-wide defs (local + cross-file) under their graph QNs.
+     * Keep the field map alive for the resolve walk: property references emit
+     * against each field's REAL def QN. */
+    CBMHashTable *cross_field_map = NULL;
+    cbm_kotlin_register_lsp_defs(arena, &reg, defs, def_count, &cross_field_map);
 
     /* Build the hash indexes: without this every registry lookup in the walk
      * is a LINEAR scan over the whole cross registry — O(lookups x defs) per
@@ -5267,6 +5411,7 @@ void cbm_run_kotlin_lsp_cross(CBMArena *arena, const char *source, int source_le
         TSParser *parser = ts_parser_new();
         if (!parser) {
             cbm_arena_destroy(&idx_arena);
+            cbm_ht_free(cross_field_map);
             return;
         }
         ts_parser_set_language(parser, tree_sitter_kotlin());
@@ -5276,6 +5421,7 @@ void cbm_run_kotlin_lsp_cross(CBMArena *arena, const char *source, int source_le
     }
     if (!tree) {
         cbm_arena_destroy(&idx_arena);
+        cbm_ht_free(cross_field_map);
         return;
     }
     TSNode root = ts_tree_root_node(tree);
@@ -5302,6 +5448,33 @@ void cbm_run_kotlin_lsp_cross(CBMArena *arena, const char *source, int source_le
     kotlin_lsp_init(&ctx, arena, source, source_len, &reg, module_qn ? module_qn : "",
                     module_qn ? module_qn : "", project_name, /*rel_path=*/NULL, out);
 
+    /* Unique short type name -> registered QN, for receiver annotations that
+     * name a type defined in another file without an import. Two types
+     * sharing a short name map to "" so the lookup resolves nothing (fail
+     * closed) rather than picking one arbitrarily. Built after the early
+     * parse-failure returns so nothing leaks on those paths. */
+    CBMHashTable *type_short = cbm_ht_create(64);
+    if (type_short) {
+        for (int i = 0; i < def_count; i++) {
+            const CBMLSPDef *d = &defs[i];
+            if (!d->qualified_name || !d->short_name || !d->label) {
+                continue;
+            }
+            if (strcmp(d->label, "Class") != 0 && strcmp(d->label, "Interface") != 0 &&
+                strcmp(d->label, "Enum") != 0 && strcmp(d->label, "Type") != 0) {
+                continue;
+            }
+            const char *prev = (const char *)cbm_ht_get(type_short, d->short_name);
+            if (!prev) {
+                cbm_ht_set(type_short, d->short_name, (void *)d->qualified_name);
+            } else if (strcmp(prev, d->qualified_name) != 0) {
+                cbm_ht_set(type_short, d->short_name, (void *)"");
+            }
+        }
+    }
+    ctx.cross_type_short = type_short;
+    ctx.cross_field_map = cross_field_map;
+
     /* Apply caller-supplied imports (resolved IMPORTS edges). */
     for (int i = 0; i < import_count; i++) {
         if (!import_names || !import_qns || !import_names[i] || !import_qns[i]) {
@@ -5312,6 +5485,8 @@ void cbm_run_kotlin_lsp_cross(CBMArena *arena, const char *source, int source_le
 
     kotlin_lsp_process_file(&ctx, root);
     cbm_arena_destroy(&idx_arena);
+    cbm_ht_free(type_short);
+    cbm_ht_free(cross_field_map);
 
     if (owns_tree) {
         ts_tree_delete(tree);

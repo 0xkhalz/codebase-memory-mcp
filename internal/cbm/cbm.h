@@ -587,6 +587,10 @@ typedef struct {
     CBMStringConstantMap string_constants;       // module-level NAME = "value" pairs
     const CBMMacroTable *macro_table;            // ObjectScript $$$macro table (NULL if none)
     const CBMReturnTypeTable *return_type_table; // ObjectScript method return types (NULL if none)
+    /* Set by extract_class_variables around its extract_var_names calls, so a
+     * class-body variable def records which class declares it (parent_class)
+     * without changing its module-level qualified name. NULL elsewhere. */
+    const char *var_parent_class;
 } CBMExtractCtx;
 
 // --- Public API ---
