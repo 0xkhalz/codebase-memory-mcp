@@ -5386,8 +5386,13 @@ TEST(cli_tiered_codex_profiles_migrate_preserve_and_uninstall) {
      * install with that same path to exercise exact-content removal. */
     char installed_binary[640];
     char expected_command[768];
+#ifdef _WIN32
+    snprintf(installed_binary, sizeof(installed_binary), "%s/.local/bin/codebase-memory-mcp.exe",
+             tmpdir);
+#else
     snprintf(installed_binary, sizeof(installed_binary), "%s/.local/bin/codebase-memory-mcp",
              tmpdir);
+#endif
     snprintf(expected_command, sizeof(expected_command), "command = \"%s\"", installed_binary);
     char *plan = cbm_build_install_plan_json(tmpdir, installed_binary);
     bool plan_ok =
