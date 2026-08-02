@@ -8351,7 +8351,12 @@ static void write_temp_file(const char *dir, const char *name, const char *conte
         /* mkdir -p (simple version, one level) */
         cbm_mkdir(parent);
     }
-    FILE *f = fopen(path, "w");
+    /* Binary, matching test_helpers.h/repro_harness.h: text mode turns "\n"
+     * into "\r\n" on Windows, so the bytes on disk stop matching the source
+     * string the test hashes or measures -- the semantic-manifest tests
+     * compare cbm_sha256_hex(string) against the pipeline's hash of this
+     * file, and the quarantine test compares byte sizes. */
+    FILE *f = cbm_fopen(path, "wb");
     if (f) {
         fputs(content, f);
         fclose(f);
