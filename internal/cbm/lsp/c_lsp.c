@@ -5402,7 +5402,7 @@ static void c_process_class(CLSPContext *ctx, TSNode class_node) {
 // Process file: top-level walk
 // ============================================================================
 
-__attribute__((no_sanitize("address"))) void c_lsp_process_file(CLSPContext *ctx, TSNode root) {
+void c_lsp_process_file(CLSPContext *ctx, TSNode root) {
     if (ts_node_is_null(root))
         return;
 

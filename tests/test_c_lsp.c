@@ -7795,11 +7795,13 @@ TEST(clsp_fix2_struct_field_access_pair_second) {
                                    "}\n"
                                    "");
     ASSERT_NOT_NULL(r);
-    /* KNOWN ISSUE: template field type resolution fails under ASan due to
-     * a stack-pointer-to-registry leak bug in c_lsp.c. The Go test passes
-     * because CGo doesn't run ASan/UBSan. See c_lsp_process_file's
-     * no_sanitize("address") attribute. Tracked as a pre-existing C LSP bug. */
-    (void)find_resolved(r, "test", "bar");
+    /* Formerly a KNOWN ISSUE: template field type resolution failed under
+     * ASan due to a stack-pointer-to-registry lifetime bug, hidden by a
+     * whole-function no_sanitize("address") on c_lsp_process_file and a
+     * discarded assertion here. The suppression is removed and the branch's
+     * C LSP registry rework resolved the lifetime; this now asserts the
+     * resolution it always meant to. */
+    ASSERT_GTE(find_resolved(r, "test", "bar"), 0);
     cbm_free_result(r);
     PASS();
 }
