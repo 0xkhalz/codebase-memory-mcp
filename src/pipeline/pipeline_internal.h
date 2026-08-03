@@ -714,6 +714,38 @@ int cbm_pipeline_publish_generation(const cbm_pipeline_generation_t *generation)
  * stage on every failure. Does NOT free stage_path. */
 int cbm_pipeline_finalize_staged_generation(char *stage_path, const char *final_db_path,
                                             atomic_int *cancelled);
+/* Metadata writes + FTS policy + integrity + seal + finalize for an
+ * already-materialized staging DB. Takes ownership of stage_path. The dump
+ * path passes fts_wholesale=true; the delta path passes false (its patch
+ * wrote row-level FTS inserts). generation->gbuf is not read here. */
+int cbm_pipeline_publish_staged(char *stage_path, const cbm_pipeline_generation_t *generation,
+                                bool fts_wholesale);
+
+/* mkstemp-minted staging sibling of final_path (exported for the delta
+ * executor; the dump path uses it internally). malloc'd, caller frees. */
+char *cbm_pipeline_create_staging_path(const char *final_path);
+
+/* ── Delta-repair staging primitives (pipeline_delta.c) ──────────
+ * Closure-route-only subsystem: clone the live generation, patch exactly
+ * the repaired node/edge set, publish through the shared finalize leg. */
+typedef struct {
+    char *source_qn;
+    char *target_qn;
+    char *type;
+    char *props;
+} cbm_delta_saved_edge_t;
+
+int cbm_delta_stage_clone(const char *final_db_path, char **out_stage_path);
+int cbm_delta_snapshot_inbound(cbm_store_t *store, const char *project, const char *const *paths,
+                               int path_count, cbm_delta_saved_edge_t **out, int *out_count);
+void cbm_delta_free_snapshot(cbm_delta_saved_edge_t *items, int count);
+int cbm_delta_purge(cbm_store_t *store, const char *project, const char *const *paths,
+                    int path_count);
+/* Pre-seed proxy nodes with their REAL database ids and move the gbuf id
+ * watermark above MAX(id); returns that max id, or -1 on failure. */
+int64_t cbm_delta_preseed(cbm_store_t *store, const char *project, cbm_gbuf_t *gbuf);
+int cbm_delta_patch(cbm_store_t *store, const char *project, cbm_gbuf_t *gbuf, int64_t max_db_id,
+                    const cbm_delta_saved_edge_t *snapshot, int snapshot_count);
 /* discard helper shared with the delta executor (unlink stage + sidecars). */
 void cbm_pipeline_discard_stage(const char *stage_path);
 /* The SQLite generation is authoritative. An explicitly requested artifact is

@@ -1675,6 +1675,17 @@ int cbm_pipeline_publish_generation(const cbm_pipeline_generation_t *generation)
         return CBM_PIPELINE_ABORT_PRESERVE_DB;
     }
 
+    return cbm_pipeline_publish_staged(stage_path, generation, true);
+}
+
+/* Complete and publish an already-materialized staging database: metadata
+ * writes, FTS policy, integrity, seal, then the shared finalize leg. Takes
+ * ownership of stage_path (frees it on every path). fts_wholesale selects
+ * the dump path's delete-all-and-rebuild; the delta path passes false
+ * because its patch step already wrote row-level FTS inserts for exactly
+ * the nodes it created. */
+int cbm_pipeline_publish_staged(char *stage_path, const cbm_pipeline_generation_t *generation,
+                                bool fts_wholesale) {
     cbm_store_t *store = cbm_store_open_path(stage_path);
     if (!store) {
         discard_generation_stage(stage_path);
@@ -1714,7 +1725,10 @@ int cbm_pipeline_publish_generation(const cbm_pipeline_generation_t *generation)
     if (have_project_info) {
         cbm_project_free_fields(&project_info);
     }
-    if (generation_rebuild_fts(store) != CBM_STORE_OK || !cbm_store_check_integrity(store)) {
+    if (fts_wholesale && generation_rebuild_fts(store) != CBM_STORE_OK) {
+        ok = false;
+    }
+    if (ok && !cbm_store_check_integrity(store)) {
         ok = false;
     }
     if (ok && cbm_store_seal_for_atomic_publish(store) != CBM_STORE_OK) {
@@ -1730,6 +1744,10 @@ int cbm_pipeline_publish_generation(const cbm_pipeline_generation_t *generation)
                                                          generation->cancelled);
     free(stage_path);
     return fin_rc;
+}
+
+char *cbm_pipeline_create_staging_path(const char *final_path) {
+    return create_staging_path(final_path);
 }
 
 void cbm_pipeline_discard_stage(const char *stage_path) {

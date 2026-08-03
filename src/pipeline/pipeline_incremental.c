@@ -1873,6 +1873,379 @@ done:
     return 1;
 }
 
+/* ── Delta-repair orchestration (closure route) ──────────────────
+ *
+ * The closure route's executor: clone the live generation, repair the
+ * closure against proxy nodes carrying real database ids, patch the clone
+ * transactionally, publish through the shared staged tail. No full graph
+ * load, no full dump. EVERY failure discards the stage and returns
+ * CBM_PIPELINE_FORCE_FULL_REINDEX: the live database is never touched, so
+ * a full rebuild always self-heals whatever the delta could not do.
+ *
+ * Takes ownership of changed_files/deleted/mode_skipped/old_cov/plan and
+ * closes `store` (the routing read connection). */
+static int run_closure_delta(cbm_pipeline_t *p, const char *db_path, const char *project,
+                             const cbm_file_hash_t *baseline_manifest, int baseline_count,
+                             closure_plan_t *plan, cbm_file_info_t *changed_files, int ci,
+                             char **deleted, int deleted_count, cbm_file_hash_t *mode_skipped,
+                             int mode_skipped_count, cbm_coverage_row_t *old_cov, int old_cov_count,
+                             cbm_store_t *route_store, struct timespec t0) {
+    struct timespec t;
+    cbm_store_close(route_store);
+
+    int result = CBM_PIPELINE_FORCE_FULL_REINDEX;
+    char *stage = NULL;
+    cbm_store_t *staging = NULL;
+    cbm_delta_saved_edge_t *snapshot = NULL;
+    int snapshot_count = 0;
+    cbm_gbuf_t *gbuf = NULL;
+    cbm_registry_t *registry = NULL;
+    cbm_path_alias_collection_t *path_aliases = NULL;
+    CBMHashTable *stale_surface_set = NULL;
+    closure_resolve_t cr = {0};
+    bool cr_arena_live = false;
+    const char **purge_paths = NULL;
+    cbm_file_hash_t *manifest = NULL;
+    int manifest_count = 0;
+    cbm_lsp_surface_row_t *publish_rows = NULL;
+    int publish_row_count = 0;
+    cbm_coverage_row_t *cov = NULL;
+    int cov_n = 0;
+
+    cbm_clock_gettime(CLOCK_MONOTONIC, &t);
+    if (cbm_delta_stage_clone(db_path, &stage) != 0) {
+        goto out;
+    }
+    cbm_log_info("delta.clone", "elapsed_ms", itoa_buf((int)elapsed_ms(t)));
+    staging = cbm_store_open_path(stage);
+    if (!staging) {
+        goto out;
+    }
+
+    /* Purge set = closure files + deleted files. */
+    int purge_count = ci + deleted_count;
+    purge_paths = (const char **)calloc((size_t)(purge_count ? purge_count : 1), sizeof(char *));
+    if (!purge_paths) {
+        goto out;
+    }
+    for (int i = 0; i < ci; i++) {
+        purge_paths[i] = changed_files[i].rel_path;
+    }
+    for (int i = 0; i < deleted_count; i++) {
+        purge_paths[ci + i] = deleted[i];
+    }
+    cbm_clock_gettime(CLOCK_MONOTONIC, &t);
+    if (cbm_delta_snapshot_inbound(staging, project, purge_paths, purge_count, &snapshot,
+                                   &snapshot_count) != 0) {
+        goto out;
+    }
+    if (cbm_delta_purge(staging, project, purge_paths, purge_count) != 0) {
+        goto out;
+    }
+    cbm_log_info("delta.snapshot_purge", "captured", itoa_buf(snapshot_count), "purged_files",
+                 itoa_buf(purge_count), "elapsed_ms", itoa_buf((int)elapsed_ms(t)));
+
+    /* Small graph: proxies with real ids, then the name registry from them. */
+    cbm_clock_gettime(CLOCK_MONOTONIC, &t);
+    gbuf = cbm_gbuf_new(project, cbm_pipeline_repo_path(p));
+    if (!gbuf) {
+        goto out;
+    }
+    int64_t max_db_id = cbm_delta_preseed(staging, project, gbuf);
+    if (max_db_id < 0) {
+        goto out;
+    }
+    registry = cbm_registry_new();
+    if (!registry) {
+        goto out;
+    }
+    cbm_gbuf_foreach_node(gbuf, registry_visitor, registry);
+    cbm_log_info("delta.preseed_done", "registry", itoa_buf(cbm_registry_size(registry)),
+                 "elapsed_ms", itoa_buf((int)elapsed_ms(t)));
+
+    /* Stale-surface set + rehydrated base defs, exactly as the plan computed
+     * them. Owned keys: deleted[] strings die with this function's frees. */
+    stale_surface_set = cbm_ht_create((size_t)(purge_count)*PAIR_LEN + CBM_SZ_64);
+    if (!stale_surface_set) {
+        goto out;
+    }
+    for (int i = 0; i < purge_count; i++) {
+        char *key = strdup(purge_paths[i]);
+        if (!key) {
+            goto out;
+        }
+        cbm_ht_set(stale_surface_set, key, key);
+    }
+    cbm_arena_init(&cr.arena);
+    cr_arena_live = true;
+    {
+        int cap = 0;
+        for (int i = 0; i < plan->stored_count; i++) {
+            const cbm_lsp_surface_row_t *row = &plan->stored_rows[i];
+            if (cbm_ht_get(stale_surface_set, row->rel_path)) {
+                continue;
+            }
+            CBMLSPDef *row_defs = NULL;
+            int row_count = cbm_lsp_surface_defs_from_json(&cr.arena, row->defs_json, &row_defs);
+            if (row_count < 0) {
+                cbm_log_error("delta.rehydrate_failed", "path", row->rel_path);
+                goto out;
+            }
+            if (row_count > 0) {
+                if (cr.base_def_count + row_count > cap) {
+                    int ncap = cap ? cap * PAIR_LEN : CBM_SZ_256;
+                    while (ncap < cr.base_def_count + row_count) {
+                        ncap *= PAIR_LEN;
+                    }
+                    CBMLSPDef *grown =
+                        (CBMLSPDef *)cbm_arena_alloc(&cr.arena, (size_t)ncap * sizeof(CBMLSPDef));
+                    if (!grown) {
+                        goto out;
+                    }
+                    if (cr.base_def_count > 0) {
+                        memcpy(grown, cr.base_defs, (size_t)cr.base_def_count * sizeof(CBMLSPDef));
+                    }
+                    cr.base_defs = grown;
+                    cap = ncap;
+                }
+                memcpy(cr.base_defs + cr.base_def_count, row_defs,
+                       (size_t)row_count * sizeof(CBMLSPDef));
+                cr.base_def_count += row_count;
+            }
+        }
+    }
+
+    char **excluded_dirs = NULL;
+    int excluded_count = 0;
+    cbm_pipeline_get_excluded(p, &excluded_dirs, &excluded_count);
+    path_aliases =
+        cbm_load_path_aliases_excluded(cbm_pipeline_repo_path(p), excluded_dirs, excluded_count);
+    cbm_pipeline_ctx_t ctx = {
+        .project_name = project,
+        .repo_path = cbm_pipeline_repo_path(p),
+        .gbuf = gbuf,
+        .registry = registry,
+        .cancelled = cbm_pipeline_cancelled_ptr(p),
+        .pipeline = p,
+        .mode = cbm_pipeline_get_mode(p),
+        .path_aliases = path_aliases,
+        .excluded_dirs = excluded_dirs,
+        .excluded_count = excluded_count,
+    };
+    for (int i = 0; i < ci; i++) {
+        char *file_qn = cbm_pipeline_fqn_compute(project, changed_files[i].rel_path, "__file__");
+        if (file_qn) {
+            const char *rel = changed_files[i].rel_path;
+            const char *slash = strrchr(rel, '/');
+            const char *basename = slash ? slash + SKIP_ONE : rel;
+            char props[CBM_SZ_256];
+            const char *ext = strrchr(basename, '.');
+            snprintf(props, sizeof(props), "{\"extension\":\"%s\"}", ext ? ext : "");
+            cbm_gbuf_upsert_node(gbuf, "File", basename, file_qn, rel, 0, 0, props);
+            free(file_qn);
+        }
+    }
+
+    cbm_clock_gettime(CLOCK_MONOTONIC, &t);
+    int phase_rc = run_extract_resolve(&ctx, changed_files, ci, &cr);
+    if (phase_rc == 0) {
+        phase_rc = cbm_pipeline_pass_k8s(&ctx, changed_files, ci);
+    }
+    if (phase_rc == 0) {
+        phase_rc = cbm_pipeline_check_cancel(&ctx);
+    }
+    if (phase_rc == 0) {
+        phase_rc = run_postpasses(&ctx, changed_files, ci, project);
+    }
+    if (ctx.return_type_table) {
+        for (int i = 0; i < ctx.return_type_table->count; i++) {
+            free((void *)ctx.return_type_table->entries[i].return_type);
+        }
+        free((void *)ctx.return_type_table);
+    }
+    if (ctx.macro_table) {
+        free((void *)ctx.macro_table);
+    }
+    cbm_pkgmap_free(cbm_pipeline_get_pkgmap());
+    cbm_pipeline_set_pkgmap(NULL);
+    if (phase_rc != 0) {
+        cbm_log_error("delta.err", "phase", "extract_resolve", "rc", itoa_buf(phase_rc));
+        goto out;
+    }
+    cbm_log_info("delta.repair", "files", itoa_buf(ci), "elapsed_ms", itoa_buf((int)elapsed_ms(t)));
+
+    cbm_clock_gettime(CLOCK_MONOTONIC, &t);
+    if (cbm_delta_patch(staging, project, gbuf, max_db_id, snapshot, snapshot_count) != 0) {
+        goto out;
+    }
+    cbm_log_info("delta.patch_done", "elapsed_ms", itoa_buf((int)elapsed_ms(t)));
+
+    /* Coverage: previous failure rows for files not re-extracted + this
+     * run's fresh entries — same merge the legacy tail performs. */
+    cbm_file_error_t *run_errs = NULL;
+    int run_err_count = 0;
+    cbm_pipeline_get_file_errors(p, &run_errs, &run_err_count);
+    char **run_excluded = NULL;
+    int run_excluded_count = 0;
+    cbm_pipeline_get_excluded(p, &run_excluded, &run_excluded_count);
+    cbm_ignored_file_t *run_ignored = NULL;
+    int run_ignored_count = 0;
+    int run_ignored_total = 0;
+    cbm_pipeline_get_ignored(p, &run_ignored, &run_ignored_count, &run_ignored_total);
+    int cov_cap = old_cov_count + run_err_count + run_excluded_count + run_ignored_count;
+    bool coverage_rows_available = cov_cap == 0;
+    if (cov_cap > 0) {
+        cov = (cbm_coverage_row_t *)malloc((size_t)cov_cap * sizeof(*cov));
+        coverage_rows_available = cov != NULL;
+    }
+    if (cov) {
+        for (int i = 0; i < old_cov_count; i++) {
+            bool by_design = old_cov[i].kind && strncmp(old_cov[i].kind, "not_indexed", 11) == 0;
+            if (!by_design && old_cov[i].rel_path &&
+                !cbm_ht_get(stale_surface_set, old_cov[i].rel_path)) {
+                cov[cov_n++] = old_cov[i];
+            }
+        }
+        for (int i = 0; i < run_err_count; i++) {
+            cov[cov_n].rel_path = run_errs[i].path;
+            cov[cov_n].kind = run_errs[i].phase;
+            cov[cov_n].detail = run_errs[i].reason;
+            cov_n++;
+        }
+        for (int i = 0; i < run_excluded_count; i++) {
+            cov[cov_n].rel_path = run_excluded[i];
+            cov[cov_n].kind = "not_indexed_dir";
+            cov[cov_n].detail = "excluded subtree";
+            cov_n++;
+        }
+        for (int i = 0; i < run_ignored_count; i++) {
+            cov[cov_n].rel_path = run_ignored[i].rel_path;
+            cov[cov_n].kind = "not_indexed_file";
+            cov[cov_n].detail = run_ignored[i].reason;
+            cov_n++;
+        }
+    }
+
+    /* Publication race gate: identical to every other route. */
+#if defined(CBM_INCREMENTAL_TEST_API) && CBM_INCREMENTAL_TEST_API
+    cbm_pipeline_persist_test_run_before_final_manifest();
+#endif
+    if (cbm_pipeline_build_fresh_semantic_manifest(project, cbm_pipeline_repo_path(p),
+                                                   cbm_pipeline_get_mode(p), &manifest,
+                                                   &manifest_count) != 0 ||
+        !cbm_pipeline_semantic_manifests_equal(baseline_manifest, baseline_count, manifest,
+                                               manifest_count)) {
+        cbm_log_warn("delta.abort", "reason", "semantic_inputs_changed");
+        result = CBM_PIPELINE_ABORT_PRESERVE_DB;
+        goto out;
+    }
+
+    /* Surviving previous surfaces + this run's fresh ones. */
+    {
+        int cap = plan->stored_count + cr.fresh_count;
+        publish_rows =
+            (cbm_lsp_surface_row_t *)calloc(cap ? (size_t)cap : 1, sizeof(*publish_rows));
+        if (!publish_rows) {
+            goto out;
+        }
+        for (int i = 0; i < plan->stored_count; i++) {
+            cbm_lsp_surface_row_t *row = &plan->stored_rows[i];
+            if (!row->rel_path || cbm_ht_get(stale_surface_set, row->rel_path)) {
+                continue;
+            }
+            publish_rows[publish_row_count++] = *row;
+            memset(row, 0, sizeof(*row));
+        }
+        for (int i = 0; i < cr.fresh_count; i++) {
+            publish_rows[publish_row_count++] = cr.fresh_rows[i];
+            memset(&cr.fresh_rows[i], 0, sizeof(cr.fresh_rows[i]));
+        }
+    }
+
+    /* Committed counts for the #334 plausibility gate. */
+    cbm_pipeline_set_committed_counts(p, cbm_store_count_nodes(staging, project),
+                                      cbm_store_count_edges(staging, project));
+
+    {
+        int index_mode = cbm_pipeline_get_mode(p);
+        cbm_pipeline_generation_t generation = {
+            .gbuf = NULL,
+            .final_db_path = db_path,
+            .project = project,
+            .cancelled = cbm_pipeline_cancelled_ptr(p),
+            .manifest = manifest,
+            .manifest_count = manifest_count,
+            .adr_content = NULL, /* the clone already carries the ADR rows */
+            .coverage = cov,
+            .coverage_count = cov_n,
+            .coverage_meta =
+                {
+                    .index_mode = incr_mode_name(index_mode),
+                    .recording_status =
+                        !coverage_rows_available
+                            ? "unavailable"
+                            : (run_ignored_total > run_ignored_count ? "truncated" : "complete"),
+                    .ignored_files_stored = run_ignored_count,
+                    .ignored_files_total = run_ignored_total,
+                    .coverage_version = CBM_SEMANTIC_INDEX_VERSION,
+                    .hash_records_complete = true,
+                },
+            .surface_rows = publish_rows,
+            .surface_row_count = publish_row_count,
+        };
+        cbm_store_close(staging);
+        staging = NULL;
+        result = cbm_pipeline_publish_staged(stage, &generation, false);
+        stage = NULL; /* publish_staged owns and frees it on every path */
+    }
+    cbm_log_info("incremental.done_delta", "elapsed_ms", itoa_buf((int)elapsed_ms(t0)));
+
+out:
+    if (staging) {
+        cbm_store_close(staging);
+    }
+    if (stage) {
+        cbm_pipeline_discard_stage(stage);
+        free(stage);
+    }
+    if (result == CBM_PIPELINE_FORCE_FULL_REINDEX) {
+        cbm_log_warn("delta.fallback", "reason", "delta_failed_full_rebuild");
+#if defined(CBM_INCREMENTAL_TEST_API) && CBM_INCREMENTAL_TEST_API
+        incr_test_set_last_route(CBM_INCREMENTAL_ROUTE_FORCED_FULL);
+#endif
+    }
+    cbm_delta_free_snapshot(snapshot, snapshot_count);
+    surface_name_set_free(stale_surface_set);
+    if (cr_arena_live) {
+        cbm_store_free_lsp_surfaces(cr.fresh_rows, cr.fresh_count);
+        for (int i = 0; i < cr.def_module_count; i++) {
+            free(cr.def_modules[i]);
+        }
+        free(cr.def_modules);
+        cbm_arena_destroy(&cr.arena);
+    }
+    cbm_store_free_lsp_surfaces(publish_rows, publish_row_count);
+    cbm_pipeline_free_semantic_manifest(manifest, manifest_count);
+    free(cov);
+    free(purge_paths);
+    if (registry) {
+        cbm_registry_free(registry);
+    }
+    cbm_path_alias_collection_free(path_aliases);
+    if (gbuf) {
+        cbm_gbuf_free(gbuf);
+    }
+    closure_plan_free(plan);
+    free(changed_files);
+    for (int i = 0; i < deleted_count; i++) {
+        free(deleted[i]);
+    }
+    free(deleted);
+    free_mode_skipped(mode_skipped, mode_skipped_count);
+    cbm_store_free_coverage(old_cov, old_cov_count);
+    return result;
+}
+
 /* ── Incremental pipeline entry point ────────────────────────────── */
 
 int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_file_info_t *files,
@@ -1882,7 +2255,6 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
     cbm_clock_gettime(CLOCK_MONOTONIC, &t0);
     closure_plan_t closure_plan = {0};
     bool closure_active = false;
-    closure_resolve_t closure_cr = {0};
 
     const char *project = cbm_pipeline_project_name(p);
 
@@ -2053,6 +2425,15 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
 
     cbm_log_info("incremental.reparse", "files", itoa_buf(ci));
 
+    if (closure_active) {
+        /* The delta executor owns everything passed and never touches the
+         * live database; its every failure falls back to a full rebuild. */
+        return run_closure_delta(p, db_path, project, baseline_manifest, baseline_count,
+                                 &closure_plan, changed_files, ci, deleted, deleted_count,
+                                 mode_skipped, mode_skipped_count, old_cov, old_cov_count, store,
+                                 t0);
+    }
+
     struct timespec t;
 
     /* Step 1: Load existing graph into RAM */
@@ -2137,87 +2518,6 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
     cbm_log_info("incremental.edge_snapshot", "captured", itoa_buf(edge_cap.count), "elapsed_ms",
                  itoa_buf((int)elapsed_ms(t)));
 
-    /* Closure prep: the files whose stored surfaces must NOT be registered
-     * or republished — everything being re-parsed plus everything deleted.
-     * Keys are OWNED copies: the deleted[] strings die inside the purge
-     * loop below, and this set outlives it into the publish merge. */
-    CBMHashTable *stale_surface_set = NULL;
-    if (closure_active) {
-        stale_surface_set = cbm_ht_create((size_t)(ci + deleted_count) * PAIR_LEN + CBM_SZ_64);
-        bool prep_ok = stale_surface_set != NULL;
-        for (int i = 0; prep_ok && i < ci; i++) {
-            char *key = strdup(changed_files[i].rel_path);
-            prep_ok = key && (cbm_ht_set(stale_surface_set, key, key), true);
-        }
-        for (int i = 0; prep_ok && i < deleted_count; i++) {
-            char *key = strdup(deleted[i]);
-            prep_ok = key && (cbm_ht_set(stale_surface_set, key, key), true);
-        }
-        /* Rehydrate the surviving surfaces into registration input. A row
-         * that fails to decode means the previous generation cannot be
-         * trusted as registry input — abort and preserve the old DB; the
-         * orchestrator's next full run rewrites every row. */
-        if (prep_ok) {
-            cbm_arena_init(&closure_cr.arena);
-            int cap = 0;
-            for (int i = 0; i < closure_plan.stored_count && prep_ok; i++) {
-                const cbm_lsp_surface_row_t *row = &closure_plan.stored_rows[i];
-                if (cbm_ht_get(stale_surface_set, row->rel_path)) {
-                    continue;
-                }
-                CBMLSPDef *row_defs = NULL;
-                int row_count =
-                    cbm_lsp_surface_defs_from_json(&closure_cr.arena, row->defs_json, &row_defs);
-                if (row_count < 0) {
-                    prep_ok = false;
-                    break;
-                }
-                if (row_count > 0) {
-                    if (closure_cr.base_def_count + row_count > cap) {
-                        int ncap = cap ? cap * PAIR_LEN : CBM_SZ_256;
-                        while (ncap < closure_cr.base_def_count + row_count) {
-                            ncap *= PAIR_LEN;
-                        }
-                        CBMLSPDef *grown = (CBMLSPDef *)cbm_arena_alloc(
-                            &closure_cr.arena, (size_t)ncap * sizeof(CBMLSPDef));
-                        if (!grown) {
-                            prep_ok = false;
-                            break;
-                        }
-                        if (closure_cr.base_def_count > 0) {
-                            memcpy(grown, closure_cr.base_defs,
-                                   (size_t)closure_cr.base_def_count * sizeof(CBMLSPDef));
-                        }
-                        closure_cr.base_defs = grown;
-                        cap = ncap;
-                    }
-                    memcpy(closure_cr.base_defs + closure_cr.base_def_count, row_defs,
-                           (size_t)row_count * sizeof(CBMLSPDef));
-                    closure_cr.base_def_count += row_count;
-                }
-            }
-        }
-        if (!prep_ok) {
-            cbm_log_error("incremental.err", "phase", "closure_rehydrate");
-            surface_name_set_free(stale_surface_set);
-            cbm_arena_destroy(&closure_cr.arena);
-            closure_plan_free(&closure_plan);
-            incr_free_edge_capture(&edge_cap);
-            free(changed_files);
-            for (int i = 0; i < deleted_count; i++) {
-                free(deleted[i]);
-            }
-            free(deleted);
-            free_mode_skipped(mode_skipped, mode_skipped_count);
-            cbm_store_free_coverage(old_cov, old_cov_count);
-            free(saved_adr);
-            cbm_gbuf_free(existing);
-            return CBM_PIPELINE_ABORT_PRESERVE_DB;
-        }
-        cbm_log_info("incremental.closure_base", "defs", itoa_buf(closure_cr.base_def_count),
-                     "rows", itoa_buf(closure_plan.stored_count));
-    }
-
     /* Step 2: Purge stale nodes */
     cbm_clock_gettime(CLOCK_MONOTONIC, &t);
     for (int i = 0; i < ci; i++) {
@@ -2279,8 +2579,7 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
         }
     }
 
-    int phase_rc =
-        run_extract_resolve(&ctx, changed_files, ci, closure_active ? &closure_cr : NULL);
+    int phase_rc = run_extract_resolve(&ctx, changed_files, ci, NULL);
     if (phase_rc == 0) {
         phase_rc = cbm_pipeline_pass_k8s(&ctx, changed_files, ci);
     }
@@ -2319,16 +2618,6 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
         free_mode_skipped(mode_skipped, mode_skipped_count);
         free(saved_adr);
         cbm_gbuf_free(existing);
-        if (closure_active) {
-            surface_name_set_free(stale_surface_set);
-            cbm_store_free_lsp_surfaces(closure_cr.fresh_rows, closure_cr.fresh_count);
-            for (int i = 0; i < closure_cr.def_module_count; i++) {
-                free(closure_cr.def_modules[i]);
-            }
-            free(closure_cr.def_modules);
-            cbm_arena_destroy(&closure_cr.arena);
-            closure_plan_free(&closure_plan);
-        }
         return CBM_PIPELINE_ABORT_PRESERVE_DB;
     }
 
@@ -2421,16 +2710,6 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
         free_mode_skipped(mode_skipped, mode_skipped_count);
         free(saved_adr);
         cbm_gbuf_free(existing);
-        if (closure_active) {
-            surface_name_set_free(stale_surface_set);
-            cbm_store_free_lsp_surfaces(closure_cr.fresh_rows, closure_cr.fresh_count);
-            for (int i = 0; i < closure_cr.def_module_count; i++) {
-                free(closure_cr.def_modules[i]);
-            }
-            free(closure_cr.def_modules);
-            cbm_arena_destroy(&closure_cr.arena);
-            closure_plan_free(&closure_plan);
-        }
         return CBM_PIPELINE_ABORT_PRESERVE_DB;
     }
 
@@ -2457,48 +2736,15 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
      * re-parsed files have no codec output, and publishing a stale row
      * would satisfy a future closure plan with yesterday's surface; an
      * empty table just routes the next incremental to a full rebuild. */
-    cbm_lsp_surface_row_t *publish_rows = NULL;
-    int publish_row_count = 0;
-    if (closure_active) {
-        int cap = closure_plan.stored_count + closure_cr.fresh_count;
-        publish_rows =
-            (cbm_lsp_surface_row_t *)calloc(cap ? (size_t)cap : 1, sizeof(*publish_rows));
-        if (publish_rows) {
-            for (int i = 0; i < closure_plan.stored_count; i++) {
-                cbm_lsp_surface_row_t *row = &closure_plan.stored_rows[i];
-                if (!row->rel_path || cbm_ht_get(stale_surface_set, row->rel_path)) {
-                    continue;
-                }
-                publish_rows[publish_row_count++] = *row; /* move ownership */
-                memset(row, 0, sizeof(*row));
-            }
-            for (int i = 0; i < closure_cr.fresh_count; i++) {
-                publish_rows[publish_row_count++] = closure_cr.fresh_rows[i];
-                memset(&closure_cr.fresh_rows[i], 0, sizeof(closure_cr.fresh_rows[i]));
-            }
-        }
-    }
-    int persist_rc =
-        dump_and_persist(existing, db_path, project, cbm_pipeline_cancelled_ptr(p), manifest,
-                         manifest_count, saved_adr, cbm_pipeline_repo_path(p), cov, cov_n,
-                         &coverage_meta, publish_rows, publish_row_count);
-    cbm_store_free_lsp_surfaces(publish_rows, publish_row_count);
+    int persist_rc = dump_and_persist(
+        existing, db_path, project, cbm_pipeline_cancelled_ptr(p), manifest, manifest_count,
+        saved_adr, cbm_pipeline_repo_path(p), cov, cov_n, &coverage_meta, NULL, 0);
     cbm_pipeline_free_semantic_manifest(manifest, manifest_count);
     free(saved_adr);
     free(cov);
     cbm_store_free_coverage(old_cov, old_cov_count);
     free_mode_skipped(mode_skipped, mode_skipped_count);
     cbm_gbuf_free(existing);
-    if (closure_active) {
-        surface_name_set_free(stale_surface_set);
-        free(closure_cr.fresh_rows); /* strings moved into publish_rows */
-        for (int i = 0; i < closure_cr.def_module_count; i++) {
-            free(closure_cr.def_modules[i]);
-        }
-        free(closure_cr.def_modules);
-        cbm_arena_destroy(&closure_cr.arena);
-        closure_plan_free(&closure_plan);
-    }
 
     cbm_log_info("incremental.done", "elapsed_ms", itoa_buf((int)elapsed_ms(t0)));
     return persist_rc;
