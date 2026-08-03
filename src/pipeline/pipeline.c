@@ -1429,7 +1429,6 @@ int cbm_pipeline_refresh_artifact(cbm_pipeline_t *p, const char *db_path) {
     return 0;
 }
 
-
 /* Defined below, next to the other publication helpers. */
 static char *create_staging_path(const char *final_path);
 
