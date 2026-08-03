@@ -1735,9 +1735,13 @@ static int closure_try_plan(cbm_pipeline_t *p, cbm_store_t *store, const char *p
     }
     plan->n_changed = n_changed;
     plan->n_dependents = dependent_count;
+    /* Two calls, not one: itoa_buf recycles a four-slot ring, so six
+     * conversions in a single call print two corrupted fields (observed:
+     * surface_changed reporting the elapsed-ms value at kernel scale). */
     cbm_log_info("incremental.closure_plan", "changed", itoa_buf(n_changed), "surface_changed",
                  itoa_buf(n_surface_changed), "deleted", itoa_buf(n_deleted), "dependents",
-                 itoa_buf(dependent_count), "closure", itoa_buf(plan->count), "elapsed_ms",
+                 itoa_buf(dependent_count));
+    cbm_log_info("incremental.closure_plan_done", "closure", itoa_buf(plan->count), "elapsed_ms",
                  itoa_buf((int)elapsed_ms(t)));
 
 done:
