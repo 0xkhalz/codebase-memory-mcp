@@ -218,9 +218,9 @@ jobs:
       - name: Test (clang-22, ASan+UBSan + off-by-default ASan checks)
         env:
           ASAN_OPTIONS: "detect_stack_use_after_return=1:detect_invalid_pointer_pairs=2:strict_string_checks=1:detect_stack_use_after_scope=1"
-        run: >
-          scripts/test.sh CC=clang-22 CXX=clang++-22
-          SANITIZE="-fsanitize=address,undefined,pointer-compare,pointer-subtract -fno-omit-frame-pointer -fno-optimize-sibling-calls"
+        run: |
+          scripts/test.sh CC=clang-22 CXX=clang++-22 \
+            SANITIZE="-fsanitize=address,undefined,pointer-compare,pointer-subtract -fno-omit-frame-pointer -fno-optimize-sibling-calls"
 
       - name: Compiler cache (save)
         if: always()
@@ -258,16 +258,10 @@ jobs:
           key: buildx-msan-${{ hashFiles('test-infrastructure/Dockerfile.msan') }}
 
       - name: Build MSan image (cached layers)
-        run: |
-          docker buildx create --use --name msan-builder
-          docker buildx build \
-            --cache-from type=local,src=/tmp/.buildx-msan \
-            --cache-to type=local,dest=/tmp/.buildx-msan,mode=max \
-            -f test-infrastructure/Dockerfile.msan \
-            -t cbm-msan:ci --load test-infrastructure/
+        run: scripts/ci/msan-lane.sh build
 
       - name: MSan full suite (no exclusions — x86-64 is the real test)
-        run: docker run --rm -e MSAN_EXCLUDE="" -v "$PWD:/src" -w /src cbm-msan:ci
+        run: scripts/ci/msan-lane.sh run
 
   # macOS leak coverage. LeakSanitizer runs by default under ASan on Linux, so
   # test-unix's ubuntu legs have always had it; on macOS it is off by default

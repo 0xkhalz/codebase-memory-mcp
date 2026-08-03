@@ -73,4 +73,4 @@ jobs:
           sudo apt-get install -y clang-tidy-22
 
       - name: Memory-analyzer gate
-        run: make -f Makefile.cbm lint-mem-ci CLANG_TIDY=clang-tidy-22
+        run: scripts/ci/lint-mem.sh clang-tidy-22
