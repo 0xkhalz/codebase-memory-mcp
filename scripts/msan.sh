@@ -66,23 +66,19 @@ export LD_LIBRARY_PATH="$MSAN_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 echo "=== MSan lane: $(clang --version | head -1) ==="
 
-# KNOWN-EXCLUDED SUITES (O10 whitelist — excluded, never silently skipped):
+# KNOWN LOCAL (arm64) FAILURE — a bug to fix, NOT an accepted exclusion:
 #
-#   grammar_regression, grammar_labels, pipeline — each overflows its thread
-#   stack under MSan (in grammar_regression_all / grammar_label_goldens /
-#   githistory_coupling_limits_output respectively).
-#   NOTE these are SUITE names: the runner selects suites, and naming a test
-#   here silently excludes nothing (the guard below now catches that).
-#   Excluding `pipeline` is a REAL coverage cost — it is a large suite — which
-#   is the strongest argument for fixing the thread-stack root cause rather
-#   than growing this list.
+#   grammar_regression, grammar_labels, pipeline each overflow their thread
+#   stack under instrumentation (in grammar_regression_all /
+#   grammar_label_goldens / githistory_coupling_limits_output). The lane runs
+#   them anyway by default and fails, because a sanitizer that skips code is
+#   asserting coverage it does not have.
 #
-# WHY: origin tracking inflates every frame, and these suites drive the
-# deepest parser recursion in the tree (one extract per grammar across ~160
-# languages). It is an INSTRUMENTATION limit, not a product defect: the same
-# corpora pass under ASan+UBSan on all three OS and in production builds, and
-# the recursion-depth contract has its own gating home in the stack_overflow
-# suites.
+# WHY (as far as it is understood): origin tracking inflates every frame, and
+# these suites drive the deepest parser recursion in the tree. It looks like
+# an INSTRUMENTATION limit rather than a product defect — the same corpora
+# pass under ASan+UBSan on all three OS and in production builds — but that is
+# a hypothesis, not a proven diagnosis.
 #
 # WHAT WAS TRIED:
 #  1. RLIMIT_STACK 8→64→256 MiB. Verified applied in-container; no effect,
@@ -112,11 +108,21 @@ echo "=== MSan lane: $(clang --version | head -1) ==="
 # any single suite. Find the creator of these threads (not cbm_thread_create,
 # see 2 above) and give it a sanitized-build stack floor. Sharding the lane
 # one suite per process would also sidestep it. Then delete this block.
-MSAN_EXCLUDE="${MSAN_EXCLUDE:-grammar_regression grammar_labels pipeline}"
+# DEFAULT: EMPTY. A sanitizer lane covers the COMPLETE code or it is not a
+# sanitizer lane — a pass over a subset asserts coverage it does not have.
+# The suites below are known to overflow locally on arm64; that is a BUG TO
+# FIX (see NEXT STEP), not a list to live with. MSAN_EXCLUDE exists only so
+# an engineer can iterate on the rest while fixing it, e.g.
+#   MSAN_EXCLUDE="grammar_regression grammar_labels pipeline" scripts/msan.sh
+MSAN_EXCLUDE="${MSAN_EXCLUDE:-}"
 
 if [ "$#" -gt 0 ]; then
     ./build/msan/test-runner "$@"
+elif [ -z "$MSAN_EXCLUDE" ]; then
+    ./build/msan/test-runner
 else
+    echo "WARNING: running a PARTIAL sanitizer lane — excluded: $MSAN_EXCLUDE" >&2
+    echo "WARNING: a green result here does NOT mean the tree is MSan-clean." >&2
     excl_pattern="$(printf '%s\n' $MSAN_EXCLUDE | tr '\n' '|' | sed 's/|$//')"
     suites="$(./build/msan/test-runner --list-suites | grep -Evx "$excl_pattern")"
     # Fail loudly if an entry matched no suite: a typo (or a TEST name given
