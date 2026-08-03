@@ -1590,6 +1590,11 @@ static int closure_probe_surfaces(cbm_pipeline_t *p, const char *project,
     if (cache) {
         free_incremental_result_cache(cache, probe_count);
     }
+    /* Parallel extraction builds the process-global package map; the probe
+     * owns it exactly as the real extraction paths do. Leaving it behind
+     * leaked one map per probed run (LSan, macOS CI). */
+    cbm_pkgmap_free(cbm_pipeline_get_pkgmap());
+    cbm_pipeline_set_pkgmap(NULL);
     cbm_path_alias_collection_free(aliases);
     cbm_gbuf_free(probe_gbuf);
     return rc;
