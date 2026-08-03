@@ -11186,7 +11186,79 @@ TEST(pipeline_seq_ts_cross_uses_shared_registry) {
     PASS();
 }
 
+/* The closure-repair route lives and dies by two properties of the persisted
+ * per-file LSP surface: a BODY edit must leave the surface_sha unchanged (the
+ * early cutoff -- no dependent recomputation owed), while a SIGNATURE edit
+ * must change it (dependents owe re-resolution). Each run here is a fresh
+ * full index (DB removed in between) so what is compared is the published
+ * surface of the code as it stands, not any incremental behaviour. */
+TEST(pipeline_lsp_surface_persisted_and_body_edit_invariant) {
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "/tmp/cbm_surface_persist_XXXXXX");
+    ASSERT_NOT_NULL(cbm_mkdtemp(tmp));
+    char src_a[512];
+    char db_path[512];
+    snprintf(src_a, sizeof(src_a), "%s/a.py", tmp);
+    snprintf(db_path, sizeof(db_path), "%s/surface.db", tmp);
+    ASSERT_EQ(th_write_file(src_a, "def surface_probe(x):\n    return 1\n"), 0);
+
+    char sha_baseline[128] = {0};
+    char json_probe[64] = {0};
+    char project[256] = {0};
+
+    for (int round = 0; round < 3; round++) {
+        if (round == 1) {
+            /* Body edit: same def surface, different body. */
+            ASSERT_EQ(th_write_file(src_a, "def surface_probe(x):\n    return 2 + x\n"), 0);
+        } else if (round == 2) {
+            /* Signature edit: the surface other files consume changes. */
+            ASSERT_EQ(th_write_file(src_a, "def surface_probe(x, y):\n    return 1\n"), 0);
+        }
+        cbm_unlink(db_path);
+        cbm_remove_db_sidecars(db_path);
+        cbm_pipeline_t *p = cbm_pipeline_new(tmp, db_path, CBM_MODE_FULL);
+        ASSERT_NOT_NULL(p);
+        ASSERT_EQ(cbm_pipeline_run(p), 0);
+        if (round == 0) {
+            snprintf(project, sizeof(project), "%s", cbm_pipeline_project_name(p));
+        }
+        cbm_pipeline_free(p);
+
+        cbm_store_t *store = cbm_store_open_path(db_path);
+        ASSERT_NOT_NULL(store);
+        cbm_lsp_surface_row_t *rows = NULL;
+        int row_count = 0;
+        ASSERT_EQ(cbm_store_get_lsp_surfaces(store, project, &rows, &row_count), CBM_STORE_OK);
+        cbm_store_close(store);
+
+        const cbm_lsp_surface_row_t *row_a = NULL;
+        for (int i = 0; i < row_count; i++) {
+            if (strcmp(rows[i].rel_path, "a.py") == 0) {
+                row_a = &rows[i];
+            }
+        }
+        ASSERT_NOT_NULL(row_a);
+        ASSERT_TRUE(row_a->surface_sha && row_a->surface_sha[0]);
+        if (round == 0) {
+            snprintf(sha_baseline, sizeof(sha_baseline), "%s", row_a->surface_sha);
+            /* The row is the versioned codec envelope with the def present. */
+            snprintf(json_probe, sizeof(json_probe), "%.20s", row_a->defs_json);
+            ASSERT_TRUE(strstr(row_a->defs_json, "\"v\":1") != NULL);
+            ASSERT_TRUE(strstr(row_a->defs_json, "surface_probe") != NULL);
+        } else if (round == 1) {
+            ASSERT_STR_EQ(row_a->surface_sha, sha_baseline);
+        } else {
+            ASSERT_TRUE(strcmp(row_a->surface_sha, sha_baseline) != 0);
+        }
+        cbm_store_free_lsp_surfaces(rows, row_count);
+    }
+    (void)json_probe;
+    th_rmtree(tmp);
+    PASS();
+}
+
 SUITE(pipeline) {
+    RUN_TEST(pipeline_lsp_surface_persisted_and_body_edit_invariant);
     /* Index lock */
     RUN_TEST(pipeline_lock_try_acquire);
     RUN_TEST(pipeline_lock_blocking);

@@ -696,6 +696,12 @@ typedef struct {
     const cbm_coverage_row_t *coverage;
     int coverage_count;
     cbm_coverage_meta_t coverage_meta;
+    /* Per-file LSP surfaces for the generation being published (may be NULL:
+     * cross-LSP disabled, or a caller that has none). Written into the
+     * staging store alongside the manifest so surface data and graph always
+     * belong to the same generation. */
+    const cbm_lsp_surface_row_t *surface_rows;
+    int surface_row_count;
 } cbm_pipeline_generation_t;
 
 /* Serialize and fully populate a sibling staging database, then atomically
@@ -706,6 +712,12 @@ int cbm_pipeline_publish_generation(const cbm_pipeline_generation_t *generation)
  * part of the caller-visible operation and its export error is returned;
  * automatic refresh of an already-existing artifact remains best-effort. */
 int cbm_pipeline_refresh_artifact(cbm_pipeline_t *p, const char *db_path);
+
+/* Hand the pipeline the per-file LSP-surface rows serialized at the
+ * collect_all_defs seam (the only moment the result cache is alive).
+ * Takes ownership; dump_and_persist_hashes writes them into the staging
+ * store and cbm_pipeline_free releases them. Passing NULL/0 clears. */
+void cbm_pipeline_set_lsp_surfaces(cbm_pipeline_t *p, cbm_lsp_surface_row_t *rows, int count);
 
 /* Pipeline accessors for incremental use */
 const char *cbm_pipeline_repo_path(const cbm_pipeline_t *p);

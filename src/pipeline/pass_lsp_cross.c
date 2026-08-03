@@ -14,6 +14,8 @@
  * multiple times if the pipeline gains a re-run path later.
  */
 #include "pipeline/pass_lsp_cross.h"
+
+#include "pipeline/lsp_surface.h"
 #include "pipeline/pipeline_internal.h"
 #include "pipeline/lsp_resolve.h"
 #include "lsp/go_lsp.h"
@@ -322,7 +324,7 @@ static int pxc_build_rust_impl_relation(CBMArena *arena, const CBMImplTrait *imp
  * borrowed from cache[i]->arena and from def_modules[i] (also borrowed). */
 CBMLSPDef *cbm_pxc_collect_all_defs(CBMFileResult **cache, const cbm_file_info_t *files,
                                     int file_count, const char *project_name, char **def_modules,
-                                    int *out_count) {
+                                    int *out_count, int *out_def_starts) {
     int total = 0;
     for (int i = 0; i < file_count; i++) {
         if (cache[i]) {
@@ -334,15 +336,24 @@ CBMLSPDef *cbm_pxc_collect_all_defs(CBMFileResult **cache, const cbm_file_info_t
     }
     if (total == 0) {
         *out_count = 0;
+        if (out_def_starts) {
+            memset(out_def_starts, 0, (size_t)(file_count + 1) * sizeof(int));
+        }
         return NULL;
     }
     CBMLSPDef *defs = (CBMLSPDef *)calloc((size_t)total, sizeof(CBMLSPDef));
     if (!defs) {
         *out_count = 0;
+        if (out_def_starts) {
+            memset(out_def_starts, 0, (size_t)(file_count + 1) * sizeof(int));
+        }
         return NULL;
     }
     int idx = 0;
     for (int fi = 0; fi < file_count; fi++) {
+        if (out_def_starts) {
+            out_def_starts[fi] = idx;
+        }
         if (!cache[fi])
             continue;
         if (!def_modules[fi]) {
@@ -372,6 +383,9 @@ CBMLSPDef *cbm_pxc_collect_all_defs(CBMFileResult **cache, const cbm_file_info_t
                 }
             }
         }
+    }
+    if (out_def_starts) {
+        out_def_starts[file_count] = idx;
     }
     *out_count = idx;
     return defs;
@@ -1186,8 +1200,21 @@ int cbm_pipeline_pass_lsp_cross(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *
     }
 
     int def_count = 0;
+    int *def_starts = (int *)calloc((size_t)file_count + 1, sizeof(int));
     CBMLSPDef *all_defs = cbm_pxc_collect_all_defs(cache, files, file_count, ctx->project_name,
-                                                   def_modules, &def_count);
+                                                   def_modules, &def_count, def_starts);
+    /* Same seam as the parallel driver: serialize per-file surfaces while the
+     * result cache is alive. Failure only degrades to a full rebuild on the
+     * next incremental run. */
+    if (ctx->pipeline && all_defs && def_starts) {
+        cbm_lsp_surface_row_t *surface_rows = NULL;
+        int surface_count = 0;
+        if (cbm_lsp_surface_build_rows(ctx->project_name, cache, files, file_count, all_defs,
+                                       def_starts, &surface_rows, &surface_count) == 0) {
+            cbm_pipeline_set_lsp_surfaces(ctx->pipeline, surface_rows, surface_count);
+        }
+    }
+    free(def_starts);
 
     /* Shared prepare (mirrors run_parallel_pipeline): inverted module-def
      * index + per-language shared registries, built ONCE for the whole pass.

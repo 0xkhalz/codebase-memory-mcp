@@ -17,6 +17,7 @@ enum { CBM_DIR_PERMS = 0755, PL_RING = 4, PL_RING_MASK = 3, PL_SEQ_PASSES = 6 };
 #include "pipeline/pipeline.h"
 #include "pipeline/artifact.h"
 #include "pipeline/pipeline_internal.h"
+#include "pipeline/lsp_surface.h"
 #include "pipeline/pass_lsp_cross.h"
 #include "pipeline/worker_pool.h"
 #include "graph_buffer/graph_buffer.h"
@@ -192,6 +193,16 @@ struct cbm_pipeline {
      * can be restored after the rebuild. NULL when no ADR existed. Issue #516. */
     char *saved_adr;
 
+    /* Per-file LSP surfaces serialized at the collect_all_defs seam (the only
+     * moment the result cache is alive), persisted by dump_and_persist_hashes
+     * so the closure-repair incremental route can early-cutoff on surface
+     * hashes and rehydrate cross registries without re-parsing. Heap rows,
+     * released with cbm_store_free_lsp_surfaces in cbm_pipeline_free. NULL
+     * when cross-LSP was disabled for the run — the incremental route then
+     * finds no rows and correctly falls back to a full rebuild. */
+    cbm_lsp_surface_row_t *surface_rows;
+    int surface_row_count;
+
     /* Deterministic test-only seam at the final publication boundary. Kept
      * per pipeline so concurrent test/process activity cannot cross-trigger. */
     void (*before_publish_hook)(cbm_pipeline_t *, const char *, void *);
@@ -312,6 +323,16 @@ bool cbm_pipeline_set_project_name(cbm_pipeline_t *p, const char *name) {
     return true;
 }
 
+void cbm_pipeline_set_lsp_surfaces(cbm_pipeline_t *p, cbm_lsp_surface_row_t *rows, int count) {
+    if (!p) {
+        cbm_store_free_lsp_surfaces(rows, count);
+        return;
+    }
+    cbm_store_free_lsp_surfaces(p->surface_rows, p->surface_row_count);
+    p->surface_rows = rows;
+    p->surface_row_count = count;
+}
+
 void cbm_pipeline_free(cbm_pipeline_t *p) {
     if (!p) {
         return;
@@ -339,6 +360,9 @@ void cbm_pipeline_free(cbm_pipeline_t *p) {
     free(p->saved_adr); /* freed here too: error paths can exit before the
                          * restore in dump_and_persist_hashes runs. Issue #516. */
     p->saved_adr = NULL;
+    cbm_store_free_lsp_surfaces(p->surface_rows, p->surface_row_count);
+    p->surface_rows = NULL;
+    p->surface_row_count = 0;
     cbm_git_context_free(&p->git_ctx);
     /* gbuf, store, registry freed during/after run */
     /* Defensively free userconfig in case run() was never called or panicked */
@@ -1194,13 +1218,30 @@ static int run_parallel_pipeline(cbm_pipeline_t *p, cbm_pipeline_ctx_t *ctx,
     char **def_modules = NULL;
     int def_count = 0;
     CBMLSPDef *all_defs = NULL;
+    int *def_starts = NULL;
     if (run_cross_lsp) {
         def_modules = (char **)calloc((size_t)file_count, sizeof(char *));
+        def_starts = (int *)calloc((size_t)file_count + 1, sizeof(int));
         all_defs = def_modules
                        ? cbm_pxc_collect_all_defs(cache, files, file_count, ctx->project_name,
-                                                  def_modules, &def_count)
+                                                  def_modules, &def_count, def_starts)
                        : NULL;
     }
+    /* Serialize per-file LSP surfaces NOW — the result cache dies with this
+     * pass, and the rows are what lets an incremental run detect body-only
+     * edits and rehydrate cross registries without re-parsing the world.
+     * Failure only degrades: no rows → the incremental route full-rebuilds. */
+    if (ctx->pipeline && all_defs && def_starts) {
+        cbm_lsp_surface_row_t *surface_rows = NULL;
+        int surface_count = 0;
+        if (cbm_lsp_surface_build_rows(ctx->project_name, cache, files, file_count, all_defs,
+                                       def_starts, &surface_rows, &surface_count) == 0) {
+            cbm_pipeline_set_lsp_surfaces(ctx->pipeline, surface_rows, surface_count);
+        } else {
+            cbm_log_warn("lsp_surface.serialize_failed", "files", itoa_buf(file_count));
+        }
+    }
+    free(def_starts);
     /* Build inverted index: module_qn → defs. The fused resolve_worker
      * uses this to filter the global all_defs[] down to just the defs
      * each file actually needs (own_module + imported modules) — the
@@ -1644,6 +1685,15 @@ int cbm_pipeline_publish_generation(const cbm_pipeline_generation_t *generation)
     ok = ok && cbm_store_delete_file_hashes(store, generation->project) == CBM_STORE_OK &&
          cbm_store_upsert_file_hash_batch(store, generation->manifest,
                                           generation->manifest_count) == CBM_STORE_OK;
+    /* LSP surfaces belong to the generation: written inside the same staging
+     * store, before the atomic rename, so graph and surface data can never
+     * publish separately. The delete guards the incremental path, whose
+     * staging DB starts as a copy of the previous generation. */
+    if (ok) {
+        ok = cbm_store_delete_lsp_surfaces(store, generation->project) == CBM_STORE_OK &&
+             cbm_store_upsert_lsp_surface_batch(store, generation->surface_rows,
+                                                generation->surface_row_count) == CBM_STORE_OK;
+    }
     if (ok && generation->adr_content) {
         ok = cbm_store_adr_store(store, generation->project, generation->adr_content) ==
              CBM_STORE_OK;
@@ -1810,6 +1860,8 @@ static int dump_and_persist_hashes(cbm_pipeline_t *p, const cbm_file_hash_t *bas
                 .coverage_version = CBM_SEMANTIC_INDEX_VERSION,
                 .hash_records_complete = true,
             },
+        .surface_rows = p->surface_rows,
+        .surface_row_count = p->surface_row_count,
     };
 
     free(db_dir);
