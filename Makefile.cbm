@@ -787,10 +787,18 @@ $(BUILD_DIR)/tsan_lz4hc.o: $(CBM_DIR)/vendored/lz4/lz4hc.c | $(BUILD_DIR)
 	$(CC) -std=c11 -D_DEFAULT_SOURCE -g -O1 $(TSAN_SANITIZE) -w -I$(CBM_DIR)/vendored/lz4 -c -o $@ $<
 
 # Vendored zstd (test build)
+# ZSTD_EXTRA_CFLAGS: hook for sanitizer lanes. The MSan lane needs
+# `-include stdint.h` for THIS object only: zstd's MEMORY_SANITIZER-guarded
+# block declares __msan_test_shadow returning intptr_t, but the amalgamator
+# collapsed the `#define ZSTD_DEPS_NEED_STDINT` re-include that should supply
+# it. The flag cannot go on the global SANITIZE line: force-including a libc
+# header ahead of a source file freezes glibc's feature-test macros before
+# files like sqlite3.c set _GNU_SOURCE themselves, which strips
+# MREMAP_MAYMOVE/nanosleep out of their view of libc.
 ZSTD_OBJ_TEST = $(BUILD_DIR)/test_zstd.o
 ZSTD_OBJ_TSAN = $(BUILD_DIR)/tsan_zstd.o
 $(BUILD_DIR)/test_zstd.o: $(CBM_DIR)/vendored/zstd/zstd.c | $(BUILD_DIR)
-	$(CC) -std=c11 -D_DEFAULT_SOURCE -g -O1 $(SANITIZE) -w -I$(CBM_DIR)/vendored/zstd -c -o $@ $<
+	$(CC) -std=c11 -D_DEFAULT_SOURCE -g -O1 $(SANITIZE) $(ZSTD_EXTRA_CFLAGS) -w -I$(CBM_DIR)/vendored/zstd -c -o $@ $<
 $(BUILD_DIR)/tsan_zstd.o: $(CBM_DIR)/vendored/zstd/zstd.c | $(BUILD_DIR)
 	$(CC) -std=c11 -D_DEFAULT_SOURCE -g -O1 $(TSAN_SANITIZE) -w -I$(CBM_DIR)/vendored/zstd -c -o $@ $<
 

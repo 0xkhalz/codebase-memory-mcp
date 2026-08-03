@@ -41,19 +41,12 @@ if [ "$MSAN_ORIGINS" = "0" ]; then
 else
     MSAN_ORIGIN_FLAG="-fsanitize-memory-track-origins=$MSAN_ORIGINS"
 fi
-# -include stdint.h: vendored zstd carries an MSan-only block (guarded by
-# MEMORY_SANITIZER) that declares __msan_test_shadow returning intptr_t. It
-# reaches for the type with the usual
-#     #define ZSTD_DEPS_NEED_STDINT
-#     #include "zstd_deps.h"
-# idiom, but the amalgamator that produced zstd.c collapsed that second
-# include into a "skipping file" comment, so the define never pulls anything
-# in and intptr_t is undeclared. Only this lane compiles that block, and only
-# where <stddef.h> does not happen to drag stdint.h in transitively -- which
-# is why it builds on aarch64 glibc and fails on x86-64. Forcing the header
-# is a lane-local fix; patching the vendored amalgamation would be undone by
-# the next re-vendor.
-MSAN_SAN="-fsanitize=memory $MSAN_ORIGIN_FLAG -fno-omit-frame-pointer -include stdint.h -isystem $MSAN_PREFIX/include"
+MSAN_SAN="-fsanitize=memory $MSAN_ORIGIN_FLAG -fno-omit-frame-pointer -isystem $MSAN_PREFIX/include"
+# Scoped to the zstd object ONLY (see the ZSTD_EXTRA_CFLAGS note in
+# Makefile.cbm): zstd's MSan block needs stdint.h that its amalgamation lost,
+# but force-including it globally freezes glibc feature-test macros before
+# sqlite3.c can set _GNU_SOURCE, breaking that compile instead.
+ZSTD_EXTRA="-include stdint.h"
 
 # Always clean: make does not encode flags into dependencies, so a build dir
 # populated under different stdlib/sanitizer flags silently mixes objects
@@ -64,6 +57,7 @@ make -f Makefile.cbm clean-c BUILD_DIR=build/msan >/dev/null 2>&1 || true
 make -j"$(nproc)" -f Makefile.cbm build/msan/test-runner \
     CC=clang CXX=clang++ BUILD_DIR=build/msan \
     SANITIZE="$MSAN_SAN" \
+    ZSTD_EXTRA_CFLAGS="$ZSTD_EXTRA" \
     CXX_STDLIB_FLAGS="-stdlib=libc++ -nostdinc++ -isystem $MSAN_PREFIX/include/c++/v1" \
     CXX_STDLIB="-L$MSAN_PREFIX/lib -Wl,-rpath,$MSAN_PREFIX/lib -lc++ -lc++abi"
 
