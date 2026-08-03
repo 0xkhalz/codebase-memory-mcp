@@ -1062,6 +1062,47 @@ lint: lint-tidy lint-cppcheck lint-format lint-no-suppress
 lint-ci: lint-cppcheck lint-format lint-no-suppress
 	@echo "=== CI linters passed ==="
 
+# ── Local memory-diagnostic lanes (not PR-CI gates by decision: the diag
+#    build doubles a runner's bill for a marginal delta, and a gating analyzer
+#    lane needs a suppression story the NOLINT ban deliberately forbids.
+#    Run these on the local ladder; both found real bugs on first use.) ──
+
+# Newest pinned toolchain + ASan/UBSan + straighter stacks. Separate BUILD_DIR
+# so the shipping-toolchain build stays untouched.
+DIAG_LLVM_BIN ?= /opt/homebrew/opt/llvm/bin
+diag:
+	@echo "=== diagnostic lane: $(shell $(DIAG_LLVM_BIN)/clang --version | head -1) ==="
+	$(MAKE) -f Makefile.cbm build/diag/test-runner \
+		CC=$(DIAG_LLVM_BIN)/clang CXX=$(DIAG_LLVM_BIN)/clang++ BUILD_DIR=build/diag \
+		SANITIZE="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-optimize-sibling-calls"
+	./build/diag/test-runner
+
+# Path-sensitive memory analysis: leak paths, null derefs, uninitialized reads.
+# Non-gating: triage findings against the code (this lane's first run produced
+# 9 real fixes and 6 recorded false positives — see the analyzer batch commit).
+LINT_MEM_CHECKS = -*,clang-analyzer-unix.Malloc,clang-analyzer-unix.MallocSizeof,clang-analyzer-core.NullDereference,clang-analyzer-core.CallAndMessage,clang-analyzer-core.UndefinedBinaryOperatorResult,clang-analyzer-core.uninitialized.*,clang-analyzer-cplusplus.NewDelete,clang-analyzer-cplusplus.NewDeleteLeaks
+lint-mem:
+	@echo "=== clang-analyzer memory lane (non-gating; triage, don't suppress) ==="
+	@printf '%s\n' $(LINT_SRCS) | xargs -P 10 -I{} $(CLANG_TIDY) --quiet \
+		--checks='$(LINT_MEM_CHECKS)' {} -- $(CFLAGS_COMMON) $(SYSROOT_FLAG) 2>/dev/null; true
+
+# Gating variant: identical run, but vendored-tree diagnostics are excluded by
+# an explicit path filter (analyzer diagnostics bypass --header-filter by
+# design; this mirrors the .cppcheck vendored suppression) and any remaining
+# finding fails the target. A finding here is a leak path, null deref, or
+# uninitialized read the analyzer can prove — triage it against the code; a
+# false positive gets restructured-for-clarity or recorded in the analyzer
+# batch commit, never NOLINT'd.
+lint-mem-ci:
+	@echo "=== clang-analyzer memory gate ==="
+	@printf '%s\n' $(LINT_SRCS) | xargs -P 4 -I{} $(CLANG_TIDY) --quiet \
+		--checks='$(LINT_MEM_CHECKS)' {} -- $(CFLAGS_COMMON) $(SYSROOT_FLAG) 2>/dev/null \
+		| grep -E "error:.*clang-analyzer" | grep -v "/vendored/" > lint-mem-findings.txt; \
+	if [ -s lint-mem-findings.txt ]; then \
+		echo "=== memory-analyzer findings (gate FAILS) ==="; \
+		cat lint-mem-findings.txt; rm -f lint-mem-findings.txt; exit 1; \
+	fi; rm -f lint-mem-findings.txt; echo "=== memory gate clean ==="
+
 # ── Security audit (6 layers) ────────────────────────────────────
 
 # Run all security checks: static audit, binary strings, UI, install, network

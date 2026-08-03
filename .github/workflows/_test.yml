@@ -183,6 +183,47 @@ jobs:
   # platform can surface a race the others miss. Windows has no TSan runtime on
   # any toolchain (documented irreducible gap); this shared-code coverage is
   # its substitute.
+  # Memory-diagnostics lane (user decision 2026-08-03: runner cost accepted).
+  # Newest pinned LLVM sanitizer runtime + straighter stacks over the full
+  # parallel suite — catches what an older compiler-rt can miss. Same
+  # canonical scripts/test.sh wave as every other leg.
+  test-diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev ccache
+
+      - name: Install LLVM 22 (pinned diagnostic toolchain)
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-22 main" | sudo tee /etc/apt/sources.list.d/llvm-22.list
+          sudo apt-get update
+          sudo apt-get install -y clang-22
+
+      - name: Compiler cache (content-verified, restore)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-diag-${{ github.ref }}-${{ github.sha }}
+          restore-keys: |
+            ccache-diag-${{ github.ref }}-
+            ccache-diag-
+
+      - name: Test (clang-22, ASan+UBSan, -fno-optimize-sibling-calls)
+        run: >
+          scripts/test.sh CC=clang-22 CXX=clang++-22
+          SANITIZE="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-optimize-sibling-calls"
+
+      - name: Compiler cache (save)
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-diag-${{ github.ref }}-${{ github.sha }}
+
   test-tsan:
     strategy:
       fail-fast: false
