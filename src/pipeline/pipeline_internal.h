@@ -708,6 +708,14 @@ typedef struct {
  * replace final_db_path. The old generation is untouched on every failure or
  * cancellation observed before the rename commit point. */
 int cbm_pipeline_publish_generation(const cbm_pipeline_generation_t *generation);
+/* Final leg shared by the dump-built and delta-patched publication paths:
+ * sidecar removal, previous-generation quarantine, atomic rename. The stage
+ * must be complete and sealed with its store handle closed. Discards the
+ * stage on every failure. Does NOT free stage_path. */
+int cbm_pipeline_finalize_staged_generation(char *stage_path, const char *final_db_path,
+                                            atomic_int *cancelled);
+/* discard helper shared with the delta executor (unlink stage + sidecars). */
+void cbm_pipeline_discard_stage(const char *stage_path);
 /* The SQLite generation is authoritative. An explicitly requested artifact is
  * part of the caller-visible operation and its export error is returned;
  * automatic refresh of an already-existing artifact remains best-effort. */

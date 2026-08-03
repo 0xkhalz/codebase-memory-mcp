@@ -1721,46 +1721,58 @@ int cbm_pipeline_publish_generation(const cbm_pipeline_generation_t *generation)
         ok = false;
     }
     cbm_store_close(store);
-    if (ok && cbm_remove_db_sidecars(stage_path) != 0) {
-        ok = false;
-    }
     if (!ok) {
         discard_generation_stage(stage_path);
         free(stage_path);
         return CBM_PIPELINE_PERSIST_FAILED;
     }
-    if (generation->cancelled && atomic_load(generation->cancelled)) {
+    int fin_rc = cbm_pipeline_finalize_staged_generation(stage_path, generation->final_db_path,
+                                                         generation->cancelled);
+    free(stage_path);
+    return fin_rc;
+}
+
+void cbm_pipeline_discard_stage(const char *stage_path) {
+    discard_generation_stage(stage_path);
+}
+
+/* Shared final leg of every publication, dump-built or delta-patched: the
+ * staging file is complete and sealed; remove its sidecars, quarantine the
+ * previous generation, and atomically rename. Owns discarding the stage on
+ * every failure path. The store handle must already be CLOSED — sidecar
+ * removal and rename act on the bare file. */
+int cbm_pipeline_finalize_staged_generation(char *stage_path, const char *final_db_path,
+                                            atomic_int *cancelled) {
+    if (cbm_remove_db_sidecars(stage_path) != 0) {
         discard_generation_stage(stage_path);
-        free(stage_path);
+        return CBM_PIPELINE_PERSIST_FAILED;
+    }
+    if (cancelled && atomic_load(cancelled)) {
+        discard_generation_stage(stage_path);
         return CBM_PIPELINE_ABORT_PRESERVE_DB;
     }
     cbm_replacement_prepare_t prepared = {0};
     /* The destination here is the caller's staging file, not the live database:
      * the publishing wrapper owns quarantining that. */
-    if (prepare_existing_generation_for_replace(generation->final_db_path, &prepared, false) != 0) {
+    if (prepare_existing_generation_for_replace(final_db_path, &prepared, false) != 0) {
         discard_generation_stage(stage_path);
-        free(stage_path);
         return CBM_PIPELINE_PERSIST_FAILED;
     }
 #if defined(CBM_INCREMENTAL_TEST_API) && CBM_INCREMENTAL_TEST_API
-    if (cbm_pipeline_persist_test_take_cancel_after_destination_prepare() &&
-        generation->cancelled) {
-        atomic_store(generation->cancelled, true);
+    if (cbm_pipeline_persist_test_take_cancel_after_destination_prepare() && cancelled) {
+        atomic_store(cancelled, true);
     }
 #endif
-    if (generation->cancelled && atomic_load(generation->cancelled)) {
-        int rollback_rc = rollback_quarantined_generation(generation->final_db_path, &prepared);
+    if (cancelled && atomic_load(cancelled)) {
+        int rollback_rc = rollback_quarantined_generation(final_db_path, &prepared);
         discard_generation_stage(stage_path);
-        free(stage_path);
         return rollback_rc == 0 ? CBM_PIPELINE_ABORT_PRESERVE_DB : CBM_PIPELINE_PERSIST_FAILED;
     }
-    if (cbm_rename_replace(stage_path, generation->final_db_path) != 0) {
-        (void)rollback_quarantined_generation(generation->final_db_path, &prepared);
+    if (cbm_rename_replace(stage_path, final_db_path) != 0) {
+        (void)rollback_quarantined_generation(final_db_path, &prepared);
         discard_generation_stage(stage_path);
-        free(stage_path);
         return CBM_PIPELINE_PERSIST_FAILED;
     }
-    free(stage_path);
     return 0;
 }
 

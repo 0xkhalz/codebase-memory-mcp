@@ -1114,3 +1114,77 @@ int cbm_remove_db_sidecars(const char *db_path) {
     }
     return result;
 }
+
+/* ── Clone-or-copy ───────────────────────────────────────────────── */
+
+#if defined(__APPLE__)
+#include <sys/clonefile.h>
+#elif defined(__linux__)
+#include <linux/fs.h>
+#include <sys/ioctl.h>
+#endif
+#include <fcntl.h>
+
+static int stream_copy_file(const char *src, const char *dst) {
+    FILE *in = cbm_fopen(src, "rb");
+    if (!in) {
+        return CBM_NOT_FOUND;
+    }
+    FILE *out = cbm_fopen(dst, "wb");
+    if (!out) {
+        (void)fclose(in);
+        return CBM_NOT_FOUND;
+    }
+    char buf[CBM_SZ_64K];
+    size_t n;
+    int rc = 0;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) {
+            rc = CBM_NOT_FOUND;
+            break;
+        }
+    }
+    if (ferror(in)) {
+        rc = CBM_NOT_FOUND;
+    }
+    (void)fclose(in);
+    if (fclose(out) != 0) {
+        rc = CBM_NOT_FOUND;
+    }
+    if (rc != 0) {
+        (void)cbm_unlink(dst);
+    }
+    return rc;
+}
+
+int cbm_clone_or_copy_file(const char *src, const char *dst) {
+    if (!src || !dst) {
+        return CBM_NOT_FOUND;
+    }
+#if defined(__APPLE__)
+    /* clonefile refuses to overwrite; the staging name is freshly minted by
+     * the caller, but clear any leftover defensively so the fast path is
+     * never abandoned for a stale artifact. */
+    (void)cbm_unlink(dst);
+    if (clonefile(src, dst, 0) == 0) {
+        return 0;
+    }
+#elif defined(__linux__)
+    int in_fd = open(src, O_RDONLY | O_CLOEXEC);
+    if (in_fd >= 0) {
+        int out_fd = open(dst, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+        if (out_fd >= 0) {
+            int cloned = ioctl(out_fd, FICLONE, in_fd);
+            int close_rc = close(out_fd);
+            (void)close(in_fd);
+            if (cloned == 0 && close_rc == 0) {
+                return 0;
+            }
+            (void)cbm_unlink(dst);
+        } else {
+            (void)close(in_fd);
+        }
+    }
+#endif
+    return stream_copy_file(src, dst);
+}
