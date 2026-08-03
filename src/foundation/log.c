@@ -25,7 +25,11 @@
  * stay cheap enough that nobody is tempted to route around it. */
 static _Atomic CBMLogLevel g_log_level = CBM_LOG_INFO;
 static _Atomic CBMLogFormat g_log_format = CBM_LOG_FORMAT_TEXT;
-static _Atomic cbm_log_sink_fn g_log_sink = NULL;
+/* Cast, not bare NULL: NULL is ((void*)0) and the implicit void*-to-
+ * function-pointer conversion is not a compile-time constant, which
+ * older Apple clang (Xcode 15.4, the macOS CI image) rejects outright
+ * in a static initializer. The cast makes it an address constant. */
+static _Atomic cbm_log_sink_fn g_log_sink = (cbm_log_sink_fn)NULL;
 static _Atomic CBMLogSinkMode g_log_sink_mode = CBM_LOG_SINK_REPLACE;
 
 /* CBM_LOG_LEVEL support — distilled from #414 (closes #413, thanks @santanusinha). */
