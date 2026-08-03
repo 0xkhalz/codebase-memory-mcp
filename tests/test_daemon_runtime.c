@@ -48,7 +48,10 @@
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <spawn.h>
 #include <unistd.h>
+
+extern char **environ;
 #endif
 
 enum {
@@ -401,21 +404,35 @@ static pid_t runtime_test_spawn_blocked_executable(const char *path, int *releas
         (void)close(input[1]);
         return -1;
     }
-    pid_t child = fork();
-    if (child == 0) {
+    /* posix_spawn rather than fork+exec: this process can carry a sanitizer's
+     * very large shadow mapping, and fork() duplicates the parent address
+     * space. On macOS that duplicate trips the per-process memory limit and
+     * jetsam SIGKILLs the child before exec ever replaces the image, so the
+     * fixture fails under TSan for reasons unrelated to the code under test.
+     * posix_spawn never copies the parent's address space. Exec failure is
+     * reported by posix_spawn itself, so the child no longer needs to signal
+     * it over the ready pipe; the pipe's FD_CLOEXEC close still marks a
+     * successful exec with EOF exactly as before. */
+    posix_spawn_file_actions_t actions;
+    if (posix_spawn_file_actions_init(&actions) != 0) {
         (void)close(ready[0]);
+        (void)close(ready[1]);
+        (void)close(input[0]);
         (void)close(input[1]);
-        if (dup2(input[0], STDIN_FILENO) < 0) {
-            _exit(126);
-        }
-        if (input[0] != STDIN_FILENO) {
-            (void)close(input[0]);
-        }
-        execl(path, path, (char *)NULL);
-        const char failed = 'x';
-        (void)write(ready[1], &failed, 1);
-        _exit(127);
+        return -1;
     }
+    (void)posix_spawn_file_actions_addclose(&actions, ready[0]);
+    (void)posix_spawn_file_actions_addclose(&actions, input[1]);
+    (void)posix_spawn_file_actions_adddup2(&actions, input[0], STDIN_FILENO);
+    if (input[0] != STDIN_FILENO) {
+        (void)posix_spawn_file_actions_addclose(&actions, input[0]);
+    }
+    char *const child_argv[] = {(char *)path, NULL};
+    pid_t child = -1;
+    if (posix_spawn(&child, path, &actions, NULL, child_argv, environ) != 0) {
+        child = -1;
+    }
+    (void)posix_spawn_file_actions_destroy(&actions);
     (void)close(ready[1]);
     (void)close(input[0]);
     char unexpected = '\0';
