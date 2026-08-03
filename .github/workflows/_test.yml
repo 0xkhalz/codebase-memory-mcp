@@ -224,6 +224,46 @@ jobs:
           path: ${{ github.workspace }}/.ccache
           key: ccache-diag-${{ github.ref }}-${{ github.sha }}
 
+  # MemorySanitizer lane (stage 2). Uninitialized READS are the one
+  # memory-error class no other lane covers dynamically. The image carries
+  # MSan-instrumented libc++/libc++abi/libunwind + zlib (vendored C deps
+  # instrument in-tree); scripts/msan.sh drives the build and the suite.
+  #
+  # THIS JOB IS THE AUTHORITATIVE VENUE for the lane, and deliberately runs
+  # WITHOUT the script's default suite exclusions. Those exclusions were
+  # derived on the LOCAL arm64 container, where deep-recursion suites overflow
+  # their thread stacks under instrumentation; MSan's shadow/stack handling is
+  # materially better supported on x86-64, so the limitation may well be
+  # architectural. The local ladder cannot answer that — it has no faithful
+  # x86-64 emulation — so this leg is where the question gets settled. An
+  # accepted local/CI divergence for this lane specifically.
+  #
+  # If this leg proves the exclusions ARE needed on x86-64 too, set
+  # MSAN_EXCLUDE here to the same list the script defaults to.
+  test-msan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Buildx cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/.buildx-msan
+          key: buildx-msan-${{ hashFiles('test-infrastructure/Dockerfile.msan') }}
+
+      - name: Build MSan image (cached layers)
+        run: |
+          docker buildx create --use --name msan-builder
+          docker buildx build \
+            --cache-from type=local,src=/tmp/.buildx-msan \
+            --cache-to type=local,dest=/tmp/.buildx-msan,mode=max \
+            -f test-infrastructure/Dockerfile.msan \
+            -t cbm-msan:ci --load test-infrastructure/
+
+      - name: MSan full suite (no exclusions — x86-64 is the real test)
+        run: docker run --rm -e MSAN_EXCLUDE="" -v "$PWD:/src" -w /src cbm-msan:ci
+
   test-tsan:
     strategy:
       fail-fast: false

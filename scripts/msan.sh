@@ -9,13 +9,13 @@
 # the clang-analyzer lane do not cover dynamically. halt_on_error stays ON:
 # a finding is a bug (or an interceptor gap to triage), never board data.
 #
-# STATUS: EXPLORATORY, LOCAL-ONLY — deliberately not wired into CI. The lane
-# cannot yet complete a full run (see the exclusion block below), and an
-# auto-running job that cannot finish is exactly the structurally-red lane
-# this repo's O10 rule forbids. It IS useful as-is: every suite it does run
-# is clean, including the C++ preprocessing path that motivated building the
-# instrumented-libc++ image. Wire it into CI once the thread-stack root cause
-# is fixed and a full run completes.
+# VENUES: the CI test-msan job (x86-64) is AUTHORITATIVE and runs with no
+# exclusions. The local container is arm64, where deep-recursion suites
+# overflow their thread stacks under instrumentation — MSan's shadow/stack
+# handling is materially better supported on x86-64, so that limitation may
+# be architectural, and the local ladder has no faithful x86-64 emulation to
+# decide it. An accepted venue divergence for this lane specifically: the
+# exclusions below are the LOCAL default only, and CI overrides them away.
 #
 # Usage: scripts/msan.sh [suite ...]   (default: full suite)
 set -euo pipefail
