@@ -277,6 +277,22 @@ static int init_schema(cbm_store_t *s) {
         "  created_at TEXT NOT NULL,"
         "  updated_at TEXT NOT NULL"
         ");"
+        /* One row per file: its serialized cross-file LSP surface + the
+         * closure-repair metadata (surface hash, referenced-name bloom,
+         * governing-config context). Written at publication from exactly the
+         * def set pass_lsp_cross registered, so an incremental run can
+         * rehydrate the cross registries for files it does not re-parse.
+         * Deliberately SEPARATE from the graph tables (like index_coverage):
+         * this is resolution input, not part of the graph. */
+        "CREATE TABLE IF NOT EXISTS lsp_surface ("
+        "  project TEXT NOT NULL REFERENCES projects(name) ON DELETE CASCADE,"
+        "  rel_path TEXT NOT NULL,"
+        "  surface_sha TEXT NOT NULL,"
+        "  defs_json TEXT NOT NULL,"
+        "  ref_bloom BLOB,"
+        "  config_ctx TEXT NOT NULL DEFAULT '',"
+        "  PRIMARY KEY (project, rel_path)"
+        ");"
         /* Best-effort indexing-coverage signal (#963). One row per file the
          * indexer could not fully cover: kind "parse_partial" (indexed, but the
          * parse tree had ERROR/MISSING regions — detail = 1-based line ranges)
@@ -3362,6 +3378,170 @@ int cbm_store_upsert_file_hash_batch(cbm_store_t *s, const cbm_file_hash_t *hash
     }
 
     return cbm_store_commit(s);
+}
+
+/* ── LSP surface rows (closure-repair incremental) ─────────────── */
+
+static int upsert_lsp_surface_row(cbm_store_t *s, const cbm_lsp_surface_row_t *row) {
+    const char *sql =
+        "INSERT INTO lsp_surface (project, rel_path, surface_sha, defs_json, ref_bloom, config_ctx)"
+        " VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+        " ON CONFLICT(project, rel_path) DO UPDATE SET surface_sha = excluded.surface_sha,"
+        " defs_json = excluded.defs_json, ref_bloom = excluded.ref_bloom,"
+        " config_ctx = excluded.config_ctx";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(s->db, sql, CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "lsp_surface upsert prepare");
+        return CBM_STORE_ERR;
+    }
+    bind_text(stmt, ST_COL_1, row->project);
+    bind_text(stmt, ST_COL_2, row->rel_path);
+    bind_text(stmt, ST_COL_3, row->surface_sha ? row->surface_sha : "");
+    bind_text(stmt, ST_COL_4, row->defs_json ? row->defs_json : "[]");
+    if (row->ref_bloom && row->ref_bloom_len > 0) {
+        sqlite3_bind_blob(stmt, ST_COL_5, row->ref_bloom, row->ref_bloom_len, BIND_TRANSIENT);
+    } else {
+        sqlite3_bind_null(stmt, ST_COL_5);
+    }
+    bind_text(stmt, ST_COL_6, row->config_ctx ? row->config_ctx : "");
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        store_set_error_sqlite(s, "lsp_surface upsert step");
+        return CBM_STORE_ERR;
+    }
+    return CBM_STORE_OK;
+}
+
+int cbm_store_upsert_lsp_surface_batch(cbm_store_t *s, const cbm_lsp_surface_row_t *rows,
+                                       int count) {
+    if (count == 0) {
+        return CBM_STORE_OK;
+    }
+    if (!s || !rows || count < 0) {
+        return CBM_STORE_ERR;
+    }
+    int rc = cbm_store_begin(s);
+    if (rc != CBM_STORE_OK) {
+        return rc;
+    }
+    for (int i = 0; i < count; i++) {
+        rc = upsert_lsp_surface_row(s, &rows[i]);
+        if (rc != CBM_STORE_OK) {
+            cbm_store_rollback(s);
+            return rc;
+        }
+    }
+    return cbm_store_commit(s);
+}
+
+int cbm_store_get_lsp_surfaces(cbm_store_t *s, const char *project, cbm_lsp_surface_row_t **out,
+                               int *count) {
+    *out = NULL;
+    *count = 0;
+    const char *sql = "SELECT project, rel_path, surface_sha, defs_json, ref_bloom, config_ctx"
+                      " FROM lsp_surface WHERE project = ?1 ORDER BY rel_path";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(s->db, sql, CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "lsp_surface get prepare");
+        return CBM_STORE_ERR;
+    }
+    bind_text(stmt, ST_COL_1, project);
+
+    int cap = ST_INIT_CAP_8;
+    int n = 0;
+    cbm_lsp_surface_row_t *rows = calloc((size_t)cap, sizeof(*rows));
+    if (!rows) {
+        sqlite3_finalize(stmt);
+        return CBM_STORE_ERR;
+    }
+    int step_rc;
+    bool oom = false;
+    while ((step_rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        if (n >= cap) {
+            cap *= ST_GROWTH;
+            cbm_lsp_surface_row_t *grown = realloc(rows, (size_t)cap * sizeof(*rows));
+            if (!grown) {
+                oom = true;
+                break;
+            }
+            rows = grown;
+            memset(rows + n, 0, (size_t)(cap - n) * sizeof(*rows));
+        }
+        cbm_lsp_surface_row_t *r = &rows[n];
+        memset(r, 0, sizeof(*r));
+        const char *proj = (const char *)sqlite3_column_text(stmt, 0);
+        const char *rel = (const char *)sqlite3_column_text(stmt, ST_COL_1);
+        const char *sha = (const char *)sqlite3_column_text(stmt, ST_COL_2);
+        const char *defs = (const char *)sqlite3_column_text(stmt, ST_COL_3);
+        const void *bloom = sqlite3_column_blob(stmt, ST_COL_4);
+        int bloom_len = sqlite3_column_bytes(stmt, ST_COL_4);
+        const char *cfg = (const char *)sqlite3_column_text(stmt, ST_COL_5);
+        r->project = strdup(proj ? proj : "");
+        r->rel_path = strdup(rel ? rel : "");
+        r->surface_sha = strdup(sha ? sha : "");
+        r->defs_json = strdup(defs ? defs : "[]");
+        r->config_ctx = strdup(cfg ? cfg : "");
+        if (bloom && bloom_len > 0) {
+            void *copy = malloc((size_t)bloom_len);
+            if (copy) {
+                memcpy(copy, bloom, (size_t)bloom_len);
+                r->ref_bloom = copy;
+                r->ref_bloom_len = bloom_len;
+            }
+        }
+        if (!r->project || !r->rel_path || !r->surface_sha || !r->defs_json || !r->config_ctx ||
+            (bloom && bloom_len > 0 && !r->ref_bloom)) {
+            n++; /* count the partial row so the free below releases it */
+            oom = true;
+            break;
+        }
+        n++;
+    }
+    sqlite3_finalize(stmt);
+    if (oom || step_rc != SQLITE_DONE) {
+        cbm_store_free_lsp_surfaces(rows, n);
+        if (oom) {
+            return CBM_STORE_ERR;
+        }
+        store_set_error_sqlite(s, "lsp_surface get step");
+        return CBM_STORE_ERR;
+    }
+    *out = rows;
+    *count = n;
+    return CBM_STORE_OK;
+}
+
+int cbm_store_delete_lsp_surfaces(cbm_store_t *s, const char *project) {
+    const char *sql = "DELETE FROM lsp_surface WHERE project = ?1";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(s->db, sql, CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "lsp_surface delete prepare");
+        return CBM_STORE_ERR;
+    }
+    bind_text(stmt, ST_COL_1, project);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE) {
+        store_set_error_sqlite(s, "lsp_surface delete step");
+        return CBM_STORE_ERR;
+    }
+    return CBM_STORE_OK;
+}
+
+void cbm_store_free_lsp_surfaces(cbm_lsp_surface_row_t *rows, int count) {
+    if (!rows) {
+        return;
+    }
+    for (int i = 0; i < count; i++) {
+        free((void *)rows[i].project);
+        free((void *)rows[i].rel_path);
+        free((void *)rows[i].surface_sha);
+        free((void *)rows[i].defs_json);
+        free((void *)rows[i].ref_bloom);
+        free((void *)rows[i].config_ctx);
+    }
+    free(rows);
 }
 
 /* ── FindEdgesByURLPath ────────────────────────────────────────── */

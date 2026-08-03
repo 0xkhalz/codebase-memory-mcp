@@ -61,6 +61,21 @@ typedef struct {
     int64_t size;
 } cbm_file_hash_t;
 
+/* One file's persisted LSP surface: the serialized cross-file definition set
+ * (exactly what pass_lsp_cross registration consumes) plus the metadata the
+ * closure-repair incremental route needs to decide and bound its work. The
+ * store treats defs_json/ref_bloom as opaque; the codec lives with
+ * pass_lsp_cross, which is the only writer and reader of their contents. */
+typedef struct {
+    const char *project;
+    const char *rel_path;
+    const char *surface_sha; /* sha256 hex of defs_json (the early-cutoff key) */
+    const char *defs_json;   /* canonical JSON array of the file's LSP defs */
+    const void *ref_bloom;   /* referenced-identifier bloom blob (may be NULL) */
+    int ref_bloom_len;
+    const char *config_ctx; /* governing-config context hash ("" = none) */
+} cbm_lsp_surface_row_t;
+
 /* Find nodes overlapping a line range in a file (excludes Module/Package). */
 int cbm_store_find_nodes_by_file_overlap(cbm_store_t *s, const char *project, const char *file_path,
                                          int start_line, int end_line, cbm_node_t **out,
@@ -92,6 +107,19 @@ int cbm_store_batch_count_degrees(cbm_store_t *s, const int64_t *node_ids, int i
 
 /* Upsert file hashes in batch. */
 int cbm_store_upsert_file_hash_batch(cbm_store_t *s, const cbm_file_hash_t *hashes, int count);
+
+/* ── LSP surface rows (closure-repair incremental) ───────────────
+ * Upsert/get/delete are whole-row, keyed (project, rel_path). get returns
+ * heap rows released with cbm_store_free_lsp_surfaces. A project with no
+ * rows returns OK with *count == 0 — callers treat that as "no surface
+ * data" and route to a full rebuild, which is also the upgrade path for
+ * databases written before this table existed. */
+int cbm_store_upsert_lsp_surface_batch(cbm_store_t *s, const cbm_lsp_surface_row_t *rows,
+                                       int count);
+int cbm_store_get_lsp_surfaces(cbm_store_t *s, const char *project, cbm_lsp_surface_row_t **out,
+                               int *count);
+int cbm_store_delete_lsp_surfaces(cbm_store_t *s, const char *project);
+void cbm_store_free_lsp_surfaces(cbm_lsp_surface_row_t *rows, int count);
 
 /* Find edges whose properties contain a url_path matching the keyword. */
 int cbm_store_find_edges_by_url_path(cbm_store_t *s, const char *project, const char *keyword,

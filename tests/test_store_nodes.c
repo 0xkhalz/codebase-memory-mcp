@@ -502,6 +502,81 @@ TEST(store_file_hash_crud) {
     PASS();
 }
 
+TEST(store_lsp_surface_round_trip) {
+    cbm_store_t *s = cbm_store_open_memory();
+    ASSERT_NOT_NULL(s);
+    cbm_store_upsert_project(s, "test", "/tmp/test");
+
+    /* Empty project: OK + zero rows — the "no surface data, route to full
+     * rebuild" signal, and the upgrade path for pre-table databases. */
+    cbm_lsp_surface_row_t *rows = NULL;
+    int count = CBM_NOT_FOUND;
+    ASSERT_EQ(cbm_store_get_lsp_surfaces(s, "test", &rows, &count), CBM_STORE_OK);
+    ASSERT_EQ(count, 0);
+    cbm_store_free_lsp_surfaces(rows, count);
+
+    /* Batch with the field shapes the codec will produce: a real defs array,
+     * an empty surface, a binary bloom (with embedded NUL), and no bloom. */
+    const unsigned char bloom[] = {0x01, 0x00, 0xfe, 0x7f, 0x00, 0xab};
+    cbm_lsp_surface_row_t in[] = {
+        {.project = "test",
+         .rel_path = "pkg/a.go",
+         .surface_sha = "sha-a",
+         .defs_json = "[{\"qn\":\"pkg.A\",\"sn\":\"A\",\"label\":\"Function\"}]",
+         .ref_bloom = bloom,
+         .ref_bloom_len = (int)sizeof(bloom),
+         .config_ctx = "cfg-1"},
+        {.project = "test",
+         .rel_path = "pkg/b.go",
+         .surface_sha = "sha-b",
+         .defs_json = "[]",
+         .ref_bloom = NULL,
+         .ref_bloom_len = 0,
+         .config_ctx = ""},
+    };
+    ASSERT_EQ(cbm_store_upsert_lsp_surface_batch(s, in, 2), CBM_STORE_OK);
+
+    ASSERT_EQ(cbm_store_get_lsp_surfaces(s, "test", &rows, &count), CBM_STORE_OK);
+    ASSERT_EQ(count, 2);
+    /* ORDER BY rel_path: a.go before b.go. */
+    ASSERT_STR_EQ(rows[0].rel_path, "pkg/a.go");
+    ASSERT_STR_EQ(rows[0].surface_sha, "sha-a");
+    ASSERT_STR_EQ(rows[0].defs_json, "[{\"qn\":\"pkg.A\",\"sn\":\"A\",\"label\":\"Function\"}]");
+    ASSERT_STR_EQ(rows[0].config_ctx, "cfg-1");
+    ASSERT_EQ(rows[0].ref_bloom_len, (int)sizeof(bloom));
+    ASSERT_TRUE(rows[0].ref_bloom != NULL &&
+                memcmp(rows[0].ref_bloom, bloom, sizeof(bloom)) == 0);
+    ASSERT_STR_EQ(rows[1].rel_path, "pkg/b.go");
+    ASSERT_STR_EQ(rows[1].defs_json, "[]");
+    ASSERT_EQ(rows[1].ref_bloom_len, 0);
+    ASSERT_TRUE(rows[1].ref_bloom == NULL);
+    cbm_store_free_lsp_surfaces(rows, count);
+
+    /* Upsert-on-conflict replaces the whole row, including dropping a bloom. */
+    cbm_lsp_surface_row_t update = {.project = "test",
+                                    .rel_path = "pkg/a.go",
+                                    .surface_sha = "sha-a2",
+                                    .defs_json = "[]",
+                                    .ref_bloom = NULL,
+                                    .ref_bloom_len = 0,
+                                    .config_ctx = ""};
+    ASSERT_EQ(cbm_store_upsert_lsp_surface_batch(s, &update, 1), CBM_STORE_OK);
+    ASSERT_EQ(cbm_store_get_lsp_surfaces(s, "test", &rows, &count), CBM_STORE_OK);
+    ASSERT_EQ(count, 2);
+    ASSERT_STR_EQ(rows[0].surface_sha, "sha-a2");
+    ASSERT_EQ(rows[0].ref_bloom_len, 0);
+    cbm_store_free_lsp_surfaces(rows, count);
+
+    /* Project-scoped delete removes everything. */
+    ASSERT_EQ(cbm_store_delete_lsp_surfaces(s, "test"), CBM_STORE_OK);
+    ASSERT_EQ(cbm_store_get_lsp_surfaces(s, "test", &rows, &count), CBM_STORE_OK);
+    ASSERT_EQ(count, 0);
+    cbm_store_free_lsp_surfaces(rows, count);
+
+    cbm_store_close(s);
+    PASS();
+}
+
 TEST(store_file_hash_upsert_rejects_null_required_fields) {
     /* Pins the API contract that `cbm_store_upsert_file_hash` returns
      * CBM_STORE_ERR (not silent OK) when a NOT NULL column would receive
@@ -1996,6 +2071,7 @@ SUITE(store_nodes) {
     RUN_TEST(store_node_batch_empty);
     RUN_TEST(store_cascade_delete);
     RUN_TEST(store_file_hash_crud);
+    RUN_TEST(store_lsp_surface_round_trip);
     RUN_TEST(store_file_hash_upsert_rejects_null_required_fields);
     RUN_TEST(store_node_properties_json);
     RUN_TEST(store_node_null_properties);
