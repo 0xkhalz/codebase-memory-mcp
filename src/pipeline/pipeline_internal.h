@@ -775,6 +775,7 @@ typedef enum {
     CBM_INCREMENTAL_ROUTE_NOOP,
     CBM_INCREMENTAL_ROUTE_FORCED_FULL,
     CBM_INCREMENTAL_ROUTE_LEGACY_PARTIAL,
+    CBM_INCREMENTAL_ROUTE_CLOSURE_REPAIR,
 } cbm_incremental_route_t;
 
 /* Deterministic one-shot fault injection for the incremental-parallel result

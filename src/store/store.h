@@ -121,6 +121,18 @@ int cbm_store_get_lsp_surfaces(cbm_store_t *s, const char *project, cbm_lsp_surf
 int cbm_store_delete_lsp_surfaces(cbm_store_t *s, const char *project);
 void cbm_store_free_lsp_surfaces(cbm_lsp_surface_row_t *rows, int count);
 
+/* Reverse-dependency lookup for closure-repair routing: the DISTINCT
+ * file_paths of nodes with at least one edge INTO a node of any file in
+ * target_files, excluding the target files themselves. This is "who consumed
+ * these files' definitions" as recorded by the previous generation — served
+ * by idx_edges_target + idx_nodes_file, so cost tracks the result size, not
+ * the graph size. out gets a malloc'd array of malloc'd strings; free with
+ * cbm_store_free_dependent_files. */
+int cbm_store_get_dependent_files(cbm_store_t *s, const char *project,
+                                  const char *const *target_files, int target_count, char ***out,
+                                  int *out_count);
+void cbm_store_free_dependent_files(char **files, int count);
+
 /* Find edges whose properties contain a url_path matching the keyword. */
 int cbm_store_find_edges_by_url_path(cbm_store_t *s, const char *project, const char *keyword,
                                      cbm_edge_t **out, int *count);

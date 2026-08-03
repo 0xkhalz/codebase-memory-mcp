@@ -16,6 +16,9 @@ enum { INCR_RING_BUF = 4, INCR_RING_MASK = 3, INCR_TS_BUF = 24 };
 #include <stdio.h>
 #include <time.h>
 #include "pipeline/artifact.h"
+#include "pipeline/lsp_surface.h"
+#include "pipeline/pass_lsp_cross.h"
+#include "yyjson/yyjson.h"
 #include "pipeline/pipeline_internal.h"
 #include "store/store.h"
 #include "graph_buffer/graph_buffer.h"
@@ -946,19 +949,162 @@ static void free_incremental_result_cache(CBMFileResult **cache, int count) {
     free(cache);
 }
 
+/* ── Closure repair (reverse-dependency incremental) ─────────────
+ *
+ * Routing model: the semantic manifest names WHAT changed; the previous
+ * generation's graph names WHO consumed it. A body edit leaves a file's
+ * persisted LSP surface byte-identical, so only the file itself is
+ * recomputed; a surface change pulls in exactly the files with edges into
+ * it. Per-file extraction is a pure function of file content, so an
+ * unchanged dependent can never be surface-changed in turn — the closure is
+ * structurally depth-1 and needs no fixpoint. Every uncertain case declines
+ * to a FULL rebuild: new files, added definition names (yesterday's graph
+ * cannot know tomorrow's referencers), virtual/config manifest entries,
+ * missing or unreadable surface rows, dependents outside discovery, or a
+ * closure above the budget. Declining is never wrong — it is exactly
+ * today's behaviour. */
+
+enum {
+    CLOSURE_BUDGET_PERCENT = 30,
+    /* A percentage-only budget starves small repositories (1 changed file in
+     * a 3-file project is 33%). Closures at or under this absolute size are
+     * always worth attempting; the percentage governs at scale, where it is
+     * the honest signal that a rebuild costs less than a repair. */
+    CLOSURE_BUDGET_FLOOR_FILES = 8,
+};
+
+typedef struct {
+    /* Deserialized surfaces of the files NOT being re-parsed, registered
+     * into the cross registries exactly as a full build would register
+     * their fresh parses. Strings live in `arena`. */
+    CBMLSPDef *base_defs;
+    int base_def_count;
+    CBMArena arena;
+    /* Filled by run_extract_resolve: the re-parsed files' new surface rows
+     * (heap; ownership passes to the publish merge) and the module strings
+     * resolve borrowed (freed after publish). */
+    cbm_lsp_surface_row_t *fresh_rows;
+    int fresh_count;
+    char **def_modules;
+    int def_module_count;
+} closure_resolve_t;
+
+typedef struct {
+    cbm_file_info_t *files; /* heap array; entries borrow strings from the
+                             * caller's discovery array */
+    int count;
+    int n_changed;
+    int n_dependents;
+    cbm_lsp_surface_row_t *stored_rows; /* whole previous generation */
+    int stored_count;
+} closure_plan_t;
+
+static void closure_plan_free(closure_plan_t *plan) {
+    free(plan->files);
+    cbm_store_free_lsp_surfaces(plan->stored_rows, plan->stored_count);
+    memset(plan, 0, sizeof(*plan));
+}
+
+/* Short names a surface JSON defines ("lsp"[].sn plus "reg"[].n), as a
+ * heap-keyed set. Returns NULL on parse failure — callers decline to FULL. */
+static CBMHashTable *surface_name_set(const char *defs_json) {
+    yyjson_doc *doc = yyjson_read(defs_json, strlen(defs_json), 0);
+    if (!doc) {
+        return NULL;
+    }
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    yyjson_val *lsp = root ? yyjson_obj_get(root, "lsp") : NULL;
+    yyjson_val *reg = root ? yyjson_obj_get(root, "reg") : NULL;
+    CBMHashTable *set = cbm_ht_create(CBM_SZ_64);
+    if (!set) {
+        yyjson_doc_free(doc);
+        return NULL;
+    }
+    const char *arr_keys[] = {"sn", "n"};
+    yyjson_val *arrs[] = {lsp, reg};
+    for (int a = 0; a < 2; a++) {
+        if (!arrs[a] || !yyjson_is_arr(arrs[a])) {
+            continue;
+        }
+        size_t idx, max;
+        yyjson_val *item;
+        yyjson_arr_foreach(arrs[a], idx, max, item) {
+            const char *name = yyjson_get_str(yyjson_obj_get(item, arr_keys[a]));
+            if (name && name[0] && !cbm_ht_get(set, name)) {
+                char *copy = strdup(name);
+                if (copy) {
+                    cbm_ht_set(set, copy, copy);
+                }
+            }
+        }
+    }
+    yyjson_doc_free(doc);
+    return set;
+}
+
+static void surface_name_free_visitor(const char *key, void *value, void *userdata) {
+    (void)key;
+    (void)userdata;
+    free(value); /* value IS the heap key copy */
+}
+
+static void surface_name_set_free(CBMHashTable *set) {
+    if (!set) {
+        return;
+    }
+    cbm_ht_foreach(set, surface_name_free_visitor, NULL);
+    cbm_ht_free(set);
+}
+
+typedef struct {
+    CBMHashTable *stored_set;
+    bool added;
+} surface_added_check_t;
+
+static void surface_added_visitor(const char *key, void *value, void *userdata) {
+    (void)value;
+    surface_added_check_t *check = (surface_added_check_t *)userdata;
+    if (!check->added && !cbm_ht_get(check->stored_set, key)) {
+        check->added = true;
+    }
+}
+
+/* Does `fresh_json` define any short name absent from `stored_json`? An
+ * added name can re-route references in files that have NO edge into this
+ * file yet (call-the-helper-you-just-wrote, shadowing), which the
+ * edge-derived dependent set cannot see — those cases go to FULL. */
+static int surface_added_names(const char *stored_json, const char *fresh_json, bool *out_added) {
+    *out_added = true; /* fail closed */
+    CBMHashTable *stored_set = surface_name_set(stored_json);
+    CBMHashTable *fresh_set = surface_name_set(fresh_json);
+    int rc = (stored_set && fresh_set) ? 0 : -1;
+    if (rc == 0) {
+        surface_added_check_t check = {.stored_set = stored_set, .added = false};
+        cbm_ht_foreach(fresh_set, surface_added_visitor, &check);
+        *out_added = check.added;
+    }
+    surface_name_set_free(stored_set);
+    surface_name_set_free(fresh_set);
+    return rc;
+}
+
 /* Run parallel or sequential extract+resolve for changed files. Any failure
  * aborts before persistence: the caller discards this in-memory graph and
  * preserves the old on-disk database and its retryable hashes. */
-static int run_extract_resolve(cbm_pipeline_ctx_t *ctx, cbm_file_info_t *changed_files, int ci) {
+static int run_extract_resolve(cbm_pipeline_ctx_t *ctx, cbm_file_info_t *changed_files, int ci,
+                               closure_resolve_t *closure) {
     struct timespec t;
 
-    /* Per-file LSP always runs (every mode). Cross-file LSP stays disabled in
-     * incremental regardless (cbm_parallel_resolve is called with NULL
-     * cross_registries below). */
+    /* Per-file LSP always runs (every mode). Cross-file LSP: the legacy
+     * partial route still skips it (NULL cross_registries below); the
+     * closure-repair route rebuilds the registries from persisted surfaces +
+     * this run's fresh parses and resolves with them — the same Tier-2 path
+     * a full build takes, which is what makes its output converge. */
 
 #define MIN_FILES_FOR_PARALLEL_INCR 50
     int worker_count = cbm_default_worker_count(true);
-    bool use_parallel = (worker_count > SKIP_ONE && ci > MIN_FILES_FOR_PARALLEL_INCR);
+    bool use_parallel =
+        closure != NULL || (worker_count > SKIP_ONE && ci > MIN_FILES_FOR_PARALLEL_INCR);
 
     if (use_parallel) {
         cbm_log_info("incremental.mode", "mode", "parallel", "workers", itoa_buf(worker_count),
@@ -1015,12 +1161,74 @@ static int run_extract_resolve(cbm_pipeline_ctx_t *ctx, cbm_file_info_t *changed
             atomic_store(&shared_ids, registry_next_id);
         }
 
-        /* Incremental skips cross-file LSP precondition build — it would need
-         * all_defs from the full project, not just the changed slice. */
         cbm_clock_gettime(CLOCK_MONOTONIC, &t);
-        rc = cbm_parallel_resolve(ctx, changed_files, ci, cache, &shared_ids, worker_count, NULL, 0,
-                                  NULL, NULL /* module_def_index */,
-                                  NULL /* cross_registries — incremental skips Tier 2 prebuild */);
+        CBMLSPDef *all_defs = NULL;
+        int all_def_count = 0;
+        char **def_modules = NULL;
+        CBMModuleDefIndex *module_def_index = NULL;
+        CBMCrossLspRegistries cross_registries = {0};
+        CBMCrossLspRegistries *registries_arg = NULL;
+        if (closure) {
+            /* Fresh surfaces for the re-parsed files, from the same collect
+             * path a full build uses; then registries over stored + fresh. */
+            def_modules = (char **)calloc((size_t)ci, sizeof(char *));
+            int *def_starts = (int *)calloc((size_t)ci + 1, sizeof(int));
+            int fresh_count = 0;
+            CBMLSPDef *fresh_defs =
+                def_modules && def_starts
+                    ? cbm_pxc_collect_all_defs(cache, changed_files, ci, ctx->project_name,
+                                               def_modules, &fresh_count, def_starts)
+                    : NULL;
+            if ((fresh_defs || fresh_count == 0) && def_starts &&
+                cbm_lsp_surface_build_rows(ctx->project_name, cache, changed_files, ci, fresh_defs,
+                                           def_starts, &closure->fresh_rows,
+                                           &closure->fresh_count) != 0) {
+                closure->fresh_rows = NULL;
+                closure->fresh_count = 0;
+            }
+            free(def_starts);
+            all_def_count = closure->base_def_count + fresh_count;
+            if (all_def_count > 0) {
+                all_defs = (CBMLSPDef *)cbm_arena_alloc(&closure->arena,
+                                                        (size_t)all_def_count * sizeof(CBMLSPDef));
+            }
+            if (all_defs) {
+                if (closure->base_def_count > 0) {
+                    memcpy(all_defs, closure->base_defs,
+                           (size_t)closure->base_def_count * sizeof(CBMLSPDef));
+                }
+                if (fresh_count > 0) {
+                    memcpy(all_defs + closure->base_def_count, fresh_defs,
+                           (size_t)fresh_count * sizeof(CBMLSPDef));
+                }
+                module_def_index = cbm_pxc_build_module_def_index(all_defs, all_def_count);
+                CBMArena *xa = &closure->arena;
+                cross_registries.go = cbm_go_build_cross_registry(xa, all_defs, all_def_count);
+                cross_registries.python = cbm_py_build_cross_registry(xa, all_defs, all_def_count);
+                cross_registries.c = cbm_c_build_cross_registry(xa, all_defs, all_def_count);
+                cross_registries.cs = cbm_cs_build_cross_registry(xa, all_defs, all_def_count);
+                cross_registries.ts = cbm_ts_build_cross_registry(xa, all_defs, all_def_count);
+                registries_arg = &cross_registries;
+            } else {
+                all_def_count = 0;
+            }
+            free(fresh_defs);
+            /* The resolve workers borrow def_modules strings; ownership moves
+             * to the closure ctx so they outlive resolve + calls. */
+            closure->def_modules = def_modules;
+            closure->def_module_count = ci;
+            def_modules = NULL;
+            cbm_log_info("incremental.closure_registries", "base",
+                         itoa_buf(closure->base_def_count), "fresh", itoa_buf(fresh_count),
+                         "elapsed_ms", itoa_buf((int)elapsed_ms(t)));
+        }
+        cbm_clock_gettime(CLOCK_MONOTONIC, &t);
+        rc = cbm_parallel_resolve(ctx, changed_files, ci, cache, &shared_ids, worker_count,
+                                  all_defs, all_def_count, closure ? closure->def_modules : NULL,
+                                  module_def_index, registries_arg);
+        if (module_def_index) {
+            cbm_pxc_free_module_def_index(module_def_index);
+        }
         if (rc == 0) {
             rc = cbm_pipeline_check_cancel(ctx);
         }
@@ -1133,7 +1341,8 @@ static int dump_and_persist(cbm_gbuf_t *gbuf, const char *db_path, const char *p
                             atomic_int *cancelled, const cbm_file_hash_t *manifest,
                             int manifest_count, const char *adr_content, const char *repo_path,
                             const cbm_coverage_row_t *cov, int cov_count,
-                            const cbm_coverage_meta_t *meta_template) {
+                            const cbm_coverage_meta_t *meta_template,
+                            const cbm_lsp_surface_row_t *surface_rows, int surface_row_count) {
     struct timespec t;
     cbm_clock_gettime(CLOCK_MONOTONIC, &t);
     cbm_pipeline_generation_t generation = {
@@ -1147,6 +1356,8 @@ static int dump_and_persist(cbm_gbuf_t *gbuf, const char *db_path, const char *p
         .coverage = cov,
         .coverage_count = cov_count,
         .coverage_meta = meta_template ? *meta_template : (cbm_coverage_meta_t){0},
+        .surface_rows = surface_rows,
+        .surface_row_count = surface_row_count,
     };
     int rc = cbm_pipeline_publish_generation(&generation);
     cbm_log_info("incremental.dump", "rc", itoa_buf(rc), "elapsed_ms",
@@ -1162,6 +1373,311 @@ static int dump_and_persist(cbm_gbuf_t *gbuf, const char *db_path, const char *p
     return 0;
 }
 
+/* Probe-extract a set of files into a throwaway graph to compute their
+ * FRESH surfaces without touching the real state. Parses the changed files
+ * once more than strictly necessary (the executor re-extracts them into the
+ * real graph after the purge); the changed set is small by construction and
+ * correctness stays trivially reasoned. Returns heap rows via out. */
+static int closure_probe_surfaces(cbm_pipeline_t *p, const char *project,
+                                  cbm_file_info_t *probe_files, int probe_count,
+                                  cbm_lsp_surface_row_t **out_rows, int *out_count) {
+    *out_rows = NULL;
+    *out_count = 0;
+    cbm_gbuf_t *probe_gbuf = cbm_gbuf_new(project, cbm_pipeline_repo_path(p));
+    if (!probe_gbuf) {
+        return -1;
+    }
+    char **excluded_dirs = NULL;
+    int excluded_count = 0;
+    cbm_pipeline_get_excluded(p, &excluded_dirs, &excluded_count);
+    cbm_path_alias_collection_t *aliases =
+        cbm_load_path_aliases_excluded(cbm_pipeline_repo_path(p), excluded_dirs, excluded_count);
+    cbm_pipeline_ctx_t probe_ctx = {
+        .project_name = project,
+        .repo_path = cbm_pipeline_repo_path(p),
+        .gbuf = probe_gbuf,
+        .registry = NULL,
+        .cancelled = cbm_pipeline_cancelled_ptr(p),
+        .pipeline = NULL, /* probe must not record file errors twice */
+        .mode = cbm_pipeline_get_mode(p),
+        .path_aliases = aliases,
+        .excluded_dirs = excluded_dirs,
+        .excluded_count = excluded_count,
+    };
+    CBMFileResult **cache = (CBMFileResult **)calloc((size_t)probe_count, sizeof(CBMFileResult *));
+    int rc = cache ? 0 : -1;
+    if (rc == 0) {
+        _Atomic int64_t probe_ids;
+        atomic_init(&probe_ids, cbm_gbuf_next_id(probe_gbuf));
+        rc = cbm_parallel_extract(&probe_ctx, probe_files, probe_count, cache, &probe_ids,
+                                  cbm_default_worker_count(true));
+    }
+    if (rc == 0) {
+        char **def_modules = (char **)calloc((size_t)probe_count, sizeof(char *));
+        int *def_starts = (int *)calloc((size_t)probe_count + 1, sizeof(int));
+        int def_count = 0;
+        CBMLSPDef *defs = NULL;
+        if (def_modules && def_starts) {
+            defs = cbm_pxc_collect_all_defs(cache, probe_files, probe_count, project, def_modules,
+                                            &def_count, def_starts);
+            rc = cbm_lsp_surface_build_rows(project, cache, probe_files, probe_count, defs,
+                                            def_starts, out_rows, out_count);
+        } else {
+            rc = -1;
+        }
+        free(defs);
+        free(def_starts);
+        if (def_modules) {
+            for (int i = 0; i < probe_count; i++) {
+                free(def_modules[i]);
+            }
+            free(def_modules);
+        }
+    }
+    if (cache) {
+        free_incremental_result_cache(cache, probe_count);
+    }
+    cbm_path_alias_collection_free(aliases);
+    cbm_gbuf_free(probe_gbuf);
+    return rc;
+}
+
+/* Decide whether this manifest delta is closure-repairable, and if so build
+ * the plan. Returns 1 with *plan filled, or 0 (decline → FULL) with the
+ * reason logged. Every early exit declines; nothing here mutates state. */
+static int closure_try_plan(cbm_pipeline_t *p, cbm_store_t *store, const char *project,
+                            cbm_file_info_t *files, int file_count, const cbm_file_hash_t *stored,
+                            int stored_count, const cbm_file_hash_t *fresh, int fresh_count,
+                            closure_plan_t *plan) {
+    memset(plan, 0, sizeof(*plan));
+    struct timespec t;
+    cbm_clock_gettime(CLOCK_MONOTONIC, &t);
+    const char *decline = NULL;
+
+    /* Index the fresh manifest and discovery list by rel_path. */
+    CBMHashTable *fresh_by_path = cbm_ht_create((size_t)fresh_count * PAIR_LEN + CBM_SZ_64);
+    CBMHashTable *files_by_path = cbm_ht_create((size_t)file_count * PAIR_LEN + CBM_SZ_64);
+    CBMHashTable *stored_by_path = cbm_ht_create((size_t)stored_count * PAIR_LEN + CBM_SZ_64);
+    CBMHashTable *closure_set = cbm_ht_create(CBM_SZ_64);
+    char **changed_paths = NULL;
+    char **dependents = NULL;
+    int dependent_count = 0;
+    cbm_lsp_surface_row_t *probe_rows = NULL;
+    int probe_count = 0;
+    cbm_file_info_t *probe_files = NULL;
+    int n_changed = 0;
+    int n_deleted = 0;
+    if (!fresh_by_path || !files_by_path || !stored_by_path || !closure_set) {
+        decline = "alloc";
+        goto done;
+    }
+    for (int i = 0; i < file_count; i++) {
+        cbm_ht_set(files_by_path, files[i].rel_path, &files[i]);
+    }
+    for (int i = 0; i < fresh_count; i++) {
+        cbm_ht_set(fresh_by_path, fresh[i].rel_path, (void *)&fresh[i]);
+    }
+    for (int i = 0; i < stored_count; i++) {
+        cbm_ht_set(stored_by_path, stored[i].rel_path, (void *)&stored[i]);
+    }
+
+    /* Delta classification straight from the semantic manifests (content
+     * hashes, not mtimes). Virtual entries are config/lockfile digests —
+     * their effect on resolution is not file-local, so any delta there
+     * declines. New files decline: yesterday's graph cannot know who would
+     * reference a file that did not exist. */
+    changed_paths = (char **)calloc((size_t)fresh_count + (size_t)stored_count, sizeof(char *));
+    if (!changed_paths) {
+        decline = "alloc";
+        goto done;
+    }
+    for (int i = 0; i < fresh_count; i++) {
+        const cbm_file_hash_t *old_row = cbm_ht_get(stored_by_path, fresh[i].rel_path);
+        bool is_virtual =
+            fresh[i].rel_path[0] == '\x1f' || !cbm_ht_get(files_by_path, fresh[i].rel_path);
+        if (!old_row) {
+            decline = is_virtual ? "virtual_entry_added" : "new_file";
+            goto done;
+        }
+        if (strcmp(old_row->sha256, fresh[i].sha256) != 0) {
+            if (is_virtual) {
+                decline = "virtual_or_config_changed";
+                goto done;
+            }
+            changed_paths[n_changed++] = (char *)fresh[i].rel_path;
+        }
+    }
+    for (int i = 0; i < stored_count; i++) {
+        if (!cbm_ht_get(fresh_by_path, stored[i].rel_path)) {
+            /* Gone from the manifest: deleted or newly ignored. Its nodes
+             * will be purged; files with edges into it must re-resolve. */
+            changed_paths[n_changed + n_deleted] = (char *)stored[i].rel_path;
+            n_deleted++;
+        }
+    }
+    if (n_changed == 0 && n_deleted == 0) {
+        decline = "no_file_delta";
+        goto done;
+    }
+
+    /* Load the previous generation's surfaces and probe the changed files'
+     * fresh ones. Missing rows fail closed. */
+    if (cbm_store_get_lsp_surfaces(store, project, &plan->stored_rows, &plan->stored_count) !=
+            CBM_STORE_OK ||
+        plan->stored_count == 0) {
+        decline = "no_surface_rows";
+        goto done;
+    }
+    CBMHashTable *rows_by_path = cbm_ht_create((size_t)plan->stored_count * PAIR_LEN);
+    if (!rows_by_path) {
+        decline = "alloc";
+        goto done;
+    }
+    for (int i = 0; i < plan->stored_count; i++) {
+        cbm_ht_set(rows_by_path, plan->stored_rows[i].rel_path, &plan->stored_rows[i]);
+    }
+
+    probe_files =
+        (cbm_file_info_t *)calloc((size_t)(n_changed ? n_changed : 1), sizeof(cbm_file_info_t));
+    if (!probe_files) {
+        cbm_ht_free(rows_by_path);
+        decline = "alloc";
+        goto done;
+    }
+    for (int i = 0; i < n_changed; i++) {
+        cbm_file_info_t *info = cbm_ht_get(files_by_path, changed_paths[i]);
+        if (!info) {
+            cbm_ht_free(rows_by_path);
+            decline = "changed_not_discovered";
+            goto done;
+        }
+        probe_files[i] = *info;
+    }
+    if (n_changed > 0 && closure_probe_surfaces(p, project, probe_files, n_changed, &probe_rows,
+                                                &probe_count) != 0) {
+        cbm_ht_free(rows_by_path);
+        decline = "probe_failed";
+        goto done;
+    }
+
+    /* Early cutoff per changed file; surface-changed files seed the
+     * dependent query. Deleted files always seed it. */
+    int n_surface_changed = 0;
+    const char **dep_targets =
+        (const char **)calloc((size_t)(n_changed + n_deleted), sizeof(char *));
+    if (!dep_targets) {
+        cbm_ht_free(rows_by_path);
+        decline = "alloc";
+        goto done;
+    }
+    int dep_target_count = 0;
+    for (int i = 0; i < n_changed; i++) {
+        const cbm_lsp_surface_row_t *stored_row = cbm_ht_get(rows_by_path, changed_paths[i]);
+        const cbm_lsp_surface_row_t *fresh_row = NULL;
+        for (int j = 0; j < probe_count; j++) {
+            if (strcmp(probe_rows[j].rel_path, changed_paths[i]) == 0) {
+                fresh_row = &probe_rows[j];
+                break;
+            }
+        }
+        if (!stored_row || !fresh_row) {
+            free(dep_targets);
+            cbm_ht_free(rows_by_path);
+            decline = "missing_surface_row";
+            goto done;
+        }
+        if (strcmp(stored_row->surface_sha, fresh_row->surface_sha) == 0) {
+            continue; /* body edit: the file re-resolves, nobody else does */
+        }
+        bool added = false;
+        if (surface_added_names(stored_row->defs_json, fresh_row->defs_json, &added) != 0 ||
+            added) {
+            free(dep_targets);
+            cbm_ht_free(rows_by_path);
+            decline = "added_definition_names";
+            goto done;
+        }
+        n_surface_changed++;
+        dep_targets[dep_target_count++] = changed_paths[i];
+    }
+    for (int i = 0; i < n_deleted; i++) {
+        dep_targets[dep_target_count++] = changed_paths[n_changed + i];
+    }
+    cbm_ht_free(rows_by_path);
+
+    if (dep_target_count > 0 &&
+        cbm_store_get_dependent_files(store, project, dep_targets, dep_target_count, &dependents,
+                                      &dependent_count) != CBM_STORE_OK) {
+        free(dep_targets);
+        decline = "dependent_query_failed";
+        goto done;
+    }
+    free(dep_targets);
+
+    /* Closure = changed ∪ dependents. Every member must be in the current
+     * discovery (a dependent outside it cannot be re-resolved). */
+    for (int i = 0; i < n_changed; i++) {
+        if (!cbm_ht_get(closure_set, changed_paths[i])) {
+            cbm_ht_set(closure_set, changed_paths[i], changed_paths[i]);
+        }
+    }
+    for (int i = 0; i < dependent_count; i++) {
+        if (!cbm_ht_get(files_by_path, dependents[i])) {
+            decline = "dependent_not_discovered";
+            goto done;
+        }
+        if (!cbm_ht_get(closure_set, dependents[i])) {
+            cbm_ht_set(closure_set, dependents[i], dependents[i]);
+        }
+    }
+    /* closure_count == 0 is legitimate: a deleted-only delta with no
+     * dependents has nothing to re-parse, but the purge itself still needs
+     * the executor. */
+    int closure_count = (int)cbm_ht_count(closure_set);
+    if (closure_count > CLOSURE_BUDGET_FLOOR_FILES &&
+        closure_count * 100 > file_count * CLOSURE_BUDGET_PERCENT) {
+        decline = "budget_exceeded";
+        goto done;
+    }
+
+    plan->files = (cbm_file_info_t *)calloc((size_t)(closure_count ? closure_count : 1),
+                                            sizeof(cbm_file_info_t));
+    if (!plan->files) {
+        decline = "alloc";
+        goto done;
+    }
+    plan->count = 0;
+    for (int i = 0; i < file_count; i++) {
+        if (cbm_ht_get(closure_set, files[i].rel_path)) {
+            plan->files[plan->count++] = files[i];
+        }
+    }
+    plan->n_changed = n_changed;
+    plan->n_dependents = dependent_count;
+    cbm_log_info("incremental.closure_plan", "changed", itoa_buf(n_changed), "surface_changed",
+                 itoa_buf(n_surface_changed), "deleted", itoa_buf(n_deleted), "dependents",
+                 itoa_buf(dependent_count), "closure", itoa_buf(plan->count), "elapsed_ms",
+                 itoa_buf((int)elapsed_ms(t)));
+
+done:
+    free(probe_files);
+    cbm_store_free_lsp_surfaces(probe_rows, probe_count);
+    cbm_store_free_dependent_files(dependents, dependent_count);
+    free(changed_paths);
+    cbm_ht_free(fresh_by_path);
+    cbm_ht_free(files_by_path);
+    cbm_ht_free(stored_by_path);
+    cbm_ht_free(closure_set);
+    if (decline) {
+        cbm_log_info("incremental.closure_decline", "reason", decline, "elapsed_ms",
+                     itoa_buf((int)elapsed_ms(t)));
+        cbm_store_free_lsp_surfaces(plan->stored_rows, plan->stored_count);
+        memset(plan, 0, sizeof(*plan));
+        return 0;
+    }
+    return 1;
+}
+
 /* ── Incremental pipeline entry point ────────────────────────────── */
 
 int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_file_info_t *files,
@@ -1169,6 +1685,9 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
                                  int baseline_count) {
     struct timespec t0;
     cbm_clock_gettime(CLOCK_MONOTONIC, &t0);
+    closure_plan_t closure_plan = {0};
+    bool closure_active = false;
+    closure_resolve_t closure_cr = {0};
 
     const char *project = cbm_pipeline_project_name(p);
 
@@ -1180,9 +1699,14 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
 
     /* Exact semantic-manifest routing is read-only. Do not reopen a sealed
      * generation in WAL mode merely to prove that it is already current.
-     * The legacy partial test route still needs a writable connection. */
+     * Only the legacy partial TEST route needs a writable connection, so the
+     * writable branch exists only in test-API builds. */
+#if defined(CBM_INCREMENTAL_TEST_API) && CBM_INCREMENTAL_TEST_API
     cbm_store_t *store =
         force_legacy_partial ? cbm_store_open_path(db_path) : cbm_store_open_path_query(db_path);
+#else
+    cbm_store_t *store = cbm_store_open_path_query(db_path);
+#endif
     if (!store) {
         cbm_log_error("incremental.err", "msg", "open_db_failed", "path", db_path);
         return CBM_NOT_FOUND;
@@ -1213,27 +1737,51 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
                      cbm_pipeline_semantic_manifests_equal(stored, stored_count, baseline_manifest,
                                                            baseline_count);
         cbm_store_coverage_meta_clear(&meta);
-        cbm_store_free_file_hashes(stored, stored_count);
-        cbm_store_close(store);
         if (exact) {
+            cbm_store_free_file_hashes(stored, stored_count);
+            cbm_store_close(store);
 #if defined(CBM_INCREMENTAL_TEST_API) && CBM_INCREMENTAL_TEST_API
             incr_test_set_last_route(CBM_INCREMENTAL_ROUTE_NOOP);
 #endif
             cbm_log_info("incremental.noop", "reason", "semantic_manifest_equal");
             return cbm_pipeline_refresh_artifact(p, db_path);
         }
+        /* Manifest delta. Closure repair recomputes exactly the changed
+         * files plus the recorded consumers of any changed SURFACE; every
+         * uncertain case declines inside the planner, making the pre-plan
+         * behaviour (full rebuild) the unconditional fallback. */
+        if (metadata_current &&
+            closure_try_plan(p, store, project, files, file_count, stored, stored_count,
+                             baseline_manifest, baseline_count, &closure_plan)) {
+            closure_active = true;
 #if defined(CBM_INCREMENTAL_TEST_API) && CBM_INCREMENTAL_TEST_API
-        incr_test_set_last_route(CBM_INCREMENTAL_ROUTE_FORCED_FULL);
+            incr_test_set_last_route(CBM_INCREMENTAL_ROUTE_CLOSURE_REPAIR);
 #endif
-        cbm_log_info("incremental.force_full", "reason", "semantic_manifest_changed");
-        return CBM_PIPELINE_FORCE_FULL_REINDEX;
+            cbm_log_info("incremental.route", "route", "closure_repair", "files",
+                         itoa_buf(closure_plan.count));
+            /* Fall through into the shared repair tail below. */
+        } else {
+            cbm_store_free_file_hashes(stored, stored_count);
+            cbm_store_close(store);
+#if defined(CBM_INCREMENTAL_TEST_API) && CBM_INCREMENTAL_TEST_API
+            incr_test_set_last_route(CBM_INCREMENTAL_ROUTE_FORCED_FULL);
+#endif
+            cbm_log_info("incremental.force_full", "reason", "semantic_manifest_changed");
+            return CBM_PIPELINE_FORCE_FULL_REINDEX;
+        }
     }
 
-    /* Classify files */
+    /* Classify files. The closure route already knows its re-parse set (the
+     * plan); the legacy test route keeps its historical mtime+size classify. */
     int n_changed = 0;
     int n_unchanged = 0;
-    bool *is_changed =
-        classify_files(files, file_count, stored, stored_count, &n_changed, &n_unchanged);
+    bool *is_changed = NULL;
+    if (closure_active) {
+        n_changed = closure_plan.count;
+    } else {
+        is_changed =
+            classify_files(files, file_count, stored, stored_count, &n_changed, &n_unchanged);
+    }
 
     /* Classify stored files absent from current discovery: truly-deleted
      * (purge) vs mode-skipped (preserve nodes AND hash rows). */
@@ -1251,7 +1799,7 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
     /* Fast path: nothing changed → skip. The on-disk DB is left untouched,
      * which means existing hash rows (including for any mode-skipped files
      * that were already preserved by an earlier run) remain intact. */
-    if (n_changed == 0 && deleted_count == 0) {
+    if (!closure_active && n_changed == 0 && deleted_count == 0) {
 #if defined(CBM_INCREMENTAL_TEST_API) && CBM_INCREMENTAL_TEST_API
         incr_test_set_last_route(CBM_INCREMENTAL_ROUTE_NOOP);
 #endif
@@ -1265,7 +1813,9 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
     }
 
 #if defined(CBM_INCREMENTAL_TEST_API) && CBM_INCREMENTAL_TEST_API
-    incr_test_set_last_route(CBM_INCREMENTAL_ROUTE_LEGACY_PARTIAL);
+    if (!closure_active) {
+        incr_test_set_last_route(CBM_INCREMENTAL_ROUTE_LEGACY_PARTIAL);
+    }
 #endif
 
     cbm_store_free_file_hashes(stored, stored_count);
@@ -1285,6 +1835,7 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
         free(deleted);
         free_mode_skipped(mode_skipped, mode_skipped_count);
         cbm_store_close(store);
+        closure_plan_free(&closure_plan);
         return CBM_PIPELINE_ABORT_PRESERVE_DB;
     }
 
@@ -1292,9 +1843,15 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
     cbm_file_info_t *changed_files =
         (n_changed > 0) ? malloc((size_t)n_changed * sizeof(cbm_file_info_t)) : NULL;
     int ci = 0;
-    for (int i = 0; i < file_count; i++) {
-        if (is_changed[i]) {
-            changed_files[ci++] = files[i];
+    if (closure_active) {
+        for (int i = 0; i < closure_plan.count; i++) {
+            changed_files[ci++] = closure_plan.files[i];
+        }
+    } else {
+        for (int i = 0; i < file_count; i++) {
+            if (is_changed[i]) {
+                changed_files[ci++] = files[i];
+            }
         }
     }
     free(is_changed);
@@ -1323,6 +1880,7 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
         free_mode_skipped(mode_skipped, mode_skipped_count);
         cbm_store_free_coverage(old_cov, old_cov_count);
         cbm_store_close(store);
+        closure_plan_free(&closure_plan);
         return CBM_NOT_FOUND;
     }
 
@@ -1345,6 +1903,7 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
             free_mode_skipped(mode_skipped, mode_skipped_count);
             cbm_store_free_coverage(old_cov, old_cov_count);
             cbm_store_close(store);
+            closure_plan_free(&closure_plan);
             return CBM_PIPELINE_ABORT_PRESERVE_DB;
         }
     } else if (adr_rc != CBM_STORE_NOT_FOUND) {
@@ -1358,6 +1917,7 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
         free_mode_skipped(mode_skipped, mode_skipped_count);
         cbm_store_free_coverage(old_cov, old_cov_count);
         cbm_store_close(store);
+        closure_plan_free(&closure_plan);
         return CBM_PIPELINE_ABORT_PRESERVE_DB;
     }
 
@@ -1381,6 +1941,87 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
     }
     cbm_log_info("incremental.edge_snapshot", "captured", itoa_buf(edge_cap.count), "elapsed_ms",
                  itoa_buf((int)elapsed_ms(t)));
+
+    /* Closure prep: the files whose stored surfaces must NOT be registered
+     * or republished — everything being re-parsed plus everything deleted.
+     * Keys are OWNED copies: the deleted[] strings die inside the purge
+     * loop below, and this set outlives it into the publish merge. */
+    CBMHashTable *stale_surface_set = NULL;
+    if (closure_active) {
+        stale_surface_set = cbm_ht_create((size_t)(ci + deleted_count) * PAIR_LEN + CBM_SZ_64);
+        bool prep_ok = stale_surface_set != NULL;
+        for (int i = 0; prep_ok && i < ci; i++) {
+            char *key = strdup(changed_files[i].rel_path);
+            prep_ok = key && (cbm_ht_set(stale_surface_set, key, key), true);
+        }
+        for (int i = 0; prep_ok && i < deleted_count; i++) {
+            char *key = strdup(deleted[i]);
+            prep_ok = key && (cbm_ht_set(stale_surface_set, key, key), true);
+        }
+        /* Rehydrate the surviving surfaces into registration input. A row
+         * that fails to decode means the previous generation cannot be
+         * trusted as registry input — abort and preserve the old DB; the
+         * orchestrator's next full run rewrites every row. */
+        if (prep_ok) {
+            cbm_arena_init(&closure_cr.arena);
+            int cap = 0;
+            for (int i = 0; i < closure_plan.stored_count && prep_ok; i++) {
+                const cbm_lsp_surface_row_t *row = &closure_plan.stored_rows[i];
+                if (cbm_ht_get(stale_surface_set, row->rel_path)) {
+                    continue;
+                }
+                CBMLSPDef *row_defs = NULL;
+                int row_count =
+                    cbm_lsp_surface_defs_from_json(&closure_cr.arena, row->defs_json, &row_defs);
+                if (row_count < 0) {
+                    prep_ok = false;
+                    break;
+                }
+                if (row_count > 0) {
+                    if (closure_cr.base_def_count + row_count > cap) {
+                        int ncap = cap ? cap * PAIR_LEN : CBM_SZ_256;
+                        while (ncap < closure_cr.base_def_count + row_count) {
+                            ncap *= PAIR_LEN;
+                        }
+                        CBMLSPDef *grown = (CBMLSPDef *)cbm_arena_alloc(
+                            &closure_cr.arena, (size_t)ncap * sizeof(CBMLSPDef));
+                        if (!grown) {
+                            prep_ok = false;
+                            break;
+                        }
+                        if (closure_cr.base_def_count > 0) {
+                            memcpy(grown, closure_cr.base_defs,
+                                   (size_t)closure_cr.base_def_count * sizeof(CBMLSPDef));
+                        }
+                        closure_cr.base_defs = grown;
+                        cap = ncap;
+                    }
+                    memcpy(closure_cr.base_defs + closure_cr.base_def_count, row_defs,
+                           (size_t)row_count * sizeof(CBMLSPDef));
+                    closure_cr.base_def_count += row_count;
+                }
+            }
+        }
+        if (!prep_ok) {
+            cbm_log_error("incremental.err", "phase", "closure_rehydrate");
+            surface_name_set_free(stale_surface_set);
+            cbm_arena_destroy(&closure_cr.arena);
+            closure_plan_free(&closure_plan);
+            incr_free_edge_capture(&edge_cap);
+            free(changed_files);
+            for (int i = 0; i < deleted_count; i++) {
+                free(deleted[i]);
+            }
+            free(deleted);
+            free_mode_skipped(mode_skipped, mode_skipped_count);
+            cbm_store_free_coverage(old_cov, old_cov_count);
+            free(saved_adr);
+            cbm_gbuf_free(existing);
+            return CBM_PIPELINE_ABORT_PRESERVE_DB;
+        }
+        cbm_log_info("incremental.closure_base", "defs", itoa_buf(closure_cr.base_def_count),
+                     "rows", itoa_buf(closure_plan.stored_count));
+    }
 
     /* Step 2: Purge stale nodes */
     cbm_clock_gettime(CLOCK_MONOTONIC, &t);
@@ -1443,7 +2084,8 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
         }
     }
 
-    int phase_rc = run_extract_resolve(&ctx, changed_files, ci);
+    int phase_rc =
+        run_extract_resolve(&ctx, changed_files, ci, closure_active ? &closure_cr : NULL);
     if (phase_rc == 0) {
         phase_rc = cbm_pipeline_pass_k8s(&ctx, changed_files, ci);
     }
@@ -1482,6 +2124,16 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
         free_mode_skipped(mode_skipped, mode_skipped_count);
         free(saved_adr);
         cbm_gbuf_free(existing);
+        if (closure_active) {
+            surface_name_set_free(stale_surface_set);
+            cbm_store_free_lsp_surfaces(closure_cr.fresh_rows, closure_cr.fresh_count);
+            for (int i = 0; i < closure_cr.def_module_count; i++) {
+                free(closure_cr.def_modules[i]);
+            }
+            free(closure_cr.def_modules);
+            cbm_arena_destroy(&closure_cr.arena);
+            closure_plan_free(&closure_plan);
+        }
         return CBM_PIPELINE_ABORT_PRESERVE_DB;
     }
 
@@ -1574,6 +2226,16 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
         free_mode_skipped(mode_skipped, mode_skipped_count);
         free(saved_adr);
         cbm_gbuf_free(existing);
+        if (closure_active) {
+            surface_name_set_free(stale_surface_set);
+            cbm_store_free_lsp_surfaces(closure_cr.fresh_rows, closure_cr.fresh_count);
+            for (int i = 0; i < closure_cr.def_module_count; i++) {
+                free(closure_cr.def_modules[i]);
+            }
+            free(closure_cr.def_modules);
+            cbm_arena_destroy(&closure_cr.arena);
+            closure_plan_free(&closure_plan);
+        }
         return CBM_PIPELINE_ABORT_PRESERVE_DB;
     }
 
@@ -1595,15 +2257,53 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
         .coverage_version = CBM_SEMANTIC_INDEX_VERSION,
         .hash_records_complete = true,
     };
-    int persist_rc = dump_and_persist(existing, db_path, project, cbm_pipeline_cancelled_ptr(p),
-                                      manifest, manifest_count, saved_adr,
-                                      cbm_pipeline_repo_path(p), cov, cov_n, &coverage_meta);
+    /* Publish surfaces: the surviving previous rows plus this run's fresh
+     * ones (closure route). The legacy test route publishes none — its
+     * re-parsed files have no codec output, and publishing a stale row
+     * would satisfy a future closure plan with yesterday's surface; an
+     * empty table just routes the next incremental to a full rebuild. */
+    cbm_lsp_surface_row_t *publish_rows = NULL;
+    int publish_row_count = 0;
+    if (closure_active) {
+        int cap = closure_plan.stored_count + closure_cr.fresh_count;
+        publish_rows =
+            (cbm_lsp_surface_row_t *)calloc(cap ? (size_t)cap : 1, sizeof(*publish_rows));
+        if (publish_rows) {
+            for (int i = 0; i < closure_plan.stored_count; i++) {
+                cbm_lsp_surface_row_t *row = &closure_plan.stored_rows[i];
+                if (!row->rel_path || cbm_ht_get(stale_surface_set, row->rel_path)) {
+                    continue;
+                }
+                publish_rows[publish_row_count++] = *row; /* move ownership */
+                memset(row, 0, sizeof(*row));
+            }
+            for (int i = 0; i < closure_cr.fresh_count; i++) {
+                publish_rows[publish_row_count++] = closure_cr.fresh_rows[i];
+                memset(&closure_cr.fresh_rows[i], 0, sizeof(closure_cr.fresh_rows[i]));
+            }
+        }
+    }
+    int persist_rc =
+        dump_and_persist(existing, db_path, project, cbm_pipeline_cancelled_ptr(p), manifest,
+                         manifest_count, saved_adr, cbm_pipeline_repo_path(p), cov, cov_n,
+                         &coverage_meta, publish_rows, publish_row_count);
+    cbm_store_free_lsp_surfaces(publish_rows, publish_row_count);
     cbm_pipeline_free_semantic_manifest(manifest, manifest_count);
     free(saved_adr);
     free(cov);
     cbm_store_free_coverage(old_cov, old_cov_count);
     free_mode_skipped(mode_skipped, mode_skipped_count);
     cbm_gbuf_free(existing);
+    if (closure_active) {
+        surface_name_set_free(stale_surface_set);
+        free(closure_cr.fresh_rows); /* strings moved into publish_rows */
+        for (int i = 0; i < closure_cr.def_module_count; i++) {
+            free(closure_cr.def_modules[i]);
+        }
+        free(closure_cr.def_modules);
+        cbm_arena_destroy(&closure_cr.arena);
+        closure_plan_free(&closure_plan);
+    }
 
     cbm_log_info("incremental.done", "elapsed_ms", itoa_buf((int)elapsed_ms(t0)));
     return persist_rc;

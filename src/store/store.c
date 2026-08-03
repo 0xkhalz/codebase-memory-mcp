@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 #include "foundation/constants.h"
+#include "foundation/hash_table.h"
 
 #include <math.h>
 
@@ -3542,6 +3543,124 @@ void cbm_store_free_lsp_surfaces(cbm_lsp_surface_row_t *rows, int count) {
         free((void *)rows[i].config_ctx);
     }
     free(rows);
+}
+
+/* One chunk of the dependent-file query. Binding an IN list needs one
+ * placeholder per element, so the SQL is assembled per chunk; the chunk cap
+ * keeps it bounded. Dedup across chunks happens in the caller's hash set. */
+enum { DEPFILE_CHUNK = 200 };
+
+static int dependent_files_chunk(cbm_store_t *s, const char *project,
+                                 const char *const *target_files, int chunk_count,
+                                 CBMHashTable *seen, char ***out, int *out_count, int *out_cap) {
+    char sql[CBM_SZ_4K];
+    int pos = snprintf(sql, sizeof(sql),
+                       "SELECT DISTINCT src.file_path FROM edges e"
+                       " JOIN nodes tgt ON e.target_id = tgt.id"
+                       " JOIN nodes src ON e.source_id = src.id"
+                       " WHERE e.project = ?1 AND tgt.file_path IN (");
+    for (int i = 0; i < chunk_count; i++) {
+        pos += snprintf(sql + pos, sizeof(sql) - (size_t)pos, "%s?%d", i ? "," : "", i + ST_COL_2);
+        if ((size_t)pos >= sizeof(sql)) {
+            return CBM_STORE_ERR;
+        }
+    }
+    /* Structural containment is not resolution: a Folder/Project container
+     * (whose file_path is a properties placeholder, not a real file) or a
+     * CONTAINS_* edge says nothing about who consumed the target's
+     * definitions, and the closure planner would otherwise decline on a
+     * "dependent" no discovery can ever produce. */
+    pos += snprintf(sql + pos, sizeof(sql) - (size_t)pos,
+                    ") AND src.file_path <> '' AND src.file_path IS NOT NULL"
+                    " AND src.label NOT IN ('Folder','Project')"
+                    " AND e.type NOT IN ('CONTAINS_FILE','CONTAINS_FOLDER')");
+    if ((size_t)pos >= sizeof(sql)) {
+        return CBM_STORE_ERR;
+    }
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(s->db, sql, CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "dependent_files prepare");
+        return CBM_STORE_ERR;
+    }
+    bind_text(stmt, ST_COL_1, project);
+    for (int i = 0; i < chunk_count; i++) {
+        bind_text(stmt, i + ST_COL_2, target_files[i]);
+    }
+    int step_rc;
+    while ((step_rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        const char *path = (const char *)sqlite3_column_text(stmt, 0);
+        if (!path || !path[0] || cbm_ht_get(seen, path)) {
+            continue;
+        }
+        if (*out_count >= *out_cap) {
+            int ncap = *out_cap ? *out_cap * ST_GROWTH : ST_INIT_CAP_8;
+            char **grown = realloc(*out, (size_t)ncap * sizeof(char *));
+            if (!grown) {
+                sqlite3_finalize(stmt);
+                return CBM_STORE_ERR;
+            }
+            *out = grown;
+            *out_cap = ncap;
+        }
+        char *copy = strdup(path);
+        if (!copy) {
+            sqlite3_finalize(stmt);
+            return CBM_STORE_ERR;
+        }
+        (*out)[(*out_count)++] = copy;
+        cbm_ht_set(seen, copy, copy);
+    }
+    sqlite3_finalize(stmt);
+    return step_rc == SQLITE_DONE ? CBM_STORE_OK : CBM_STORE_ERR;
+}
+
+int cbm_store_get_dependent_files(cbm_store_t *s, const char *project,
+                                  const char *const *target_files, int target_count, char ***out,
+                                  int *out_count) {
+    *out = NULL;
+    *out_count = 0;
+    if (!s || !project || target_count <= 0) {
+        return target_count == 0 ? CBM_STORE_OK : CBM_STORE_ERR;
+    }
+    /* Exclude the targets themselves up front: an edge between two files of
+     * the closure adds nothing, and the caller wants "who ELSE consumed". */
+    CBMHashTable *seen = cbm_ht_create((size_t)target_count * PAIR_LEN);
+    if (!seen) {
+        return CBM_STORE_ERR;
+    }
+    for (int i = 0; i < target_count; i++) {
+        cbm_ht_set(seen, target_files[i], (void *)target_files[i]);
+    }
+    char **files = NULL;
+    int count = 0;
+    int cap = 0;
+    int rc = CBM_STORE_OK;
+    for (int off = 0; off < target_count && rc == CBM_STORE_OK; off += DEPFILE_CHUNK) {
+        int chunk = target_count - off;
+        if (chunk > DEPFILE_CHUNK) {
+            chunk = DEPFILE_CHUNK;
+        }
+        rc = dependent_files_chunk(s, project, target_files + off, chunk, seen, &files, &count,
+                                   &cap);
+    }
+    cbm_ht_free(seen);
+    if (rc != CBM_STORE_OK) {
+        cbm_store_free_dependent_files(files, count);
+        return rc;
+    }
+    *out = files;
+    *out_count = count;
+    return CBM_STORE_OK;
+}
+
+void cbm_store_free_dependent_files(char **files, int count) {
+    if (!files) {
+        return;
+    }
+    for (int i = 0; i < count; i++) {
+        free(files[i]);
+    }
+    free(files);
 }
 
 /* ── FindEdgesByURLPath ────────────────────────────────────────── */

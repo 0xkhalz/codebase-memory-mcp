@@ -2177,7 +2177,11 @@ TEST(pipeline_incremental_repoints_call_reference_without_stale_edge) {
     cbm_pipeline_t *second = cbm_pipeline_new(tmp, db_path, CBM_MODE_FULL);
     ASSERT_NOT_NULL(second);
     ASSERT_EQ(cbm_pipeline_run(second), 0);
-    ASSERT_EQ(cbm_pipeline_incremental_test_last_route(), CBM_INCREMENTAL_ROUTE_FORCED_FULL);
+    /* Since closure repair landed, a single-file content change with no
+     * added names routes to CLOSURE_REPAIR instead of a forced full
+     * rebuild; the convergence assertions below are unchanged and now pin
+     * the repaired graph against the same expectations. */
+    ASSERT_EQ(cbm_pipeline_incremental_test_last_route(), CBM_INCREMENTAL_ROUTE_CLOSURE_REPAIR);
     const char *second_project = cbm_pipeline_project_name(second);
     cbm_store_t *second_store = cbm_store_open_path(db_path);
     ASSERT_NOT_NULL(second_store);
@@ -2305,6 +2309,282 @@ TEST(pipeline_incremental_cross_file_call_reference_matches_fresh_full) {
  * RED: incremental hashing tracks source inputs but not the semantic influence
  * of tsconfig.json. Changing only the alias mapping leaves the same-DB graph
  * pointed at target_a.ts while a fresh full index points at target_b.ts. */
+/* ── Closure-repair routing matrix + convergence ─────────────────
+ *
+ * Every test asserts BOTH the route taken and equality with a fresh full
+ * index. Route equality matters because full-rebuild would satisfy any
+ * convergence assertion vacuously; graph equality matters because a wrong
+ * closure that still routes as CLOSURE_REPAIR is precisely the bug class
+ * this feature must never ship. */
+
+static void closure_probe_repo(const char *tmp) {
+    write_temp_file(tmp, "lib.ts",
+                    "export function closureProbeHelper(x: number): string {\n"
+                    "  return String(x);\n"
+                    "}\n");
+    /* The callback-pass shape produces the exact-value CALL_REFERENCE edge
+     * (same idiom as the tsconfig alias convergence test). */
+    write_temp_file(tmp, "caller.ts",
+                    "import { closureProbeHelper } from './lib';\n"
+                    "function acceptClosureProbe(callback: (x: number) => string): void {\n"
+                    "  void callback;\n"
+                    "}\n"
+                    "export function closureProbeCaller(): void {\n"
+                    "  acceptClosureProbe(closureProbeHelper);\n"
+                    "}\n");
+    write_temp_file(tmp, "bystander.ts",
+                    "export function closureBystander(): number {\n"
+                    "  return 7;\n"
+                    "}\n");
+}
+
+/* Fresh full reference build of the same tree into its own DB. */
+static void closure_fresh_full(const char *tmp, const char *db_path, int *out_nodes,
+                               int *out_edges, int *out_ref_edges, const char *project_hint) {
+    *out_nodes = -1;
+    *out_edges = -2;
+    *out_ref_edges = -3;
+    cbm_unlink(db_path);
+    cbm_remove_db_sidecars(db_path);
+    cbm_pipeline_t *full = cbm_pipeline_new(tmp, db_path, CBM_MODE_FULL);
+    if (!full) {
+        return;
+    }
+    int rc = cbm_pipeline_run(full);
+    const char *project = cbm_pipeline_project_name(full);
+    if (rc == 0) {
+        cbm_store_t *store = cbm_store_open_path(db_path);
+        if (store) {
+            *out_nodes = cbm_store_count_nodes(store, project);
+            *out_edges = cbm_store_count_edges(store, project);
+            *out_ref_edges = named_edge_to_file_count(store, project, "CALL_REFERENCE",
+                                                      "closureProbeCaller", "closureProbeHelper",
+                                                      "lib.ts");
+            cbm_store_close(store);
+        }
+    }
+    (void)project_hint;
+    cbm_pipeline_free(full);
+}
+
+TEST(pipeline_closure_repair_body_edit_converges_with_fresh_full) {
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "/tmp/cbm_closure_body_XXXXXX");
+    ASSERT_NOT_NULL(cbm_mkdtemp(tmp));
+    closure_probe_repo(tmp);
+    char db[512];
+    snprintf(db, sizeof(db), "%s/closure.db", tmp);
+
+    cbm_pipeline_t *baseline = cbm_pipeline_new(tmp, db, CBM_MODE_FULL);
+    ASSERT_NOT_NULL(baseline);
+    ASSERT_EQ(cbm_pipeline_run(baseline), 0);
+    char project[256];
+    snprintf(project, sizeof(project), "%s", cbm_pipeline_project_name(baseline));
+    cbm_pipeline_free(baseline);
+
+    /* Body edit only: same exported surface, different body. */
+    write_temp_file(tmp, "lib.ts",
+                    "export function closureProbeHelper(x: number): string {\n"
+                    "  const doubled = x + x;\n"
+                    "  return String(doubled);\n"
+                    "}\n");
+
+    cbm_pipeline_t *incr = cbm_pipeline_new(tmp, db, CBM_MODE_FULL);
+    ASSERT_NOT_NULL(incr);
+    ASSERT_EQ(cbm_pipeline_run(incr), 0);
+    cbm_incremental_route_t route = cbm_pipeline_incremental_test_last_route();
+    cbm_pipeline_free(incr);
+    ASSERT_EQ(route, CBM_INCREMENTAL_ROUTE_CLOSURE_REPAIR);
+
+    int repaired_nodes = -1;
+    int repaired_edges = -1;
+    int repaired_refs = -1;
+    cbm_store_t *store = cbm_store_open_path(db);
+    ASSERT_NOT_NULL(store);
+    repaired_nodes = cbm_store_count_nodes(store, project);
+    repaired_edges = cbm_store_count_edges(store, project);
+    repaired_refs = named_edge_to_file_count(store, project, "CALL_REFERENCE",
+                                             "closureProbeCaller", "closureProbeHelper", "lib.ts");
+    cbm_store_close(store);
+
+    char full_db[512];
+    snprintf(full_db, sizeof(full_db), "%s/reference-full.db", tmp);
+    int full_nodes;
+    int full_edges;
+    int full_refs;
+    closure_fresh_full(tmp, full_db, &full_nodes, &full_edges, &full_refs, project);
+    th_rmtree(tmp);
+
+    ASSERT_EQ(repaired_refs, 1);
+    ASSERT_EQ(repaired_nodes, full_nodes);
+    ASSERT_EQ(repaired_edges, full_edges);
+    ASSERT_EQ(repaired_refs, full_refs);
+    PASS();
+}
+
+/* Removing a definition (no additions) keeps the closure route AND must drop
+ * the dependent's stale CALL_REFERENCE. This is the assertion legacy partial
+ * could never pass: its QN-keyed re-link resurrected yesterday's edge. */
+TEST(pipeline_closure_repair_removed_def_drops_dependent_edge) {
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "/tmp/cbm_closure_removed_XXXXXX");
+    ASSERT_NOT_NULL(cbm_mkdtemp(tmp));
+    closure_probe_repo(tmp);
+    char db[512];
+    snprintf(db, sizeof(db), "%s/closure.db", tmp);
+
+    cbm_pipeline_t *baseline = cbm_pipeline_new(tmp, db, CBM_MODE_FULL);
+    ASSERT_NOT_NULL(baseline);
+    ASSERT_EQ(cbm_pipeline_run(baseline), 0);
+    char project[256];
+    snprintf(project, sizeof(project), "%s", cbm_pipeline_project_name(baseline));
+    cbm_pipeline_free(baseline);
+
+    cbm_store_t *pre = cbm_store_open_path(db);
+    ASSERT_NOT_NULL(pre);
+    ASSERT_EQ(named_edge_to_file_count(pre, project, "CALL_REFERENCE", "closureProbeCaller",
+                                       "closureProbeHelper", "lib.ts"),
+              1);
+    cbm_store_close(pre);
+
+    /* The helper vanishes; nothing is added. The caller keeps calling a name
+     * that no longer resolves anywhere. */
+    write_temp_file(tmp, "lib.ts", "export const closureProbeHelper = undefined;\n");
+
+    cbm_pipeline_t *incr = cbm_pipeline_new(tmp, db, CBM_MODE_FULL);
+    ASSERT_NOT_NULL(incr);
+    ASSERT_EQ(cbm_pipeline_run(incr), 0);
+    cbm_incremental_route_t route = cbm_pipeline_incremental_test_last_route();
+    cbm_pipeline_free(incr);
+
+    int repaired_refs = -1;
+    cbm_store_t *store = cbm_store_open_path(db);
+    ASSERT_NOT_NULL(store);
+    repaired_refs = named_edge_to_file_count(store, project, "CALL_REFERENCE",
+                                             "closureProbeCaller", "closureProbeHelper", "lib.ts");
+    int repaired_nodes = cbm_store_count_nodes(store, project);
+    int repaired_edges = cbm_store_count_edges(store, project);
+    cbm_store_close(store);
+
+    char full_db[512];
+    snprintf(full_db, sizeof(full_db), "%s/reference-full.db", tmp);
+    int full_nodes;
+    int full_edges;
+    int full_refs;
+    closure_fresh_full(tmp, full_db, &full_nodes, &full_edges, &full_refs, project);
+    th_rmtree(tmp);
+
+    /* Function def -> const def is a label/type change, not an added NAME, so
+     * the closure route must hold — and the stale edge must be gone. */
+    ASSERT_EQ(route, CBM_INCREMENTAL_ROUTE_CLOSURE_REPAIR);
+    ASSERT_EQ(repaired_refs, full_refs);
+    ASSERT_EQ(repaired_nodes, full_nodes);
+    ASSERT_EQ(repaired_edges, full_edges);
+    PASS();
+}
+
+TEST(pipeline_closure_repair_added_name_declines_to_full) {
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "/tmp/cbm_closure_added_XXXXXX");
+    ASSERT_NOT_NULL(cbm_mkdtemp(tmp));
+    closure_probe_repo(tmp);
+    char db[512];
+    snprintf(db, sizeof(db), "%s/closure.db", tmp);
+    cbm_pipeline_t *baseline = cbm_pipeline_new(tmp, db, CBM_MODE_FULL);
+    ASSERT_NOT_NULL(baseline);
+    ASSERT_EQ(cbm_pipeline_run(baseline), 0);
+    cbm_pipeline_free(baseline);
+
+    /* A NEW name: yesterday's graph cannot know who would now resolve to
+     * it, so the planner must decline. */
+    write_temp_file(tmp, "lib.ts",
+                    "export function closureProbeHelper(x: number): string {\n"
+                    "  return String(x);\n"
+                    "}\n"
+                    "export function closureProbeExtra(): number {\n"
+                    "  return 1;\n"
+                    "}\n");
+    cbm_pipeline_t *incr = cbm_pipeline_new(tmp, db, CBM_MODE_FULL);
+    ASSERT_NOT_NULL(incr);
+    ASSERT_EQ(cbm_pipeline_run(incr), 0);
+    cbm_incremental_route_t route = cbm_pipeline_incremental_test_last_route();
+    cbm_pipeline_free(incr);
+    th_rmtree(tmp);
+    ASSERT_EQ(route, CBM_INCREMENTAL_ROUTE_FORCED_FULL);
+    PASS();
+}
+
+TEST(pipeline_closure_repair_new_file_declines_to_full) {
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "/tmp/cbm_closure_newfile_XXXXXX");
+    ASSERT_NOT_NULL(cbm_mkdtemp(tmp));
+    closure_probe_repo(tmp);
+    char db[512];
+    snprintf(db, sizeof(db), "%s/closure.db", tmp);
+    cbm_pipeline_t *baseline = cbm_pipeline_new(tmp, db, CBM_MODE_FULL);
+    ASSERT_NOT_NULL(baseline);
+    ASSERT_EQ(cbm_pipeline_run(baseline), 0);
+    cbm_pipeline_free(baseline);
+
+    write_temp_file(tmp, "newcomer.ts", "export function closureNewcomer(): void {}\n");
+    cbm_pipeline_t *incr = cbm_pipeline_new(tmp, db, CBM_MODE_FULL);
+    ASSERT_NOT_NULL(incr);
+    ASSERT_EQ(cbm_pipeline_run(incr), 0);
+    cbm_incremental_route_t route = cbm_pipeline_incremental_test_last_route();
+    cbm_pipeline_free(incr);
+    th_rmtree(tmp);
+    ASSERT_EQ(route, CBM_INCREMENTAL_ROUTE_FORCED_FULL);
+    PASS();
+}
+
+TEST(pipeline_closure_repair_budget_declines_to_full) {
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "/tmp/cbm_closure_budget_XXXXXX");
+    ASSERT_NOT_NULL(cbm_mkdtemp(tmp));
+    closure_probe_repo(tmp);
+    for (int i = 0; i < 12; i++) {
+        char name[64];
+        char body[256];
+        snprintf(name, sizeof(name), "budget_%02d.ts", i);
+        snprintf(body, sizeof(body),
+                 "export function closureBudget%02d(): number {\n  return %d;\n}\n", i, i);
+        write_temp_file(tmp, name, body);
+    }
+    for (int i = 0; i < 18; i++) {
+        char name[64];
+        char body[128];
+        snprintf(name, sizeof(name), "filler_%02d.ts", i);
+        snprintf(body, sizeof(body), "export const closureFiller%02d = %d;\n", i, i);
+        write_temp_file(tmp, name, body);
+    }
+    char db[512];
+    snprintf(db, sizeof(db), "%s/closure.db", tmp);
+    cbm_pipeline_t *baseline = cbm_pipeline_new(tmp, db, CBM_MODE_FULL);
+    ASSERT_NOT_NULL(baseline);
+    ASSERT_EQ(cbm_pipeline_run(baseline), 0);
+    cbm_pipeline_free(baseline);
+
+    /* Body-edit enough files to clear the absolute floor AND the percentage:
+     * 12 of 33 files is 36%% with 12 > CLOSURE_BUDGET_FLOOR_FILES, so the
+     * planner concedes to a full rebuild. */
+    for (int i = 0; i < 12; i++) {
+        char name[64];
+        char body[256];
+        snprintf(name, sizeof(name), "budget_%02d.ts", i);
+        snprintf(body, sizeof(body),
+                 "export function closureBudget%02d(): number {\n  return %d + 1;\n}\n", i, i);
+        write_temp_file(tmp, name, body);
+    }
+    cbm_pipeline_t *incr = cbm_pipeline_new(tmp, db, CBM_MODE_FULL);
+    ASSERT_NOT_NULL(incr);
+    ASSERT_EQ(cbm_pipeline_run(incr), 0);
+    cbm_incremental_route_t route = cbm_pipeline_incremental_test_last_route();
+    cbm_pipeline_free(incr);
+    th_rmtree(tmp);
+    ASSERT_EQ(route, CBM_INCREMENTAL_ROUTE_FORCED_FULL);
+    PASS();
+}
+
 TEST(pipeline_incremental_tsconfig_alias_change_matches_fresh_full) {
     char tmp[256];
     snprintf(tmp, sizeof(tmp), "/tmp/cbm_ref_tsconfig_incr_XXXXXX");
@@ -11574,6 +11854,11 @@ SUITE(pipeline) {
  * the default all-suite run still executes it. */
 SUITE(pipeline_semantic_manifest_repro) {
     RUN_TEST(pipeline_incremental_repoints_call_reference_without_stale_edge);
+    RUN_TEST(pipeline_closure_repair_body_edit_converges_with_fresh_full);
+    RUN_TEST(pipeline_closure_repair_removed_def_drops_dependent_edge);
+    RUN_TEST(pipeline_closure_repair_added_name_declines_to_full);
+    RUN_TEST(pipeline_closure_repair_new_file_declines_to_full);
+    RUN_TEST(pipeline_closure_repair_budget_declines_to_full);
     RUN_TEST(pipeline_incremental_tsconfig_alias_change_matches_fresh_full);
 #if defined(CBM_INCREMENTAL_TEST_API) && CBM_INCREMENTAL_TEST_API
     RUN_TEST(pipeline_git_context_change_forces_full_and_refreshes_branch);
