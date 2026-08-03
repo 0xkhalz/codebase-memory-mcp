@@ -1686,6 +1686,8 @@ int cbm_pipeline_publish_generation(const cbm_pipeline_generation_t *generation)
  * the nodes it created. */
 int cbm_pipeline_publish_staged(char *stage_path, const cbm_pipeline_generation_t *generation,
                                 bool fts_wholesale) {
+    struct timespec t_pub;
+    cbm_clock_gettime(CLOCK_MONOTONIC, &t_pub);
     cbm_store_t *store = cbm_store_open_path(stage_path);
     if (!store) {
         discard_generation_stage(stage_path);
@@ -1700,7 +1702,11 @@ int cbm_pipeline_publish_staged(char *stage_path, const cbm_pipeline_generation_
      * store, before the atomic rename, so graph and surface data can never
      * publish separately. The delete guards the incremental path, whose
      * staging DB starts as a copy of the previous generation. */
-    if (ok) {
+    /* surfaces_in_place: the delta patch already upserted exactly the
+     * repaired files' rows and deleted the purged ones inside its own
+     * transaction; rewriting every row here would be the single largest
+     * block of a delta publish at scale. */
+    if (ok && !generation->surfaces_in_place) {
         ok = cbm_store_delete_lsp_surfaces(store, generation->project) == CBM_STORE_OK &&
              cbm_store_upsert_lsp_surface_batch(store, generation->surface_rows,
                                                 generation->surface_row_count) == CBM_STORE_OK;
@@ -1709,6 +1715,9 @@ int cbm_pipeline_publish_staged(char *stage_path, const cbm_pipeline_generation_
         ok = cbm_store_adr_store(store, generation->project, generation->adr_content) ==
              CBM_STORE_OK;
     }
+    cbm_log_info("publish.timing", "block", "writes", "elapsed_ms",
+                 itoa_buf((int)elapsed_ms(t_pub)));
+    cbm_clock_gettime(CLOCK_MONOTONIC, &t_pub);
 
     cbm_project_t project_info = {0};
     bool have_project_info =
@@ -1728,12 +1737,18 @@ int cbm_pipeline_publish_staged(char *stage_path, const cbm_pipeline_generation_
     if (fts_wholesale && generation_rebuild_fts(store) != CBM_STORE_OK) {
         ok = false;
     }
+    cbm_log_info("publish.timing", "block", "fts", "elapsed_ms", itoa_buf((int)elapsed_ms(t_pub)));
+    cbm_clock_gettime(CLOCK_MONOTONIC, &t_pub);
     if (ok && !cbm_store_check_integrity(store)) {
         ok = false;
     }
+    cbm_log_info("publish.timing", "block", "integrity", "elapsed_ms",
+                 itoa_buf((int)elapsed_ms(t_pub)));
+    cbm_clock_gettime(CLOCK_MONOTONIC, &t_pub);
     if (ok && cbm_store_seal_for_atomic_publish(store) != CBM_STORE_OK) {
         ok = false;
     }
+    cbm_log_info("publish.timing", "block", "seal", "elapsed_ms", itoa_buf((int)elapsed_ms(t_pub)));
     cbm_store_close(store);
     if (!ok) {
         discard_generation_stage(stage_path);

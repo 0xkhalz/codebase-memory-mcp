@@ -219,17 +219,13 @@ int cbm_delta_purge(cbm_store_t *store, const char *project, const char *const *
     return 0;
 }
 
-/* Labels whose nodes resolution or the restricted post-passes may reference
- * as edge endpoints. Everything else stays on disk; an unexpected reference
- * to an unseeded QN surfaces as a fresh node whose INSERT then violates the
- * UNIQUE(project, qualified_name) constraint, failing the patch — and the
- * orchestration's fallback to a full rebuild self-heals. Fail-closed, never
- * silently wrong. */
-static const char *const DELTA_PRESEED_LABELS[] = {
-    "Function", "Method",   "Class",    "Struct",     "Interface", "Enum",   "Type",
-    "Trait",    "Protocol", "Variable", "Field",      "File",      "Module", "Package",
-    "Folder",   "Project",  "EnvVar",   "Dependency", "Route",
-};
+/* Every project node becomes a proxy. The first cut filtered by label and
+ * the fail-closed patch immediately found the counterexamples (synthetic
+ * Decorator nodes on django; Macro is six of the kernel's 8.5M nodes) — any
+ * node the resolvers or restricted post-passes can target as an edge
+ * endpoint must carry its real id in RAM, and curating that set by label is
+ * guessing. The proxy load stays edge-free and property-free, which is
+ * where the old full load actually spent its time. */
 
 int64_t cbm_delta_preseed(cbm_store_t *store, const char *project, cbm_gbuf_t *gbuf) {
     sqlite3 *db = cbm_store_get_db(store);
@@ -239,36 +235,26 @@ int64_t cbm_delta_preseed(cbm_store_t *store, const char *project, cbm_gbuf_t *g
     int64_t max_id = 0;
     {
         sqlite3_stmt *stmt = NULL;
-        if (sqlite3_prepare_v2(db, "SELECT COALESCE(MAX(id), 0) FROM nodes WHERE project = ?1",
-                               CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK) {
+        /* Global MAX, not project-scoped: node ids are one keyspace for the
+         * whole database, and the watermark must clear every row in it. */
+        if (sqlite3_prepare_v2(db, "SELECT COALESCE(MAX(id), 0) FROM nodes", CBM_NOT_FOUND, &stmt,
+                               NULL) != SQLITE_OK) {
             return -1;
         }
-        sqlite3_bind_text(stmt, 1, project, CBM_NOT_FOUND, SQLITE_TRANSIENT);
         if (sqlite3_step(stmt) == SQLITE_ROW) {
             max_id = sqlite3_column_int64(stmt, 0);
         }
         sqlite3_finalize(stmt);
     }
 
-    enum { PRESEED_LABEL_COUNT = sizeof(DELTA_PRESEED_LABELS) / sizeof(DELTA_PRESEED_LABELS[0]) };
-    char ph[2 * PRESEED_LABEL_COUNT + 1];
-    delta_placeholders(ph, PRESEED_LABEL_COUNT);
-    char sql[CBM_SZ_1K];
-    int n = snprintf(sql, sizeof(sql),
-                     "SELECT id, label, name, qualified_name, file_path FROM nodes"
-                     " WHERE project = ?1 AND label IN (%s) ORDER BY id",
-                     ph);
-    if (n < 0 || (size_t)n >= sizeof(sql)) {
-        return -1;
-    }
     sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(db, sql, CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(db,
+                           "SELECT id, label, name, qualified_name, file_path FROM nodes"
+                           " WHERE project = ?1 ORDER BY id",
+                           CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK) {
         return -1;
     }
     sqlite3_bind_text(stmt, 1, project, CBM_NOT_FOUND, SQLITE_TRANSIENT);
-    for (int i = 0; i < PRESEED_LABEL_COUNT; i++) {
-        sqlite3_bind_text(stmt, 2 + i, DELTA_PRESEED_LABELS[i], CBM_NOT_FOUND, SQLITE_STATIC);
-    }
     int step_rc;
     int64_t seeded = 0;
     while ((step_rc = sqlite3_step(stmt)) == SQLITE_ROW) {
@@ -331,8 +317,23 @@ static void delta_patch_node(const cbm_gbuf_node_t *node, void *userdata) {
                       CBM_NOT_FOUND, SQLITE_TRANSIENT);
     if (sqlite3_step(ctx->node_stmt) != SQLITE_DONE) {
         ctx->failed = true;
+        char id_buf[32];
+        snprintf(id_buf, sizeof(id_buf), "%lld", (long long)node->id);
         cbm_log_error("delta.patch_node_failed", "qn",
-                      node->qualified_name ? node->qualified_name : "");
+                      node->qualified_name ? node->qualified_name : "", "err",
+                      sqlite3_errmsg(ctx->db));
+        cbm_log_error("delta.patch_node_id", "id", id_buf);
+        sqlite3_stmt *who = NULL;
+        if (sqlite3_prepare_v2(ctx->db, "SELECT label, qualified_name FROM nodes WHERE id = ?1",
+                               CBM_NOT_FOUND, &who, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(who, 1, node->id);
+            if (sqlite3_step(who) == SQLITE_ROW) {
+                cbm_log_error("delta.patch_id_owner", "label",
+                              (const char *)sqlite3_column_text(who, 0), "qn",
+                              (const char *)sqlite3_column_text(who, 1));
+            }
+            sqlite3_finalize(who);
+        }
         return;
     }
     ctx->nodes++;

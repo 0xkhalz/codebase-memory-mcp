@@ -18,6 +18,7 @@ enum { INCR_RING_BUF = 4, INCR_RING_MASK = 3, INCR_TS_BUF = 24 };
 #include "pipeline/artifact.h"
 #include "pipeline/lsp_surface.h"
 #include "pipeline/pass_lsp_cross.h"
+#include "sqlite3.h"
 #include "yyjson/yyjson.h"
 #include "pipeline/pipeline_internal.h"
 #include "store/store.h"
@@ -1907,8 +1908,6 @@ static int run_closure_delta(cbm_pipeline_t *p, const char *db_path, const char 
     const char **purge_paths = NULL;
     cbm_file_hash_t *manifest = NULL;
     int manifest_count = 0;
-    cbm_lsp_surface_row_t *publish_rows = NULL;
-    int publish_row_count = 0;
     cbm_coverage_row_t *cov = NULL;
     int cov_n = 0;
 
@@ -2140,25 +2139,31 @@ static int run_closure_delta(cbm_pipeline_t *p, const char *db_path, const char 
         goto out;
     }
 
-    /* Surviving previous surfaces + this run's fresh ones. */
+    /* Surfaces in place: delete the purged files' rows and upsert only
+     * the repaired files' fresh ones inside the staging store. The other
+     * ~all rows are already correct in the clone; rewriting them was the
+     * largest single block of a kernel-scale delta publish. */
     {
-        int cap = plan->stored_count + cr.fresh_count;
-        publish_rows =
-            (cbm_lsp_surface_row_t *)calloc(cap ? (size_t)cap : 1, sizeof(*publish_rows));
-        if (!publish_rows) {
-            goto out;
-        }
-        for (int i = 0; i < plan->stored_count; i++) {
-            cbm_lsp_surface_row_t *row = &plan->stored_rows[i];
-            if (!row->rel_path || cbm_ht_get(stale_surface_set, row->rel_path)) {
-                continue;
+        sqlite3 *sdb = cbm_store_get_db(staging);
+        sqlite3_stmt *del = NULL;
+        bool surf_ok = sdb != NULL;
+        if (surf_ok && sqlite3_prepare_v2(sdb,
+                                          "DELETE FROM lsp_surface WHERE project = ?1"
+                                          " AND rel_path = ?2",
+                                          CBM_NOT_FOUND, &del, NULL) == SQLITE_OK) {
+            for (int i = 0; surf_ok && i < ci + deleted_count; i++) {
+                sqlite3_reset(del);
+                sqlite3_bind_text(del, 1, project, CBM_NOT_FOUND, SQLITE_TRANSIENT);
+                sqlite3_bind_text(del, 2, purge_paths[i], CBM_NOT_FOUND, SQLITE_TRANSIENT);
+                surf_ok = sqlite3_step(del) == SQLITE_DONE;
             }
-            publish_rows[publish_row_count++] = *row;
-            memset(row, 0, sizeof(*row));
+            sqlite3_finalize(del);
+        } else {
+            surf_ok = false;
         }
-        for (int i = 0; i < cr.fresh_count; i++) {
-            publish_rows[publish_row_count++] = cr.fresh_rows[i];
-            memset(&cr.fresh_rows[i], 0, sizeof(cr.fresh_rows[i]));
+        if (!surf_ok || cbm_store_upsert_lsp_surface_batch(staging, cr.fresh_rows,
+                                                           cr.fresh_count) != CBM_STORE_OK) {
+            goto out;
         }
     }
 
@@ -2190,8 +2195,9 @@ static int run_closure_delta(cbm_pipeline_t *p, const char *db_path, const char 
                     .coverage_version = CBM_SEMANTIC_INDEX_VERSION,
                     .hash_records_complete = true,
                 },
-            .surface_rows = publish_rows,
-            .surface_row_count = publish_row_count,
+            .surface_rows = NULL,
+            .surface_row_count = 0,
+            .surfaces_in_place = true,
         };
         cbm_store_close(staging);
         staging = NULL;
@@ -2224,7 +2230,6 @@ out:
         free(cr.def_modules);
         cbm_arena_destroy(&cr.arena);
     }
-    cbm_store_free_lsp_surfaces(publish_rows, publish_row_count);
     cbm_pipeline_free_semantic_manifest(manifest, manifest_count);
     free(cov);
     free(purge_paths);

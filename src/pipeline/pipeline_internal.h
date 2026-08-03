@@ -702,6 +702,10 @@ typedef struct {
      * belong to the same generation. */
     const cbm_lsp_surface_row_t *surface_rows;
     int surface_row_count;
+    /* True when the caller already wrote this generation's surface rows
+     * into the staging store (delta patch); publish then skips the
+     * wholesale delete+rewrite. */
+    bool surfaces_in_place;
 } cbm_pipeline_generation_t;
 
 /* Serialize and fully populate a sibling staging database, then atomically
