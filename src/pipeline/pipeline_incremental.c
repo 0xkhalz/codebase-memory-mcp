@@ -27,6 +27,7 @@ enum { INCR_RING_BUF = 4, INCR_RING_MASK = 3, INCR_TS_BUF = 24 };
 #include "foundation/hash_table.h"
 #include "foundation/compat.h"
 #include "foundation/compat_fs.h"
+#include "foundation/compat_thread.h"
 #include "foundation/platform.h"
 #include "foundation/sha256.h"
 
@@ -386,6 +387,40 @@ static int semantic_manifest_walk_controls(semantic_manifest_builder_t *builder,
     return rc;
 }
 
+/* Parallel pre-hash of the discovery list. Hashing dominates manifest cost
+ * (tens of thousands of file reads; single-threaded it was the second-
+ * largest block of a kernel-scale incremental run after publication), and
+ * semantic_manifest_hash_file is pure per-file work, so the files fan out
+ * across workers while ASSEMBLY stays serial and in discovery order — the
+ * manifest bytes are identical to the serial build's, only sooner. */
+typedef struct {
+    const cbm_file_info_t *files;
+    int file_count;
+    int worker_id;
+    int worker_count;
+    char (*shas)[CBM_SHA256_HEX_LEN + 1];
+    int64_t *mtimes;
+    int64_t *sizes;
+    int8_t *rcs;
+} manifest_hash_worker_t;
+
+static void *manifest_hash_worker(void *arg) {
+    manifest_hash_worker_t *w = (manifest_hash_worker_t *)arg;
+    for (int i = w->worker_id; i < w->file_count; i += w->worker_count) {
+        if (!w->files[i].rel_path || !w->files[i].rel_path[0]) {
+            w->rcs[i] = 1; /* assembly skips exactly as the serial path did */
+            continue;
+        }
+        w->rcs[i] = semantic_manifest_hash_file(w->files[i].path, w->shas[i], &w->mtimes[i],
+                                                &w->sizes[i]) == 0
+                        ? 0
+                        : -1;
+    }
+    return NULL;
+}
+
+enum { MANIFEST_PARALLEL_MIN_FILES = 64 };
+
 int cbm_pipeline_build_semantic_manifest(const char *project, const char *repo_path,
                                          const cbm_file_info_t *files, int file_count,
                                          char **excluded_dirs, int excluded_count,
@@ -427,9 +462,83 @@ int cbm_pipeline_build_semantic_manifest(const char *project, const char *repo_p
         rc = semantic_manifest_add_digest(&builder, project, CBM_SEMANTIC_INPUT_PROJECT_CONFIG,
                                           project_config_digest, 0, 0);
     }
-    for (int i = 0; rc == 0 && i < file_count; i++) {
-        rc = semantic_manifest_add(&builder, project, files[i].rel_path, files[i].path);
+    struct timespec t_hash;
+    cbm_clock_gettime(CLOCK_MONOTONIC, &t_hash);
+    int hash_workers = cbm_default_worker_count(true);
+    if (rc == 0 && file_count >= MANIFEST_PARALLEL_MIN_FILES && hash_workers > SKIP_ONE) {
+        char (*shas)[CBM_SHA256_HEX_LEN + 1] = malloc((size_t)file_count * sizeof(*shas));
+        int64_t *mtimes = calloc((size_t)file_count, sizeof(int64_t));
+        int64_t *sizes = calloc((size_t)file_count, sizeof(int64_t));
+        int8_t *rcs = calloc((size_t)file_count, sizeof(int8_t));
+        cbm_thread_t *threads = calloc((size_t)hash_workers, sizeof(cbm_thread_t));
+        manifest_hash_worker_t *workers = calloc((size_t)hash_workers, sizeof(*workers));
+        if (shas && mtimes && sizes && rcs && threads && workers) {
+            int spawned = 0;
+            for (int w = 0; w < hash_workers; w++) {
+                workers[w] = (manifest_hash_worker_t){.files = files,
+                                                      .file_count = file_count,
+                                                      .worker_id = w,
+                                                      .worker_count = hash_workers,
+                                                      .shas = shas,
+                                                      .mtimes = mtimes,
+                                                      .sizes = sizes,
+                                                      .rcs = rcs};
+                if (cbm_thread_create(&threads[w], 0, manifest_hash_worker, &workers[w]) != 0) {
+                    break;
+                }
+                spawned++;
+            }
+            /* Workers that failed to spawn leave their stride to this
+             * thread: run the remaining strides inline so every index is
+             * covered exactly once. */
+            for (int w = spawned; w < hash_workers; w++) {
+                workers[w] = (manifest_hash_worker_t){.files = files,
+                                                      .file_count = file_count,
+                                                      .worker_id = w,
+                                                      .worker_count = hash_workers,
+                                                      .shas = shas,
+                                                      .mtimes = mtimes,
+                                                      .sizes = sizes,
+                                                      .rcs = rcs};
+                (void)manifest_hash_worker(&workers[w]);
+            }
+            for (int w = 0; w < spawned; w++) {
+                cbm_thread_join(&threads[w]);
+            }
+            for (int i = 0; rc == 0 && i < file_count; i++) {
+                if (rcs[i] == 1) {
+                    continue;
+                }
+                if (rcs[i] != 0) {
+                    cbm_log_error("semantic_manifest.err", "path", files[i].path);
+                    rc = CBM_NOT_FOUND;
+                    break;
+                }
+                if (cbm_ht_has(builder.seen_paths, files[i].rel_path)) {
+                    continue;
+                }
+                rc = semantic_manifest_add_digest(&builder, project, files[i].rel_path, shas[i],
+                                                  mtimes[i], sizes[i]);
+            }
+        } else {
+            for (int i = 0; rc == 0 && i < file_count; i++) {
+                rc = semantic_manifest_add(&builder, project, files[i].rel_path, files[i].path);
+            }
+        }
+        free(shas);
+        free(mtimes);
+        free(sizes);
+        free(rcs);
+        free(threads);
+        free(workers);
+    } else {
+        for (int i = 0; rc == 0 && i < file_count; i++) {
+            rc = semantic_manifest_add(&builder, project, files[i].rel_path, files[i].path);
+        }
     }
+    cbm_log_info("pass.timing", "pass", "semantic_manifest_hash", "files", itoa_buf(file_count),
+                 "workers", itoa_buf(hash_workers), "elapsed_ms",
+                 itoa_buf((int)elapsed_ms(t_hash)));
     if (rc == 0) {
         rc = semantic_manifest_walk_controls(&builder, project, repo_path, "", 0, excluded_dirs,
                                              excluded_count);

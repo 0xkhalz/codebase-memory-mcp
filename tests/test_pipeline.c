@@ -2367,6 +2367,47 @@ static void closure_fresh_full(const char *tmp, const char *db_path, int *out_no
     cbm_pipeline_free(full);
 }
 
+/* The manifest hash fans out across workers above a file-count threshold;
+ * below it the serial path runs. Byte-identity of the parallel build is
+ * what the exact no-op route stands on, so pin it with a repo big enough
+ * to take the parallel path on BOTH builds: unchanged bytes must route
+ * NOOP, and one changed file must still classify exactly. */
+TEST(pipeline_parallel_manifest_is_byte_stable_above_threshold) {
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "/tmp/cbm_par_manifest_XXXXXX");
+    ASSERT_NOT_NULL(cbm_mkdtemp(tmp));
+    for (int i = 0; i < 72; i++) {
+        char name[64];
+        char body[128];
+        snprintf(name, sizeof(name), "mod_%02d.py", i);
+        snprintf(body, sizeof(body), "def par_manifest_%02d():\n    return %d\n", i, i);
+        write_temp_file(tmp, name, body);
+    }
+    char db[512];
+    snprintf(db, sizeof(db), "%s/manifest.db", tmp);
+    cbm_pipeline_t *baseline = cbm_pipeline_new(tmp, db, CBM_MODE_FULL);
+    ASSERT_NOT_NULL(baseline);
+    ASSERT_EQ(cbm_pipeline_run(baseline), 0);
+    cbm_pipeline_free(baseline);
+
+    cbm_pipeline_incremental_test_reset_faults();
+    cbm_pipeline_t *unchanged = cbm_pipeline_new(tmp, db, CBM_MODE_FULL);
+    ASSERT_NOT_NULL(unchanged);
+    ASSERT_EQ(cbm_pipeline_run(unchanged), 0);
+    ASSERT_EQ(cbm_pipeline_incremental_test_last_route(), CBM_INCREMENTAL_ROUTE_NOOP);
+    cbm_pipeline_free(unchanged);
+
+    write_temp_file(tmp, "mod_07.py", "def par_manifest_07():\n    return 700\n");
+    cbm_pipeline_incremental_test_reset_faults();
+    cbm_pipeline_t *edited = cbm_pipeline_new(tmp, db, CBM_MODE_FULL);
+    ASSERT_NOT_NULL(edited);
+    ASSERT_EQ(cbm_pipeline_run(edited), 0);
+    ASSERT_EQ(cbm_pipeline_incremental_test_last_route(), CBM_INCREMENTAL_ROUTE_CLOSURE_REPAIR);
+    cbm_pipeline_free(edited);
+    th_rmtree(tmp);
+    PASS();
+}
+
 TEST(pipeline_closure_repair_body_edit_converges_with_fresh_full) {
     char tmp[256];
     snprintf(tmp, sizeof(tmp), "/tmp/cbm_closure_body_XXXXXX");
@@ -11860,6 +11901,7 @@ SUITE(pipeline) {
  * the default all-suite run still executes it. */
 SUITE(pipeline_semantic_manifest_repro) {
     RUN_TEST(pipeline_incremental_repoints_call_reference_without_stale_edge);
+    RUN_TEST(pipeline_parallel_manifest_is_byte_stable_above_threshold);
     RUN_TEST(pipeline_closure_repair_body_edit_converges_with_fresh_full);
     RUN_TEST(pipeline_closure_repair_removed_def_drops_dependent_edge);
     RUN_TEST(pipeline_closure_repair_added_name_declines_to_full);
