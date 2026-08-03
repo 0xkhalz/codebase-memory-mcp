@@ -224,36 +224,6 @@ jobs:
           path: ${{ github.workspace }}/.ccache
           key: ccache-diag-${{ github.ref }}-${{ github.sha }}
 
-  # MemorySanitizer lane (stage 2; user decision 2026-08-03). Uninitialized
-  # READS are the one memory-error class no other lane covers dynamically.
-  # The image carries MSan-instrumented libc++/libc++abi/libunwind + zlib
-  # (vendored C deps instrument in-tree); scripts/msan.sh drives the build
-  # and the full suite. The image layers are cached via buildx local cache —
-  # a warm run skips the ~30-min libc++ build entirely.
-  test-msan:
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Buildx cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: /tmp/.buildx-msan
-          key: buildx-msan-${{ hashFiles('test-infrastructure/Dockerfile.msan') }}
-
-      - name: Build MSan image (cached layers)
-        run: |
-          docker buildx create --use --name msan-builder
-          docker buildx build \
-            --cache-from type=local,src=/tmp/.buildx-msan \
-            --cache-to type=local,dest=/tmp/.buildx-msan,mode=max \
-            -f test-infrastructure/Dockerfile.msan \
-            -t cbm-msan:ci --load test-infrastructure/
-
-      - name: MSan full suite
-        run: docker run --rm -v "$PWD:/src" -w /src cbm-msan:ci
-
   test-tsan:
     strategy:
       fail-fast: false

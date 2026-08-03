@@ -9,6 +9,14 @@
 # the clang-analyzer lane do not cover dynamically. halt_on_error stays ON:
 # a finding is a bug (or an interceptor gap to triage), never board data.
 #
+# STATUS: EXPLORATORY, LOCAL-ONLY — deliberately not wired into CI. The lane
+# cannot yet complete a full run (see the exclusion block below), and an
+# auto-running job that cannot finish is exactly the structurally-red lane
+# this repo's O10 rule forbids. It IS useful as-is: every suite it does run
+# is clean, including the C++ preprocessing path that motivated building the
+# instrumented-libc++ image. Wire it into CI once the thread-stack root cause
+# is fixed and a full run completes.
+#
 # Usage: scripts/msan.sh [suite ...]   (default: full suite)
 set -euo pipefail
 
@@ -23,7 +31,17 @@ fi
 
 # -isystem: the image deliberately has no system zlib (so the instrumented
 # one cannot be shadowed); its headers live under the MSan prefix.
-MSAN_SAN="-fsanitize=memory -fsanitize-memory-track-origins=2 -fno-omit-frame-pointer -isystem $MSAN_PREFIX/include"
+# MSAN_ORIGINS: 2 = full origin chains (best reports, heaviest frames),
+# 1 = immediate origin only, 0 = none. Detection is IDENTICAL at every level;
+# only report quality differs, so lowering it is the first lever to try when
+# frame inflation overflows a deep-recursion suite.
+MSAN_ORIGINS="${MSAN_ORIGINS:-2}"
+if [ "$MSAN_ORIGINS" = "0" ]; then
+    MSAN_ORIGIN_FLAG=""
+else
+    MSAN_ORIGIN_FLAG="-fsanitize-memory-track-origins=$MSAN_ORIGINS"
+fi
+MSAN_SAN="-fsanitize=memory $MSAN_ORIGIN_FLAG -fno-omit-frame-pointer -isystem $MSAN_PREFIX/include"
 
 # Always clean: make does not encode flags into dependencies, so a build dir
 # populated under different stdlib/sanitizer flags silently mixes objects
@@ -50,10 +68,14 @@ echo "=== MSan lane: $(clang --version | head -1) ==="
 
 # KNOWN-EXCLUDED SUITES (O10 whitelist — excluded, never silently skipped):
 #
-#   grammar_regression, grammar_labels — both overflow their thread stack
-#   under MSan (in the cases grammar_regression_all / grammar_label_goldens).
+#   grammar_regression, grammar_labels, pipeline — each overflows its thread
+#   stack under MSan (in grammar_regression_all / grammar_label_goldens /
+#   githistory_coupling_limits_output respectively).
 #   NOTE these are SUITE names: the runner selects suites, and naming a test
-#   here silently excludes nothing.
+#   here silently excludes nothing (the guard below now catches that).
+#   Excluding `pipeline` is a REAL coverage cost — it is a large suite — which
+#   is the strongest argument for fixing the thread-stack root cause rather
+#   than growing this list.
 #
 # WHY: origin tracking inflates every frame, and these suites drive the
 # deepest parser recursion in the tree (one extract per grammar across ~160
@@ -77,11 +99,20 @@ echo "=== MSan lane: $(clang --version | head -1) ==="
 #  3. Clean-rebuild hygiene — which DID resolve a separate false report at
 #     preprocessor.cpp:168 (mixed libstdc++/libc++ objects).
 #
-# NEXT STEP: find that creator (MSan labels the thread T473-T484, i.e. late in
-# a long-lived process), or test -track-origins=1, which detects identically
-# and only shortens the origin chain — the cheapest untried lever. Then delete
-# this block and confirm both suites run.
-MSAN_EXCLUDE="${MSAN_EXCLUDE:-grammar_regression grammar_labels}"
+#  4. MSAN_ORIGINS=1 (added above). Detection is identical at any origin
+#     level, so this is pure frame savings. It MOVED the wall rather than
+#     removing it: a full run at origins=1 got past both grammar suites and
+#     died later in githistory_coupling_limits_output, yet running the two
+#     grammar suites DIRECTLY at origins=1 still overflowed. Same flags, same
+#     binary, different outcome by run context — so the trigger is cumulative
+#     process state (thread ordinals T475 vs T486), not any one suite's depth.
+#
+# NEXT STEP: that context dependence is the real lead — it points at threads
+# accumulating across a long-lived runner process rather than at recursion in
+# any single suite. Find the creator of these threads (not cbm_thread_create,
+# see 2 above) and give it a sanitized-build stack floor. Sharding the lane
+# one suite per process would also sidestep it. Then delete this block.
+MSAN_EXCLUDE="${MSAN_EXCLUDE:-grammar_regression grammar_labels pipeline}"
 
 if [ "$#" -gt 0 ]; then
     ./build/msan/test-runner "$@"
