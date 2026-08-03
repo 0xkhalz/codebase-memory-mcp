@@ -35,7 +35,11 @@ fi
 # 1 = immediate origin only, 0 = none. Detection is IDENTICAL at every level;
 # only report quality differs, so lowering it is the first lever to try when
 # frame inflation overflows a deep-recursion suite.
-MSAN_ORIGINS="${MSAN_ORIGINS:-2}"
+# Default 1 on this lane: identical DETECTION at every level (only report
+# depth differs), and the frame savings are what lets the deep-recursion
+# grammar suites fit their stacks under instrumentation. Export
+# MSAN_ORIGINS=2 locally when chasing a specific report's origin chain.
+MSAN_ORIGINS="${MSAN_ORIGINS:-1}"
 if [ "$MSAN_ORIGINS" = "0" ]; then
     MSAN_ORIGIN_FLAG=""
 else
@@ -130,7 +134,21 @@ MSAN_EXCLUDE="${MSAN_EXCLUDE:-}"
 if [ "$#" -gt 0 ]; then
     ./build/msan/test-runner "$@"
 elif [ -z "$MSAN_EXCLUDE" ]; then
-    ./build/msan/test-runner
+    # One suite per process. Item 4 above proved the overflow wall moves with
+    # CUMULATIVE process state (thread ordinals in the hundreds by the time
+    # the deep suites run), so a fresh process per suite removes that axis
+    # while keeping COMPLETE coverage — every suite still runs, uninstrumented
+    # none. The union of --list-suites is proven complete by the sharding
+    # guard from the per-leg parallelism work (#1164).
+    fails=""
+    for suite in $(./build/msan/test-runner --list-suites); do
+        echo "=== msan: $suite ==="
+        ./build/msan/test-runner "$suite" || fails="$fails $suite"
+    done
+    if [ -n "$fails" ]; then
+        echo "=== MSan lane FAILED suites:$fails ===" >&2
+        exit 1
+    fi
 else
     echo "WARNING: running a PARTIAL sanitizer lane — excluded: $MSAN_EXCLUDE" >&2
     echo "WARNING: a green result here does NOT mean the tree is MSan-clean." >&2
