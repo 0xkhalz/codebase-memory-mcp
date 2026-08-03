@@ -2580,6 +2580,78 @@ TEST(pipeline_source_mutation_before_publication_preserves_previous_generation) 
     PASS();
 }
 
+/* Publication must never write through a name another local process can
+ * predict. The staging database used to be "<db>.stage.<pid>.<counter>",
+ * which anyone can compute in advance; publication then unlinked that name
+ * and wrote it, so a symlink planted in the gap redirects the write to a
+ * target of the attacker's choosing.
+ *
+ * Winning that timing window is not something a test should attempt -- a
+ * test that has to win a race is a coin flip, not a gate. The property that
+ * REMOVES the window is deterministic: publication must not touch any
+ * predictable name at all. Canaries occupy every name the old scheme could
+ * have picked, and all must survive. Against the old code exactly one is
+ * consumed, whichever serial the counter had reached.
+ *
+ * This calls cbm_pipeline_publish_generation directly. The only in-tree
+ * caller sits behind CBM_INCREMENTAL_TEST_API, so going through the pipeline
+ * would never reach the code under test. */
+TEST(pipeline_publication_never_uses_a_predictable_staging_path) {
+    char tmp[256];
+    snprintf(tmp, sizeof(tmp), "/tmp/cbm_publish_predictable_stage_XXXXXX");
+    ASSERT_NOT_NULL(cbm_mkdtemp(tmp));
+    char db_path[512];
+    snprintf(db_path, sizeof(db_path), "%s/generation.db", tmp);
+
+    enum { PREDICTABLE_CANARIES = 32 };
+    static const char canary[] = "canary-must-survive\n";
+    char canary_path[PREDICTABLE_CANARIES][640];
+    for (int i = 0; i < PREDICTABLE_CANARIES; i++) {
+        snprintf(canary_path[i], sizeof(canary_path[i]), "%s.stage.%ld.%d", db_path,
+                 (long)getpid(), i + 1);
+        ASSERT_EQ(th_write_file(canary_path[i], canary), 0);
+    }
+
+    cbm_gbuf_t *gb = cbm_gbuf_new("predictable-stage-proj", tmp);
+    ASSERT_NOT_NULL(gb);
+    cbm_pipeline_generation_t generation = {
+        .gbuf = gb,
+        .final_db_path = db_path,
+        .project = "predictable-stage-proj",
+        .cancelled = NULL,
+        .manifest = NULL,
+        .manifest_count = 0,
+        .adr_content = NULL,
+        .coverage = NULL,
+        .coverage_count = 0,
+    };
+    int publish_rc = cbm_pipeline_publish_generation(&generation);
+    cbm_gbuf_free(gb);
+
+    int survived = 0;
+    int intact = 0;
+    for (int i = 0; i < PREDICTABLE_CANARIES; i++) {
+        FILE *f = cbm_fopen(canary_path[i], "rb");
+        if (!f) {
+            continue;
+        }
+        survived++;
+        char buf[64] = {0};
+        size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+        (void)fclose(f);
+        if (n == strlen(canary) && memcmp(buf, canary, n) == 0) {
+            intact++;
+        }
+    }
+    th_rmtree(tmp);
+
+    ASSERT_EQ(publish_rc, 0);
+    /* Not one may be unlinked, truncated, or written through. */
+    ASSERT_EQ(survived, PREDICTABLE_CANARIES);
+    ASSERT_EQ(intact, PREDICTABLE_CANARIES);
+    PASS();
+}
+
 /* Discovery and extraction must describe the same immutable generation. A
  * source file created after extraction is not present in the original file
  * list, so merely re-hashing that list cannot detect the race. Publication
@@ -11434,6 +11506,7 @@ SUITE(pipeline_semantic_manifest_repro) {
 #if defined(CBM_INCREMENTAL_TEST_API) && CBM_INCREMENTAL_TEST_API
     RUN_TEST(pipeline_git_context_change_forces_full_and_refreshes_branch);
     RUN_TEST(pipeline_global_extension_config_change_forces_full);
+    RUN_TEST(pipeline_publication_never_uses_a_predictable_staging_path);
     RUN_TEST(pipeline_source_mutation_before_publication_preserves_previous_generation);
     RUN_TEST(pipeline_source_addition_before_publication_preserves_previous_generation);
     RUN_TEST(pipeline_tsconfig_mutation_before_publication_preserves_previous_generation);

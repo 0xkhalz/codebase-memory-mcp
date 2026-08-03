@@ -1429,7 +1429,9 @@ int cbm_pipeline_refresh_artifact(cbm_pipeline_t *p, const char *db_path) {
     return 0;
 }
 
-static atomic_ullong g_generation_stage_counter = 0;
+
+/* Defined below, next to the other publication helpers. */
+static char *create_staging_path(const char *final_path);
 
 static void discard_generation_stage(const char *stage_path) {
     if (!stage_path) {
@@ -1598,19 +1600,21 @@ int cbm_pipeline_publish_generation(const cbm_pipeline_generation_t *generation)
         return CBM_PIPELINE_ABORT_PRESERVE_DB;
     }
 
-    size_t stage_size = strlen(generation->final_db_path) + 96;
-    char *stage_path = malloc(stage_size);
+    /* The staging name must be unpredictable and created exclusively. It used
+     * to be "<db>.stage.<pid>.<counter>", which any other process can compute
+     * in advance; this path is then unlinked and written, so in a
+     * world-writable database directory an attacker could land a symlink in
+     * the window between the two and have us clobber the target. Sharing the
+     * mkstemp-based helper the other staging site already uses closes that:
+     * O_EXCL creation means we only ever write a file we made ourselves.
+     *
+     * The old unlink-first step goes with it. It existed to clear a leftover
+     * file at a name we might reuse; a freshly minted name cannot collide,
+     * and its sidecars cannot pre-exist either. */
+    char *stage_path = create_staging_path(generation->final_db_path);
     if (!stage_path) {
         return CBM_PIPELINE_PERSIST_FAILED;
     }
-    unsigned long long serial = atomic_fetch_add(&g_generation_stage_counter, 1) + 1;
-    int path_n = snprintf(stage_path, stage_size, "%s.stage.%ld.%llu", generation->final_db_path,
-                          (long)cbm_pipeline_getpid(), serial);
-    if (path_n < 0 || (size_t)path_n >= stage_size) {
-        free(stage_path);
-        return CBM_PIPELINE_PERSIST_FAILED;
-    }
-    discard_generation_stage(stage_path);
 
     int dump_rc = cbm_gbuf_dump_to_sqlite(generation->gbuf, stage_path);
     if (dump_rc != 0) {
