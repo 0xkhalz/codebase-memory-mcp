@@ -1202,13 +1202,25 @@ static int run_extract_resolve(cbm_pipeline_ctx_t *ctx, cbm_file_info_t *changed
                            (size_t)fresh_count * sizeof(CBMLSPDef));
                 }
                 module_def_index = cbm_pxc_build_module_def_index(all_defs, all_def_count);
-                CBMArena *xa = &closure->arena;
-                cross_registries.go = cbm_go_build_cross_registry(xa, all_defs, all_def_count);
-                cross_registries.python = cbm_py_build_cross_registry(xa, all_defs, all_def_count);
-                cross_registries.c = cbm_c_build_cross_registry(xa, all_defs, all_def_count);
-                cross_registries.cs = cbm_cs_build_cross_registry(xa, all_defs, all_def_count);
-                cross_registries.ts = cbm_ts_build_cross_registry(xa, all_defs, all_def_count);
-                registries_arg = &cross_registries;
+                /* Tier-2 shared registries are an amortization: the full
+                 * pipeline pays one build over all defs to make 85k per-file
+                 * resolves O(1). A floor-sized closure resolves a handful of
+                 * files, so the build (minutes-scale over multi-million-def
+                 * corpora) can never pay for itself — the per-file fallback
+                 * path, filtered through module_def_index, is the SAME
+                 * pre-Tier-2 resolution code the full pipeline still uses
+                 * for languages without a shared registry, so convergence
+                 * is unaffected; only the amortization strategy changes. */
+                if (ci > CLOSURE_BUDGET_FLOOR_FILES) {
+                    CBMArena *xa = &closure->arena;
+                    cross_registries.go = cbm_go_build_cross_registry(xa, all_defs, all_def_count);
+                    cross_registries.python =
+                        cbm_py_build_cross_registry(xa, all_defs, all_def_count);
+                    cross_registries.c = cbm_c_build_cross_registry(xa, all_defs, all_def_count);
+                    cross_registries.cs = cbm_cs_build_cross_registry(xa, all_defs, all_def_count);
+                    cross_registries.ts = cbm_ts_build_cross_registry(xa, all_defs, all_def_count);
+                    registries_arg = &cross_registries;
+                }
             } else {
                 all_def_count = 0;
             }
