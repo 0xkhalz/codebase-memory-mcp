@@ -1442,6 +1442,49 @@ static int closure_probe_surfaces(cbm_pipeline_t *p, const char *project,
     return rc;
 }
 
+/* Is this manifest row a path-alias config (tsconfig/jsconfig class)? Exact
+ * match against the loaded alias collection's config paths, plus a basename
+ * fallback so a REMOVED config (absent from the fresh collection) still
+ * classifies. Alias configs are the one config class whose effect is
+ * per-scope rather than global, which is what makes governed-closure repair
+ * sound for them and for nothing else. */
+static bool closure_is_alias_config(const cbm_path_alias_collection_t *aliases,
+                                    const char *rel_path) {
+    if (!rel_path) {
+        return false;
+    }
+    if (aliases) {
+        for (int i = 0; i < aliases->count; i++) {
+            if (aliases->scopes[i].source_rel_path &&
+                strcmp(aliases->scopes[i].source_rel_path, rel_path) == 0) {
+                return true;
+            }
+        }
+    }
+    const char *slash = strrchr(rel_path, '/');
+    const char *base = slash ? slash + 1 : rel_path;
+    return strcmp(base, "tsconfig.json") == 0 || strcmp(base, "jsconfig.json") == 0;
+}
+
+/* Every discovered file under the config's directory joins the closure:
+ * their RESOLUTION consumed the config even though their bytes (and thus
+ * surfaces) are unchanged, so they re-extract and re-resolve but never
+ * propagate further. Over-inclusion (nested scopes) is safe; the budget
+ * still bounds the total. */
+static void closure_seed_governed(CBMHashTable *closure_set, const cbm_file_info_t *files,
+                                  int file_count, const char *config_rel_path) {
+    const char *slash = strrchr(config_rel_path, '/');
+    size_t dir_len = slash ? (size_t)(slash - config_rel_path + 1) : 0;
+    for (int i = 0; i < file_count; i++) {
+        if (dir_len > 0 && strncmp(files[i].rel_path, config_rel_path, dir_len) != 0) {
+            continue;
+        }
+        if (!cbm_ht_get(closure_set, files[i].rel_path)) {
+            cbm_ht_set(closure_set, files[i].rel_path, (void *)files[i].rel_path);
+        }
+    }
+}
+
 /* Decide whether this manifest delta is closure-repairable, and if so build
  * the plan. Returns 1 with *plan filled, or 0 (decline → FULL) with the
  * reason logged. Every early exit declines; nothing here mutates state. */
@@ -1465,6 +1508,7 @@ static int closure_try_plan(cbm_pipeline_t *p, cbm_store_t *store, const char *p
     cbm_lsp_surface_row_t *probe_rows = NULL;
     int probe_count = 0;
     cbm_file_info_t *probe_files = NULL;
+    cbm_path_alias_collection_t *plan_aliases = NULL;
     int n_changed = 0;
     int n_deleted = 0;
     if (!fresh_by_path || !files_by_path || !stored_by_path || !closure_set) {
@@ -1491,31 +1535,56 @@ static int closure_try_plan(cbm_pipeline_t *p, cbm_store_t *store, const char *p
         decline = "alloc";
         goto done;
     }
+    plan_aliases = cbm_load_path_aliases_excluded(cbm_pipeline_repo_path(p), NULL, 0);
+    bool governed_seeded = false;
     for (int i = 0; i < fresh_count; i++) {
         const cbm_file_hash_t *old_row = cbm_ht_get(stored_by_path, fresh[i].rel_path);
-        bool is_virtual =
-            fresh[i].rel_path[0] == '\x1f' || !cbm_ht_get(files_by_path, fresh[i].rel_path);
-        if (!old_row) {
-            decline = is_virtual ? "virtual_entry_added" : "new_file";
+        bool synthetic = semantic_manifest_is_virtual_path(fresh[i].rel_path);
+        bool discovered = cbm_ht_get(files_by_path, fresh[i].rel_path) != NULL;
+        bool delta = !old_row || strcmp(old_row->sha256, fresh[i].sha256) != 0;
+        if (!delta) {
+            continue;
+        }
+        if (synthetic) {
+            decline = "semantic_input_changed";
             goto done;
         }
-        if (strcmp(old_row->sha256, fresh[i].sha256) != 0) {
-            if (is_virtual) {
-                decline = "virtual_or_config_changed";
+        if (discovered) {
+            if (!old_row) {
+                decline = "new_file";
                 goto done;
             }
             changed_paths[n_changed++] = (char *)fresh[i].rel_path;
+            continue;
         }
+        if (closure_is_alias_config(plan_aliases, fresh[i].rel_path)) {
+            /* Config content (or a new config) re-routes resolution for the
+             * files it governs; their surfaces are untouched, so they join
+             * the closure directly and propagate nowhere. */
+            closure_seed_governed(closure_set, files, file_count, fresh[i].rel_path);
+            governed_seeded = true;
+            continue;
+        }
+        decline = "control_file_changed";
+        goto done;
     }
     for (int i = 0; i < stored_count; i++) {
         if (!cbm_ht_get(fresh_by_path, stored[i].rel_path)) {
+            if (!cbm_ht_get(files_by_path, stored[i].rel_path) &&
+                closure_is_alias_config(plan_aliases, stored[i].rel_path)) {
+                /* Removed alias config: its governed files resolve without
+                 * it now; the config's own manifest row simply disappears. */
+                closure_seed_governed(closure_set, files, file_count, stored[i].rel_path);
+                governed_seeded = true;
+                continue;
+            }
             /* Gone from the manifest: deleted or newly ignored. Its nodes
              * will be purged; files with edges into it must re-resolve. */
             changed_paths[n_changed + n_deleted] = (char *)stored[i].rel_path;
             n_deleted++;
         }
     }
-    if (n_changed == 0 && n_deleted == 0) {
+    if (n_changed == 0 && n_deleted == 0 && !governed_seeded) {
         decline = "no_file_delta";
         goto done;
     }
@@ -1660,6 +1729,7 @@ static int closure_try_plan(cbm_pipeline_t *p, cbm_store_t *store, const char *p
                  itoa_buf((int)elapsed_ms(t)));
 
 done:
+    cbm_path_alias_collection_free(plan_aliases);
     free(probe_files);
     cbm_store_free_lsp_surfaces(probe_rows, probe_count);
     cbm_store_free_dependent_files(dependents, dependent_count);

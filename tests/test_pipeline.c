@@ -2699,7 +2699,13 @@ TEST(pipeline_incremental_tsconfig_alias_change_matches_fresh_full) {
     cbm_pipeline_t *incremental = cbm_pipeline_new(tmp, incremental_db, CBM_MODE_FULL);
     ASSERT_NOT_NULL(incremental);
     ASSERT_EQ(cbm_pipeline_run(incremental), 0);
-    ASSERT_EQ(cbm_pipeline_incremental_test_last_route(), CBM_INCREMENTAL_ROUTE_FORCED_FULL);
+    /* Config-mediated retargeting is the closure route's hardest case: no
+     * source file changed, yet the caller's CALL_REFERENCE must move from
+     * target_a.ts to target_b.ts. Since alias-config governance landed this
+     * runs as a closure repair, and the convergence assertions below now
+     * prove that route rather than being satisfied by a full rebuild. */
+    ASSERT_EQ(cbm_pipeline_incremental_test_last_route(),
+              CBM_INCREMENTAL_ROUTE_CLOSURE_REPAIR);
     const char *incremental_project = cbm_pipeline_project_name(incremental);
     cbm_store_t *incremental_store = cbm_store_open_path(incremental_db);
     ASSERT_NOT_NULL(incremental_store);
