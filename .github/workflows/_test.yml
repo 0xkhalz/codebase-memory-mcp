@@ -212,10 +212,15 @@ jobs:
             ccache-diag-${{ github.ref }}-
             ccache-diag-
 
-      - name: Test (clang-22, ASan+UBSan, -fno-optimize-sibling-calls)
+      # Also enables the ASan checks that are off by default in every other
+      # lane: stack-use-after-return, stack-use-after-scope, invalid pointer
+      # pairs, and strict string checks. Mirrors `make -f Makefile.cbm diag`.
+      - name: Test (clang-22, ASan+UBSan + off-by-default ASan checks)
+        env:
+          ASAN_OPTIONS: "detect_stack_use_after_return=1:detect_invalid_pointer_pairs=2:strict_string_checks=1:detect_stack_use_after_scope=1"
         run: >
           scripts/test.sh CC=clang-22 CXX=clang++-22
-          SANITIZE="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-optimize-sibling-calls"
+          SANITIZE="-fsanitize=address,undefined,pointer-compare,pointer-subtract -fno-omit-frame-pointer -fno-optimize-sibling-calls"
 
       - name: Compiler cache (save)
         if: always()
@@ -263,6 +268,44 @@ jobs:
 
       - name: MSan full suite (no exclusions — x86-64 is the real test)
         run: docker run --rm -e MSAN_EXCLUDE="" -v "$PWD:/src" -w /src cbm-msan:ci
+
+  # macOS leak coverage. LeakSanitizer runs by default under ASan on Linux, so
+  # test-unix's ubuntu legs have always had it; on macOS it is off by default
+  # and Apple's clang refuses to turn it on, which left an entire platform with
+  # zero leak detection. Upstream (Homebrew) LLVM supports LSan on darwin/arm64,
+  # so this leg is the ordinary ASan suite built with that toolchain and run
+  # with detect_leaks=1. Mirrors the local `make -f Makefile.cbm test-lsan`.
+  test-lsan-macos:
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install LSan-capable toolchain
+        run: brew install llvm ccache
+
+      - name: Compiler cache (content-verified, restore)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-lsan-${{ github.ref }}-${{ github.sha }}
+          restore-keys: |
+            ccache-lsan-${{ github.ref }}-
+            ccache-lsan-
+
+      - name: Test (Homebrew clang, ASan + LeakSanitizer)
+        env:
+          ASAN_OPTIONS: "detect_leaks=1:halt_on_error=1"
+        run: |
+          LLVM_PREFIX="$(brew --prefix llvm)"
+          scripts/test.sh CC="$LLVM_PREFIX/bin/clang" CXX="$LLVM_PREFIX/bin/clang++"
+
+      - name: Compiler cache (save)
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-lsan-${{ github.ref }}-${{ github.sha }}
 
   test-tsan:
     strategy:

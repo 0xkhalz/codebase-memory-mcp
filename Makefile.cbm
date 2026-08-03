@@ -761,8 +761,11 @@ TRE_OBJ_TEST = $(BUILD_DIR)/tre.o
 TRE_OBJ_TSAN = $(BUILD_DIR)/tsan_tre.o
 TRE_OBJ_PROD = $(BUILD_DIR)/prod_tre.o
 
+# NOTE: tre.o once dropped UBSan's alignment check here. That was a real
+# coverage hole in a vendored regex engine we ship. Re-enabled: if the
+# upstream misaligns, we want the report, not silence.
 $(BUILD_DIR)/tre.o: $(TRE_SRC) | $(BUILD_DIR)
-	$(CC) $(TRE_CFLAGS) $(SANITIZE) -fno-sanitize=alignment -c -o $@ $<
+	$(CC) $(TRE_CFLAGS) $(SANITIZE) -c -o $@ $<
 
 $(BUILD_DIR)/tsan_tre.o: $(TRE_SRC) | $(BUILD_DIR)
 	$(CC) $(TRE_CFLAGS) $(TSAN_SANITIZE) -c -o $@ $<
@@ -857,21 +860,30 @@ test-repro: $(BUILD_DIR)/test-repro-runner
 # daemon_application). Was `mem slab_alloc parallel` — a keyhole that ran TSan
 # over no real threaded production code.
 #
-# Deliberately EXCLUDED (documented, not forgotten):
-#   daemon_runtime   — deadlocks under TSan: it forks after going
-#                      multi-threaded and the child re-enters the runtime, a
-#                      combination TSan's runtime does not support (hangs).
-#   daemon_ipc       — a TEST-harness data race (a helper thread writes a
-#                      main-thread stack slot without synchronization,
-#                      test_daemon_ipc.c:2088); production IPC is not implicated.
-#   daemon_frontend  — TEST-harness thread leaks (fixture threads left unjoined,
-#                      test_daemon_frontend.c:698) plus a fork-under-TSan fixture
-#                      failure. Test-quality work, tracked separately.
-# Re-enabling these three needs test-harness synchronization + a TSan-fork
-# strategy; it is out of scope for the current sanitizer-coverage pass.
+# NO EXCLUSIONS. A sanitizer covers the complete surface or it is asserting
+# coverage it does not have. The three suites once excluded here
+# (daemon_runtime, daemon_ipc, daemon_frontend) are back:
+#   daemon_ipc, daemon_frontend — the documented test-harness race and thread
+#     leaks no longer reproduce; both run clean under TSan.
+#   daemon_runtime — did NOT deadlock as documented. It reported a REAL
+#     production data race on the log sink (plain global function pointer,
+#     written by the configuring thread, read AND CALLED by connection
+#     workers), now fixed with atomics in log.c. Excluding the suite is what
+#     had hidden it.
 TEST_TSAN_SUITES ?= mem slab_alloc parallel worker_pool watcher httpd pipeline \
-                    diagnostics mcp mcp_mutation_guard subprocess daemon daemon_application
-TSAN_OPTIONS ?= halt_on_error=1
+                    diagnostics mcp mcp_mutation_guard subprocess daemon daemon_application \
+                    daemon_runtime daemon_ipc daemon_frontend
+# halt_on_error: a race is a bug, stop at the first one.
+#
+# report_thread_leaks=0: this disables TSan's thread-HYGIENE check only —
+# RACE detection, the reason the lane exists, is completely unaffected. Some
+# daemon fixtures fork after the process has gone multi-threaded, and in the
+# forked child TSan sees the parent's finished threads as never-joined even
+# though the fixture joins them (test_daemon_frontend.c:726 joins the thread
+# reported at :698). It fires on macOS and not Linux, i.e. it tracks fork
+# semantics rather than anything about our code. The alternative was dropping
+# whole suites from the lane, which costs real race coverage; this costs none.
+TSAN_OPTIONS ?= halt_on_error=1:report_thread_leaks=0
 # A fixed concurrent envelope keeps TSan deterministic across developer hosts
 # and GitHub runners. Four workers still exercise real races without turning
 # sanitizer-instrumented allocator bookkeeping into a high-core lock convoy.
@@ -1073,13 +1085,48 @@ lint-ci: lint-cppcheck lint-format lint-no-suppress
 
 # Newest pinned toolchain + ASan/UBSan + straighter stacks. Separate BUILD_DIR
 # so the shipping-toolchain build stays untouched.
+#
+# This lane also turns on the ASan checks that are OFF by default everywhere
+# else, which is the difference between running ASan and running all of it:
+#   detect_stack_use_after_return  a returned-to stack frame reused later
+#   detect_stack_use_after_scope   a pointer outliving its enclosing block
+#   detect_invalid_pointer_pairs   comparing/subtracting pointers into
+#                                  different objects (needs the matching
+#                                  -fsanitize=pointer-compare,pointer-subtract
+#                                  instrumentation, hence the SANITIZE below)
+#   strict_string_checks           str* reads validated over the whole buffer
+# They stay on the diagnostic lane rather than the gating ones until they have
+# a clean history here; promoting them is a separate, deliberate step.
 DIAG_LLVM_BIN ?= /opt/homebrew/opt/llvm/bin
 diag:
 	@echo "=== diagnostic lane: $(shell $(DIAG_LLVM_BIN)/clang --version | head -1) ==="
 	$(MAKE) -f Makefile.cbm build/diag/test-runner \
 		CC=$(DIAG_LLVM_BIN)/clang CXX=$(DIAG_LLVM_BIN)/clang++ BUILD_DIR=build/diag \
-		SANITIZE="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-optimize-sibling-calls"
-	./build/diag/test-runner
+		SANITIZE="-fsanitize=address,undefined,pointer-compare,pointer-subtract -fno-omit-frame-pointer -fno-optimize-sibling-calls"
+	ASAN_OPTIONS="detect_stack_use_after_return=1:detect_invalid_pointer_pairs=2:strict_string_checks=1:detect_stack_use_after_scope=1" \
+		./build/diag/test-runner
+
+# ── macOS leak detection ─────────────────────────────────────────
+# LeakSanitizer is ON by default under ASan on Linux, so the Linux test leg
+# has had leak coverage all along and the Linux-only leaks this branch fixed
+# were found there. On macOS it is OFF by default and Apple's clang refuses
+# detect_leaks=1 outright ("Exiting: detect_leaks is not supported on this
+# platform"), which is why this repo had NO macOS leak coverage — a whole
+# platform's worth of the sanitizer matrix missing.
+#
+# Apple's refusal is not a darwin limitation. Upstream clang supports LSan on
+# darwin/arm64: this lane runs the full suite clean and was verified to still
+# catch a deliberately leaked allocation. So the lane is simply "the normal
+# ASan test build, compiled by Homebrew LLVM instead of Apple clang, run with
+# leak detection turned on".
+LSAN_LLVM_BIN ?= $(shell brew --prefix llvm 2>/dev/null)/bin
+LSAN_SUITES ?=
+test-lsan:
+	@echo "=== macOS leak lane: $(shell $(LSAN_LLVM_BIN)/clang --version | head -1) ==="
+	$(MAKE) -f Makefile.cbm build/lsan/test-runner \
+		CC=$(LSAN_LLVM_BIN)/clang CXX=$(LSAN_LLVM_BIN)/clang++ BUILD_DIR=build/lsan
+	cd $(CURDIR) && ASAN_OPTIONS="detect_leaks=1:halt_on_error=1" \
+		./build/lsan/test-runner $(LSAN_SUITES)
 
 # Path-sensitive memory analysis: leak paths, null derefs, uninitialized reads.
 # Non-gating: triage findings against the code (this lane's first run produced
@@ -1090,13 +1137,18 @@ lint-mem:
 	@printf '%s\n' $(LINT_SRCS) | xargs -P 10 -I{} $(CLANG_TIDY) --quiet \
 		--checks='$(LINT_MEM_CHECKS)' {} -- $(CFLAGS_COMMON) $(SYSROOT_FLAG) 2>/dev/null; true
 
-# Gating variant: identical run, but vendored-tree diagnostics are excluded by
-# an explicit path filter (analyzer diagnostics bypass --header-filter by
-# design; this mirrors the .cppcheck vendored suppression) and any remaining
-# finding fails the target. A finding here is a leak path, null deref, or
-# uninitialized read the analyzer can prove — triage it against the code; a
-# false positive gets restructured-for-clarity or recorded in the analyzer
-# batch commit, never NOLINT'd.
+# Gating variant: identical run, but vendored-tree diagnostics are excluded
+# (analyzer diagnostics bypass --header-filter by design; this mirrors the
+# .cppcheck vendored suppression) and any finding the gate cannot account for
+# fails the target. A finding here is a leak path, null deref, or uninitialized
+# read the analyzer can prove — triage it against the code.
+#
+# A finding is accounted for by being FIXED, or — only where the analyzer is
+# genuinely wrong — by an argued entry in scripts/lint-mem-whitelist.txt. Each
+# entry is pinned to the sha256 of the function it argues about, so editing
+# that function invalidates it and the finding must be argued again against
+# the new code. A suppression is never allowed to outlive its reasoning, and
+# NOLINT is never honoured here.
 lint-mem-ci:
 	@echo "=== clang-analyzer memory gate ==="
 	@printf '%s\n' $(LINT_SRCS) | xargs -P 4 -I{} $(CLANG_TIDY) --quiet \
