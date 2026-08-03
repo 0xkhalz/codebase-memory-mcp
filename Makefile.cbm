@@ -1153,11 +1153,7 @@ lint-mem-ci:
 	@echo "=== clang-analyzer memory gate ==="
 	@printf '%s\n' $(LINT_SRCS) | xargs -P 4 -I{} $(CLANG_TIDY) --quiet \
 		--checks='$(LINT_MEM_CHECKS)' {} -- $(CFLAGS_COMMON) $(SYSROOT_FLAG) 2>/dev/null \
-		| grep -E "error:.*clang-analyzer" | grep -v "/vendored/" > lint-mem-findings.txt; \
-	if [ -s lint-mem-findings.txt ]; then \
-		echo "=== memory-analyzer findings (gate FAILS) ==="; \
-		cat lint-mem-findings.txt; rm -f lint-mem-findings.txt; exit 1; \
-	fi; rm -f lint-mem-findings.txt; echo "=== memory gate clean ==="
+		| python3 scripts/lint-mem-gate.py
 
 # ── Security audit (6 layers) ────────────────────────────────────
 
