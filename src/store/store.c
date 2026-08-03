@@ -2728,29 +2728,15 @@ static int cov_rebuild_shadow_graph(cbm_store_t *s, const char *project) {
     return CBM_STORE_OK;
 }
 
-static void cov_timing_mark(struct timespec *t, const char *what) {
-    struct timespec now;
-    cbm_clock_gettime(CLOCK_MONOTONIC, &now);
-    double ms =
-        (double)(now.tv_sec - t->tv_sec) * 1000.0 + (double)(now.tv_nsec - t->tv_nsec) / 1000000.0;
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%.0f", ms);
-    cbm_log_info("coverage.timing", "step", what, "elapsed_ms", buf);
-    *t = now;
-}
-
 int cbm_store_coverage_replace_ex(cbm_store_t *s, const char *project,
                                   const cbm_coverage_row_t *rows, int count,
                                   const cbm_coverage_meta_t *meta) {
     if (!s || !s->db || !project || count < 0 || (count > 0 && !rows)) {
         return CBM_STORE_ERR;
     }
-    struct timespec cov_t0;
-    cbm_clock_gettime(CLOCK_MONOTONIC, &cov_t0);
     if (exec_sql(s, "BEGIN;") != CBM_STORE_OK) {
         return CBM_STORE_ERR;
     }
-    cov_timing_mark(&cov_t0, "begin");
     sqlite3_stmt *del = NULL;
     if (sqlite3_prepare_v2(s->db, "DELETE FROM index_coverage WHERE project = ?1;", CBM_NOT_FOUND,
                            &del, NULL) != SQLITE_OK) {
@@ -2766,7 +2752,6 @@ int cbm_store_coverage_replace_ex(cbm_store_t *s, const char *project,
         (void)exec_sql(s, "ROLLBACK;");
         return CBM_STORE_ERR;
     }
-    cov_timing_mark(&cov_t0, "delete");
     sqlite3_stmt *ins = NULL;
     if (sqlite3_prepare_v2(
             s->db,
@@ -2794,7 +2779,6 @@ int cbm_store_coverage_replace_ex(cbm_store_t *s, const char *project,
         sqlite3_reset(ins);
     }
     sqlite3_finalize(ins);
-    cov_timing_mark(&cov_t0, "insert_loop");
     /* Prune FAILURE rows for files no longer known to the index (deleted from
      * the repo): file_hashes is the authoritative live-file set after
      * persist. By-design not_indexed_* rows are exempt — deliberately
@@ -2818,7 +2802,6 @@ int cbm_store_coverage_replace_ex(cbm_store_t *s, const char *project,
         (void)exec_sql(s, "ROLLBACK;");
         return CBM_STORE_ERR;
     }
-    cov_timing_mark(&cov_t0, "prune");
 
     if (meta) {
         char recorded_at[CBM_SZ_64];
@@ -2895,7 +2878,6 @@ int cbm_store_coverage_replace_ex(cbm_store_t *s, const char *project,
         return CBM_STORE_ERR;
     }
     return exec_sql(s, "COMMIT;");
-    cov_timing_mark(&cov_t0, "meta_and_commit");
 }
 
 int cbm_store_coverage_replace(cbm_store_t *s, const char *project, const cbm_coverage_row_t *rows,
