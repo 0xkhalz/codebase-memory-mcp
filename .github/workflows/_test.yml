@@ -213,14 +213,15 @@ jobs:
             ccache-diag-
 
       # Also enables the ASan checks that are off by default in every other
-      # lane: stack-use-after-return, stack-use-after-scope, invalid pointer
-      # pairs, and strict string checks. Mirrors `make -f Makefile.cbm diag`.
+      # lane: stack-use-after-return, stack-use-after-scope, and strict string
+      # checks. Mirrors `make -f Makefile.cbm diag`, including its reasoning
+      # for leaving detect_invalid_pointer_pairs out.
       - name: Test (clang-22, ASan+UBSan + off-by-default ASan checks)
         env:
-          ASAN_OPTIONS: "detect_stack_use_after_return=1:detect_invalid_pointer_pairs=2:strict_string_checks=1:detect_stack_use_after_scope=1"
+          ASAN_OPTIONS: "detect_stack_use_after_return=1:strict_string_checks=1:detect_stack_use_after_scope=1"
         run: |
           scripts/test.sh CC=clang-22 CXX=clang++-22 \
-            SANITIZE="-fsanitize=address,undefined,pointer-compare,pointer-subtract -fno-omit-frame-pointer -fno-optimize-sibling-calls"
+            SANITIZE="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-optimize-sibling-calls"
 
       - name: Compiler cache (save)
         if: always()

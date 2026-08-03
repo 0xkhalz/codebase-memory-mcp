@@ -41,7 +41,19 @@ if [ "$MSAN_ORIGINS" = "0" ]; then
 else
     MSAN_ORIGIN_FLAG="-fsanitize-memory-track-origins=$MSAN_ORIGINS"
 fi
-MSAN_SAN="-fsanitize=memory $MSAN_ORIGIN_FLAG -fno-omit-frame-pointer -isystem $MSAN_PREFIX/include"
+# -include stdint.h: vendored zstd carries an MSan-only block (guarded by
+# MEMORY_SANITIZER) that declares __msan_test_shadow returning intptr_t. It
+# reaches for the type with the usual
+#     #define ZSTD_DEPS_NEED_STDINT
+#     #include "zstd_deps.h"
+# idiom, but the amalgamator that produced zstd.c collapsed that second
+# include into a "skipping file" comment, so the define never pulls anything
+# in and intptr_t is undeclared. Only this lane compiles that block, and only
+# where <stddef.h> does not happen to drag stdint.h in transitively -- which
+# is why it builds on aarch64 glibc and fails on x86-64. Forcing the header
+# is a lane-local fix; patching the vendored amalgamation would be undone by
+# the next re-vendor.
+MSAN_SAN="-fsanitize=memory $MSAN_ORIGIN_FLAG -fno-omit-frame-pointer -include stdint.h -isystem $MSAN_PREFIX/include"
 
 # Always clean: make does not encode flags into dependencies, so a build dir
 # populated under different stdlib/sanitizer flags silently mixes objects

@@ -1090,11 +1090,18 @@ lint-ci: lint-cppcheck lint-format lint-no-suppress
 # else, which is the difference between running ASan and running all of it:
 #   detect_stack_use_after_return  a returned-to stack frame reused later
 #   detect_stack_use_after_scope   a pointer outliving its enclosing block
-#   detect_invalid_pointer_pairs   comparing/subtracting pointers into
-#                                  different objects (needs the matching
-#                                  -fsanitize=pointer-compare,pointer-subtract
-#                                  instrumentation, hence the SANITIZE below)
 #   strict_string_checks           str* reads validated over the whole buffer
+#
+# detect_invalid_pointer_pairs is deliberately NOT here. It fires during
+# static initialisation inside vendored simplecpp -- a std::string global at
+# simplecpp.cpp:101 -- reporting a pair whose second "pointer" is the
+# sentinel 0xfffffffffffffff3, i.e. libstdc++ string internals rather than
+# anything this codebase wrote. The option is a process-wide runtime flag
+# with no per-file scoping, so it cannot be aimed away from vendored code the
+# way the analyzer's path filter can. Enabling it would mean a permanently
+# red lane reporting a non-defect, which teaches people to ignore the lane.
+# The instrumentation it requires (-fsanitize=pointer-compare,pointer-
+# subtract) comes out with it, since it is dead weight without the check.
 # They stay on the diagnostic lane rather than the gating ones until they have
 # a clean history here; promoting them is a separate, deliberate step.
 DIAG_LLVM_BIN ?= /opt/homebrew/opt/llvm/bin
@@ -1102,8 +1109,8 @@ diag:
 	@echo "=== diagnostic lane: $(shell $(DIAG_LLVM_BIN)/clang --version | head -1) ==="
 	$(MAKE) -f Makefile.cbm build/diag/test-runner \
 		CC=$(DIAG_LLVM_BIN)/clang CXX=$(DIAG_LLVM_BIN)/clang++ BUILD_DIR=build/diag \
-		SANITIZE="-fsanitize=address,undefined,pointer-compare,pointer-subtract -fno-omit-frame-pointer -fno-optimize-sibling-calls"
-	ASAN_OPTIONS="detect_stack_use_after_return=1:detect_invalid_pointer_pairs=2:strict_string_checks=1:detect_stack_use_after_scope=1" \
+		SANITIZE="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-optimize-sibling-calls"
+	ASAN_OPTIONS="detect_stack_use_after_return=1:strict_string_checks=1:detect_stack_use_after_scope=1" \
 		./build/diag/test-runner
 
 # ── macOS leak detection ─────────────────────────────────────────
