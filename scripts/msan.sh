@@ -46,7 +46,12 @@ MSAN_SAN="-fsanitize=memory $MSAN_ORIGIN_FLAG -fno-omit-frame-pointer -isystem $
 # Makefile.cbm): zstd's MSan block needs stdint.h that its amalgamation lost,
 # but force-including it globally freezes glibc feature-test macros before
 # sqlite3.c can set _GNU_SOURCE, breaking that compile instead.
-ZSTD_EXTRA="-include stdint.h"
+#
+# -D_GNU_SOURCE rides along for the same freeze reason IN this object:
+# a command-line define lands before the forced include, while zstd.c's own
+# in-file feature setup lands after it -- without this, glibc freezes
+# without _GNU_SOURCE and zstd loses qsort_r.
+ZSTD_EXTRA="-D_GNU_SOURCE -include stdint.h"
 
 # Always clean: make does not encode flags into dependencies, so a build dir
 # populated under different stdlib/sanitizer flags silently mixes objects
