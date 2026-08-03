@@ -98,11 +98,14 @@ int cbm_delta_snapshot_inbound(cbm_store_t *store, const char *project, const ch
         delta_placeholders(ph, chunk);
         char sql[CBM_SZ_4K];
         int n = snprintf(sql, sizeof(sql),
+                         /* CROSS JOIN pins nodes-first: the planner otherwise walks
+                          * EVERY project edge through the url_path index prefix
+                          * (measured 14.6s vs 4ms at kernel scale). */
                          "SELECT src.qualified_name, tgt.qualified_name, e.type, e.properties"
-                         " FROM edges e"
-                         " JOIN nodes tgt ON e.target_id = tgt.id"
-                         " JOIN nodes src ON e.source_id = src.id"
-                         " WHERE e.project = ?1 AND tgt.file_path IN (%s)"
+                         " FROM nodes tgt"
+                         " CROSS JOIN edges e ON e.target_id = tgt.id"
+                         " CROSS JOIN nodes src ON e.source_id = src.id"
+                         " WHERE tgt.project = ?1 AND tgt.file_path IN (%s)"
                          " AND src.file_path NOT IN (%s)"
                          " AND src.file_path <> '' AND src.file_path IS NOT NULL",
                          ph, ph);

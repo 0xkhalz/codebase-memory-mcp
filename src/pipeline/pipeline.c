@@ -1722,6 +1722,9 @@ int cbm_pipeline_publish_staged(char *stage_path, const cbm_pipeline_generation_
     cbm_project_t project_info = {0};
     bool have_project_info =
         cbm_store_get_project(store, generation->project, &project_info) == CBM_STORE_OK;
+    cbm_log_info("publish.timing", "block", "get_project", "elapsed_ms",
+                 itoa_buf((int)elapsed_ms(t_pub)));
+    cbm_clock_gettime(CLOCK_MONOTONIC, &t_pub);
     cbm_coverage_meta_t meta = generation->coverage_meta;
     meta.generation = have_project_info ? project_info.indexed_at : NULL;
     meta.coverage_version = CBM_SEMANTIC_INDEX_VERSION;
@@ -1734,6 +1737,9 @@ int cbm_pipeline_publish_staged(char *stage_path, const cbm_pipeline_generation_
     if (have_project_info) {
         cbm_project_free_fields(&project_info);
     }
+    cbm_log_info("publish.timing", "block", "coverage_replace", "elapsed_ms",
+                 itoa_buf((int)elapsed_ms(t_pub)));
+    cbm_clock_gettime(CLOCK_MONOTONIC, &t_pub);
     if (fts_wholesale && generation_rebuild_fts(store) != CBM_STORE_OK) {
         ok = false;
     }

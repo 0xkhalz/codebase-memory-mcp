@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include "foundation/constants.h"
 #include "foundation/hash_table.h"
+#include "foundation/sha256.h"
 
 #include <math.h>
 
@@ -2511,9 +2512,72 @@ static void cov_json_escape(char *dst, size_t dstsz, const char *src) {
  * {kind, detail}. Queryable via query_graph(graph="missed") with zero
  * cypher-engine changes; the real project's graph gains no rows. Derived
  * data — rebuilt from the authoritative (post-prune) table contents. */
+/* Fingerprint of the FAILURE rows the shadow graph derives from. When the
+ * set is unchanged since the last rebuild, the wipe-and-rebuild (tens of
+ * thousands of node/edge upserts probing the full-size nodes index -- a
+ * measured 23s at kernel scale) is provably a no-op and is skipped. The
+ * fingerprint lives in store_meta keyed per project and is cleared
+ * implicitly by any rebuild from a different row set. */
+static void cov_failure_fingerprint(const cbm_coverage_row_t *rows, int count,
+                                    char out[CBM_SHA256_HEX_LEN + 1]) {
+    cbm_sha256_ctx sha;
+    cbm_sha256_init(&sha);
+    for (int i = 0; i < count; i++) {
+        if (!rows[i].kind || strncmp(rows[i].kind, "not_indexed", 11) == 0) {
+            continue;
+        }
+        const char *rel = rows[i].rel_path ? rows[i].rel_path : "";
+        const char *kind = rows[i].kind;
+        const char *detail = rows[i].detail ? rows[i].detail : "";
+        cbm_sha256_update(&sha, rel, strlen(rel) + 1);
+        cbm_sha256_update(&sha, kind, strlen(kind) + 1);
+        cbm_sha256_update(&sha, detail, strlen(detail) + 1);
+    }
+    uint8_t digest[CBM_SHA256_DIGEST_LEN];
+    cbm_sha256_final(&sha, digest);
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < CBM_SHA256_DIGEST_LEN; i++) {
+        out[i * 2] = hex[digest[i] >> 4];
+        out[i * 2 + 1] = hex[digest[i] & 0x0f];
+    }
+    out[CBM_SHA256_HEX_LEN] = 0;
+}
+
 static int cov_rebuild_shadow_graph(cbm_store_t *s, const char *project) {
     char covproj[CBM_SZ_512];
     cbm_store_coverage_shadow_project(covproj, sizeof(covproj), project);
+
+    /* Fingerprint gate: rows first, so an unchanged failure set skips the
+     * wipe entirely and the existing shadow stays byte-identical. */
+    cbm_coverage_row_t *fp_rows = NULL;
+    int fp_count = 0;
+    if (cbm_store_coverage_get(s, project, &fp_rows, &fp_count) != CBM_STORE_OK) {
+        cbm_store_free_coverage(fp_rows, fp_count);
+        return CBM_STORE_ERR;
+    }
+    char fp[CBM_SHA256_HEX_LEN + 1];
+    cov_failure_fingerprint(fp_rows, fp_count, fp);
+    cbm_store_free_coverage(fp_rows, fp_count);
+    char fp_key[CBM_SZ_512];
+    snprintf(fp_key, sizeof(fp_key), "coverage_shadow_fp:%s", project);
+    char prev_fp[CBM_SHA256_HEX_LEN + 1] = {0};
+    {
+        sqlite3_stmt *get = NULL;
+        if (sqlite3_prepare_v2(s->db, "SELECT v FROM store_meta WHERE k = ?1;", CBM_NOT_FOUND, &get,
+                               NULL) == SQLITE_OK) {
+            bind_text(get, SKIP_ONE, fp_key);
+            if (sqlite3_step(get) == SQLITE_ROW) {
+                const char *v = (const char *)sqlite3_column_text(get, 0);
+                if (v) {
+                    snprintf(prev_fp, sizeof(prev_fp), "%s", v);
+                }
+            }
+            sqlite3_finalize(get);
+        }
+    }
+    if (prev_fp[0] && strcmp(prev_fp, fp) == 0) {
+        return CBM_STORE_OK;
+    }
 
     /* Wipe the previous view (edges first: no FK pragma guarantee). */
     static const char *wipes[] = {"DELETE FROM edges WHERE project = ?1;",
@@ -2651,7 +2715,28 @@ static int cov_rebuild_shadow_graph(cbm_store_t *s, const char *project) {
         }
     }
     cbm_store_free_coverage(rows, count);
+    {
+        sqlite3_stmt *set = NULL;
+        if (sqlite3_prepare_v2(s->db, "INSERT OR REPLACE INTO store_meta (k, v) VALUES (?1, ?2);",
+                               CBM_NOT_FOUND, &set, NULL) == SQLITE_OK) {
+            bind_text(set, SKIP_ONE, fp_key);
+            bind_text(set, ST_COL_2, fp);
+            (void)sqlite3_step(set);
+            sqlite3_finalize(set);
+        }
+    }
     return CBM_STORE_OK;
+}
+
+static void cov_timing_mark(struct timespec *t, const char *what) {
+    struct timespec now;
+    cbm_clock_gettime(CLOCK_MONOTONIC, &now);
+    double ms =
+        (double)(now.tv_sec - t->tv_sec) * 1000.0 + (double)(now.tv_nsec - t->tv_nsec) / 1000000.0;
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%.0f", ms);
+    cbm_log_info("coverage.timing", "step", what, "elapsed_ms", buf);
+    *t = now;
 }
 
 int cbm_store_coverage_replace_ex(cbm_store_t *s, const char *project,
@@ -2660,9 +2745,12 @@ int cbm_store_coverage_replace_ex(cbm_store_t *s, const char *project,
     if (!s || !s->db || !project || count < 0 || (count > 0 && !rows)) {
         return CBM_STORE_ERR;
     }
+    struct timespec cov_t0;
+    cbm_clock_gettime(CLOCK_MONOTONIC, &cov_t0);
     if (exec_sql(s, "BEGIN;") != CBM_STORE_OK) {
         return CBM_STORE_ERR;
     }
+    cov_timing_mark(&cov_t0, "begin");
     sqlite3_stmt *del = NULL;
     if (sqlite3_prepare_v2(s->db, "DELETE FROM index_coverage WHERE project = ?1;", CBM_NOT_FOUND,
                            &del, NULL) != SQLITE_OK) {
@@ -2678,6 +2766,7 @@ int cbm_store_coverage_replace_ex(cbm_store_t *s, const char *project,
         (void)exec_sql(s, "ROLLBACK;");
         return CBM_STORE_ERR;
     }
+    cov_timing_mark(&cov_t0, "delete");
     sqlite3_stmt *ins = NULL;
     if (sqlite3_prepare_v2(
             s->db,
@@ -2705,6 +2794,7 @@ int cbm_store_coverage_replace_ex(cbm_store_t *s, const char *project,
         sqlite3_reset(ins);
     }
     sqlite3_finalize(ins);
+    cov_timing_mark(&cov_t0, "insert_loop");
     /* Prune FAILURE rows for files no longer known to the index (deleted from
      * the repo): file_hashes is the authoritative live-file set after
      * persist. By-design not_indexed_* rows are exempt — deliberately
@@ -2728,6 +2818,7 @@ int cbm_store_coverage_replace_ex(cbm_store_t *s, const char *project,
         (void)exec_sql(s, "ROLLBACK;");
         return CBM_STORE_ERR;
     }
+    cov_timing_mark(&cov_t0, "prune");
 
     if (meta) {
         char recorded_at[CBM_SZ_64];
@@ -2804,6 +2895,7 @@ int cbm_store_coverage_replace_ex(cbm_store_t *s, const char *project,
         return CBM_STORE_ERR;
     }
     return exec_sql(s, "COMMIT;");
+    cov_timing_mark(&cov_t0, "meta_and_commit");
 }
 
 int cbm_store_coverage_replace(cbm_store_t *s, const char *project, const cbm_coverage_row_t *rows,
@@ -3555,10 +3647,12 @@ static int dependent_files_chunk(cbm_store_t *s, const char *project,
                                  CBMHashTable *seen, char ***out, int *out_count, int *out_cap) {
     char sql[CBM_SZ_4K];
     int pos = snprintf(sql, sizeof(sql),
-                       "SELECT DISTINCT src.file_path FROM edges e"
-                       " JOIN nodes tgt ON e.target_id = tgt.id"
-                       " JOIN nodes src ON e.source_id = src.id"
-                       " WHERE e.project = ?1 AND tgt.file_path IN (");
+                       /* CROSS JOIN pins nodes-first (see the delta snapshot query:
+                        * the free planner walks every project edge instead). */
+                       "SELECT DISTINCT src.file_path FROM nodes tgt"
+                       " CROSS JOIN edges e ON e.target_id = tgt.id"
+                       " CROSS JOIN nodes src ON e.source_id = src.id"
+                       " WHERE tgt.project = ?1 AND tgt.file_path IN (");
     for (int i = 0; i < chunk_count; i++) {
         pos += snprintf(sql + pos, sizeof(sql) - (size_t)pos, "%s?%d", i ? "," : "", i + ST_COL_2);
         if ((size_t)pos >= sizeof(sql)) {
