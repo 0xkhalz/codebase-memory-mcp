@@ -1,0 +1,65 @@
+# MemorySanitizer lane image — stage-2 of the memory-diagnostics program.
+#
+# MSan requires EVERY linked library to be MSan-instrumented, or reads of
+# memory those libraries wrote report as uninitialized. The vendored deps
+# (sqlite3, lz4, zstd, tree-sitter runtime, grammars) compile in-tree and get
+# instrumented for free; the two external links -lstdc++/-lz do not. This
+# image provides an MSan-instrumented libc++/libc++abi/libunwind and zlib in
+# /opt/msan, and scripts/msan.sh points the build at them.
+#
+# Sources are pinned by release tag from their canonical upstreams (same
+# precedent as the cppcheck 2.20.0 build in _lint.yml).
+#
+# Build:  docker build -f test-infrastructure/Dockerfile.msan -t cbm-msan test-infrastructure/
+# Run:    see scripts/msan.sh (driven via docker-compose service test-msan)
+
+# Same pinned base as the primary test image — bump deliberately, never to a tag.
+FROM ubuntu:noble@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    clang \
+    cmake \
+    ninja-build \
+    make \
+    python3 \
+    git \
+    curl \
+    zsh \
+    ccache \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# libc++ + libc++abi + libunwind with MemoryWithOrigins.
+# release/18.x matches the noble apt clang major (18); the runtimes build is
+# the LLVM-documented procedure for MSan'd C++ standard libraries.
+RUN git clone --depth 1 --branch llvmorg-18.1.8 \
+        https://github.com/llvm/llvm-project.git /tmp/llvm-project \
+    && cmake -G Ninja -S /tmp/llvm-project/runtimes -B /tmp/llvm-msan \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_COMPILER=clang \
+        -DCMAKE_CXX_COMPILER=clang++ \
+        -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind" \
+        -DLLVM_USE_SANITIZER=MemoryWithOrigins \
+        -DCMAKE_INSTALL_PREFIX=/opt/msan \
+    && ninja -C /tmp/llvm-msan cxx cxxabi unwind \
+    && ninja -C /tmp/llvm-msan install-cxx install-cxxabi install-unwind \
+    && rm -rf /tmp/llvm-project /tmp/llvm-msan
+
+# zlib with MSan (static, so the runner needs no runtime path for it).
+RUN git clone --depth 1 --branch v1.3.1 https://github.com/madler/zlib.git /tmp/zlib \
+    && cd /tmp/zlib \
+    && CC=clang CFLAGS="-fsanitize=memory -fsanitize-memory-track-origins=2 -fno-omit-frame-pointer -O2" \
+       ./configure --prefix=/opt/msan --static \
+    && make -j"$(nproc)" install \
+    && rm -rf /tmp/zlib
+
+# Symbolizer + MSan runtime in their own (last) layer so adding tools never
+# invalidates the expensive libc++ build layers above. libclang-rt-18-dev is
+# a Recommends of clang on noble, which --no-install-recommends drops — the
+# link then fails to find libclang_rt.msan-*.a.
+RUN apt-get update && apt-get install -y --no-install-recommends llvm libclang-rt-18-dev \
+    && rm -rf /var/lib/apt/lists/*
+ENV MSAN_SYMBOLIZER_PATH=/usr/lib/llvm-18/bin/llvm-symbolizer
+
+WORKDIR /src
+ENTRYPOINT ["scripts/msan.sh"]
