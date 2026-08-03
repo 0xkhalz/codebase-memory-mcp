@@ -1675,7 +1675,7 @@ int cbm_pipeline_publish_generation(const cbm_pipeline_generation_t *generation)
         return CBM_PIPELINE_ABORT_PRESERVE_DB;
     }
 
-    return cbm_pipeline_publish_staged(stage_path, generation, true);
+    return cbm_pipeline_publish_staged(stage_path, generation, true, false);
 }
 
 /* Complete and publish an already-materialized staging database: metadata
@@ -1685,7 +1685,7 @@ int cbm_pipeline_publish_generation(const cbm_pipeline_generation_t *generation)
  * because its patch step already wrote row-level FTS inserts for exactly
  * the nodes it created. */
 int cbm_pipeline_publish_staged(char *stage_path, const cbm_pipeline_generation_t *generation,
-                                bool fts_wholesale) {
+                                bool fts_wholesale, bool destination_known_healthy) {
     struct timespec t_pub;
     cbm_clock_gettime(CLOCK_MONOTONIC, &t_pub);
     cbm_store_t *store = cbm_store_open_path(stage_path);
@@ -1761,8 +1761,8 @@ int cbm_pipeline_publish_staged(char *stage_path, const cbm_pipeline_generation_
         free(stage_path);
         return CBM_PIPELINE_PERSIST_FAILED;
     }
-    int fin_rc = cbm_pipeline_finalize_staged_generation(stage_path, generation->final_db_path,
-                                                         generation->cancelled);
+    int fin_rc = cbm_pipeline_finalize_staged_generation(
+        stage_path, generation->final_db_path, generation->cancelled, destination_known_healthy);
     free(stage_path);
     return fin_rc;
 }
@@ -1781,7 +1781,9 @@ void cbm_pipeline_discard_stage(const char *stage_path) {
  * every failure path. The store handle must already be CLOSED — sidecar
  * removal and rename act on the bare file. */
 int cbm_pipeline_finalize_staged_generation(char *stage_path, const char *final_db_path,
-                                            atomic_int *cancelled) {
+                                            atomic_int *cancelled, bool destination_known_healthy) {
+    struct timespec t_fin;
+    cbm_clock_gettime(CLOCK_MONOTONIC, &t_fin);
     if (cbm_remove_db_sidecars(stage_path) != 0) {
         discard_generation_stage(stage_path);
         return CBM_PIPELINE_PERSIST_FAILED;
@@ -1790,10 +1792,25 @@ int cbm_pipeline_finalize_staged_generation(char *stage_path, const char *final_
         discard_generation_stage(stage_path);
         return CBM_PIPELINE_ABORT_PRESERVE_DB;
     }
+    cbm_log_info("finalize.timing", "block", "stage_sidecars", "elapsed_ms",
+                 itoa_buf((int)elapsed_ms(t_fin)));
+    cbm_clock_gettime(CLOCK_MONOTONIC, &t_fin);
     cbm_replacement_prepare_t prepared = {0};
-    /* The destination here is the caller's staging file, not the live database:
-     * the publishing wrapper owns quarantining that. */
-    if (prepare_existing_generation_for_replace(final_db_path, &prepared, false) != 0) {
+    /* destination_known_healthy: the delta route CLONED this same file and
+     * ran complete transactions against the clone minutes ago -- reaching
+     * this point is structural-health evidence, and the quick_check the
+     * prepare would run is a full-database page scan (measured 35.5s on a
+     * kernel-scale generation). A corrupt live DB can never take the delta
+     * route: every earlier step fails it into the dump path, whose
+     * finalize keeps the check and the quarantine semantics. Sidecars are
+     * still removed either way: a replaced DB must never inherit the old
+     * generation's WAL. */
+    if (destination_known_healthy) {
+        if (cbm_remove_db_sidecars(final_db_path) != 0) {
+            cbm_pipeline_discard_stage(stage_path);
+            return CBM_PIPELINE_PERSIST_FAILED;
+        }
+    } else if (prepare_existing_generation_for_replace(final_db_path, &prepared, false) != 0) {
         discard_generation_stage(stage_path);
         return CBM_PIPELINE_PERSIST_FAILED;
     }
@@ -1807,11 +1824,16 @@ int cbm_pipeline_finalize_staged_generation(char *stage_path, const char *final_
         discard_generation_stage(stage_path);
         return rollback_rc == 0 ? CBM_PIPELINE_ABORT_PRESERVE_DB : CBM_PIPELINE_PERSIST_FAILED;
     }
+    cbm_log_info("finalize.timing", "block", "prepare_live", "elapsed_ms",
+                 itoa_buf((int)elapsed_ms(t_fin)));
+    cbm_clock_gettime(CLOCK_MONOTONIC, &t_fin);
     if (cbm_rename_replace(stage_path, final_db_path) != 0) {
         (void)rollback_quarantined_generation(final_db_path, &prepared);
         discard_generation_stage(stage_path);
         return CBM_PIPELINE_PERSIST_FAILED;
     }
+    cbm_log_info("finalize.timing", "block", "rename", "elapsed_ms",
+                 itoa_buf((int)elapsed_ms(t_fin)));
     return 0;
 }
 

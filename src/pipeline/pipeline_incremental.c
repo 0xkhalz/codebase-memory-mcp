@@ -1097,6 +1097,11 @@ typedef struct {
     int fresh_count;
     char **def_modules;
     int def_module_count;
+    /* Parallel rehydration: per-worker arenas owning the deserialized
+     * def strings. The resolvers and the patch borrow those strings, so
+     * the arenas live exactly as long as cr.arena itself. */
+    CBMArena *rehydrate_arenas;
+    int rehydrate_arena_count;
 } closure_resolve_t;
 
 typedef struct {
@@ -1493,6 +1498,32 @@ static int dump_and_persist(cbm_gbuf_t *gbuf, const char *db_path, const char *p
         cbm_artifact_export(db_path, repo_path, project, CBM_ARTIFACT_FAST);
     }
     return 0;
+}
+
+/* Parallel base-def rehydration: rows are independent, so the JSON decode
+ * fans out across workers on a stride; assembly back into one array stays
+ * in ROW ORDER, so the registration input is byte-for-byte the sequence
+ * the serial loop produced. Measured 35s serial at kernel scale (2.37M
+ * defs) -- the single largest delta block after the query-plan fixes. */
+typedef struct {
+    const cbm_lsp_surface_row_t *const *rows;
+    int row_count;
+    int worker_id;
+    int worker_count;
+    CBMArena *arena;      /* this worker's arena (owned by cr) */
+    CBMLSPDef **row_defs; /* per-row result pointers */
+    int *row_counts;      /* per-row def counts; -1 = decode failure */
+} rehydrate_worker_t;
+
+static void *rehydrate_worker(void *arg) {
+    rehydrate_worker_t *w = (rehydrate_worker_t *)arg;
+    for (int i = w->worker_id; i < w->row_count; i += w->worker_count) {
+        CBMLSPDef *defs = NULL;
+        int count = cbm_lsp_surface_defs_from_json(w->arena, w->rows[i]->defs_json, &defs);
+        w->row_defs[i] = defs;
+        w->row_counts[i] = count;
+    }
+    return NULL;
 }
 
 /* Probe-extract a set of files into a throwaway graph to compute their
@@ -1916,10 +1947,12 @@ static int run_closure_delta(cbm_pipeline_t *p, const char *db_path, const char 
         goto out;
     }
     cbm_log_info("delta.clone", "elapsed_ms", itoa_buf((int)elapsed_ms(t)));
+    cbm_clock_gettime(CLOCK_MONOTONIC, &t);
     staging = cbm_store_open_path(stage);
     if (!staging) {
         goto out;
     }
+    cbm_log_info("delta.staging_open", "elapsed_ms", itoa_buf((int)elapsed_ms(t)));
 
     /* Purge set = closure files + deleted files. */
     int purge_count = ci + deleted_count;
@@ -1977,42 +2010,103 @@ static int run_closure_delta(cbm_pipeline_t *p, const char *db_path, const char 
     }
     cbm_arena_init(&cr.arena);
     cr_arena_live = true;
+    cbm_clock_gettime(CLOCK_MONOTONIC, &t);
     {
-        int cap = 0;
+        /* Eligible rows first (skip everything being re-parsed or deleted),
+         * then fan the JSON decode out across workers. */
+        const cbm_lsp_surface_row_t **elig = (const cbm_lsp_surface_row_t **)calloc(
+            (size_t)(plan->stored_count ? plan->stored_count : 1), sizeof(*elig));
+        if (!elig) {
+            goto out;
+        }
+        int elig_count = 0;
         for (int i = 0; i < plan->stored_count; i++) {
             const cbm_lsp_surface_row_t *row = &plan->stored_rows[i];
-            if (cbm_ht_get(stale_surface_set, row->rel_path)) {
-                continue;
-            }
-            CBMLSPDef *row_defs = NULL;
-            int row_count = cbm_lsp_surface_defs_from_json(&cr.arena, row->defs_json, &row_defs);
-            if (row_count < 0) {
-                cbm_log_error("delta.rehydrate_failed", "path", row->rel_path);
-                goto out;
-            }
-            if (row_count > 0) {
-                if (cr.base_def_count + row_count > cap) {
-                    int ncap = cap ? cap * PAIR_LEN : CBM_SZ_256;
-                    while (ncap < cr.base_def_count + row_count) {
-                        ncap *= PAIR_LEN;
-                    }
-                    CBMLSPDef *grown =
-                        (CBMLSPDef *)cbm_arena_alloc(&cr.arena, (size_t)ncap * sizeof(CBMLSPDef));
-                    if (!grown) {
-                        goto out;
-                    }
-                    if (cr.base_def_count > 0) {
-                        memcpy(grown, cr.base_defs, (size_t)cr.base_def_count * sizeof(CBMLSPDef));
-                    }
-                    cr.base_defs = grown;
-                    cap = ncap;
-                }
-                memcpy(cr.base_defs + cr.base_def_count, row_defs,
-                       (size_t)row_count * sizeof(CBMLSPDef));
-                cr.base_def_count += row_count;
+            if (!cbm_ht_get(stale_surface_set, row->rel_path)) {
+                elig[elig_count++] = row;
             }
         }
+        int workers = cbm_default_worker_count(true);
+        if (workers < 1) {
+            workers = 1;
+        }
+        if (workers > elig_count) {
+            workers = elig_count ? elig_count : 1;
+        }
+        CBMLSPDef **row_defs =
+            (CBMLSPDef **)calloc((size_t)(elig_count ? elig_count : 1), sizeof(*row_defs));
+        int *row_counts = (int *)calloc((size_t)(elig_count ? elig_count : 1), sizeof(int));
+        cr.rehydrate_arenas = (CBMArena *)calloc((size_t)workers, sizeof(CBMArena));
+        cbm_thread_t *threads = (cbm_thread_t *)calloc((size_t)workers, sizeof(cbm_thread_t));
+        rehydrate_worker_t *wargs = (rehydrate_worker_t *)calloc((size_t)workers, sizeof(*wargs));
+        if (!row_defs || !row_counts || !cr.rehydrate_arenas || !threads || !wargs) {
+            free(elig);
+            free(row_defs);
+            free(row_counts);
+            free(threads);
+            free(wargs);
+            goto out;
+        }
+        cr.rehydrate_arena_count = workers;
+        for (int w = 0; w < workers; w++) {
+            cbm_arena_init(&cr.rehydrate_arenas[w]);
+        }
+        int spawned = 0;
+        for (int w = 0; w < workers; w++) {
+            wargs[w] = (rehydrate_worker_t){.rows = elig,
+                                            .row_count = elig_count,
+                                            .worker_id = w,
+                                            .worker_count = workers,
+                                            .arena = &cr.rehydrate_arenas[w],
+                                            .row_defs = row_defs,
+                                            .row_counts = row_counts};
+            if (cbm_thread_create(&threads[w], 0, rehydrate_worker, &wargs[w]) != 0) {
+                break;
+            }
+            spawned++;
+        }
+        for (int w = spawned; w < workers; w++) {
+            (void)rehydrate_worker(&wargs[w]);
+        }
+        for (int w = 0; w < spawned; w++) {
+            cbm_thread_join(&threads[w]);
+        }
+        free(threads);
+        free(wargs);
+        bool decode_ok = true;
+        int64_t total = 0;
+        for (int i = 0; i < elig_count; i++) {
+            if (row_counts[i] < 0) {
+                cbm_log_error("delta.rehydrate_failed", "path", elig[i]->rel_path);
+                decode_ok = false;
+                break;
+            }
+            total += row_counts[i];
+        }
+        if (decode_ok && total > 0) {
+            cr.base_defs =
+                (CBMLSPDef *)cbm_arena_alloc(&cr.arena, (size_t)total * sizeof(CBMLSPDef));
+            if (!cr.base_defs) {
+                decode_ok = false;
+            } else {
+                for (int i = 0; i < elig_count; i++) {
+                    if (row_counts[i] > 0) {
+                        memcpy(cr.base_defs + cr.base_def_count, row_defs[i],
+                               (size_t)row_counts[i] * sizeof(CBMLSPDef));
+                        cr.base_def_count += row_counts[i];
+                    }
+                }
+            }
+        }
+        free(elig);
+        free(row_defs);
+        free(row_counts);
+        if (!decode_ok) {
+            goto out;
+        }
     }
+    cbm_log_info("delta.rehydrate", "defs", itoa_buf(cr.base_def_count), "elapsed_ms",
+                 itoa_buf((int)elapsed_ms(t)));
 
     char **excluded_dirs = NULL;
     int excluded_count = 0;
@@ -2168,8 +2262,10 @@ static int run_closure_delta(cbm_pipeline_t *p, const char *db_path, const char 
     }
 
     /* Committed counts for the #334 plausibility gate. */
+    cbm_clock_gettime(CLOCK_MONOTONIC, &t);
     cbm_pipeline_set_committed_counts(p, cbm_store_count_nodes(staging, project),
                                       cbm_store_count_edges(staging, project));
+    cbm_log_info("delta.committed_counts", "elapsed_ms", itoa_buf((int)elapsed_ms(t)));
 
     {
         int index_mode = cbm_pipeline_get_mode(p);
@@ -2201,7 +2297,9 @@ static int run_closure_delta(cbm_pipeline_t *p, const char *db_path, const char 
         };
         cbm_store_close(staging);
         staging = NULL;
-        result = cbm_pipeline_publish_staged(stage, &generation, false);
+        cbm_clock_gettime(CLOCK_MONOTONIC, &t);
+        result = cbm_pipeline_publish_staged(stage, &generation, false, true);
+        cbm_log_info("delta.publish_total", "elapsed_ms", itoa_buf((int)elapsed_ms(t)));
         stage = NULL; /* publish_staged owns and frees it on every path */
     }
     cbm_log_info("incremental.done_delta", "elapsed_ms", itoa_buf((int)elapsed_ms(t0)));
@@ -2228,6 +2326,10 @@ out:
             free(cr.def_modules[i]);
         }
         free(cr.def_modules);
+        for (int i = 0; i < cr.rehydrate_arena_count; i++) {
+            cbm_arena_destroy(&cr.rehydrate_arenas[i]);
+        }
+        free(cr.rehydrate_arenas);
         cbm_arena_destroy(&cr.arena);
     }
     cbm_pipeline_free_semantic_manifest(manifest, manifest_count);

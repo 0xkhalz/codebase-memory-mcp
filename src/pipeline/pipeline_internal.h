@@ -717,13 +717,13 @@ int cbm_pipeline_publish_generation(const cbm_pipeline_generation_t *generation)
  * must be complete and sealed with its store handle closed. Discards the
  * stage on every failure. Does NOT free stage_path. */
 int cbm_pipeline_finalize_staged_generation(char *stage_path, const char *final_db_path,
-                                            atomic_int *cancelled);
+                                            atomic_int *cancelled, bool destination_known_healthy);
 /* Metadata writes + FTS policy + integrity + seal + finalize for an
  * already-materialized staging DB. Takes ownership of stage_path. The dump
  * path passes fts_wholesale=true; the delta path passes false (its patch
  * wrote row-level FTS inserts). generation->gbuf is not read here. */
 int cbm_pipeline_publish_staged(char *stage_path, const cbm_pipeline_generation_t *generation,
-                                bool fts_wholesale);
+                                bool fts_wholesale, bool destination_known_healthy);
 
 /* mkstemp-minted staging sibling of final_path (exported for the delta
  * executor; the dump path uses it internally). malloc'd, caller frees. */
