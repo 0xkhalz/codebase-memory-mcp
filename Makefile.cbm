@@ -763,11 +763,20 @@ TRE_OBJ_TEST = $(BUILD_DIR)/tre.o
 TRE_OBJ_TSAN = $(BUILD_DIR)/tsan_tre.o
 TRE_OBJ_PROD = $(BUILD_DIR)/prod_tre.o
 
-# NOTE: tre.o once dropped UBSan's alignment check here. That was a real
-# coverage hole in a vendored regex engine we ship. Re-enabled: if the
-# upstream misaligns, we want the report, not silence.
+# tre.o keeps UBSan's alignment check OFF, and that is not a coverage
+# preference -- it is a portability fact. Arming it here (attempted, then
+# reverted after this bisect) makes the vendored TRE regex engine trap on
+# Windows/ARM64, where the CLANGARM64 leg builds with -fsanitize-trap and a
+# trap is an illegal instruction with no diagnostic: every fixture-indexing
+# suite died with STATUS_ILLEGAL_INSTRUCTION and no message. macOS and Linux
+# stay clean under the same check because Windows is LLP64 -- 32-bit long --
+# so TRE's struct layouts and access widths differ there and nowhere else.
+#
+# TRE is third-party code we vendor and do not modify, so the alignment
+# behaviour is upstream's to change; suppressing the check for this one
+# object is the honest scope. Everything else keeps alignment armed.
 $(BUILD_DIR)/tre.o: $(TRE_SRC) | $(BUILD_DIR)
-	$(CC) $(TRE_CFLAGS) $(SANITIZE) -c -o $@ $<
+	$(CC) $(TRE_CFLAGS) $(SANITIZE) -fno-sanitize=alignment -c -o $@ $<
 
 $(BUILD_DIR)/tsan_tre.o: $(TRE_SRC) | $(BUILD_DIR)
 	$(CC) $(TRE_CFLAGS) $(TSAN_SANITIZE) -c -o $@ $<
@@ -964,7 +973,13 @@ MAIN_SRC = src/main.c
 # incremental builds are unaffected. (Single-quoted: the signature may contain
 # the escaped quotes of -DCBM_VERSION, which are literal inside '', but must not
 # contain a literal single quote.)
-BUILD_CONFIG_SIG := TEST_SEAMS=$(TEST_SEAMS)|CFLAGS_EXTRA=$(CFLAGS_EXTRA)
+# SANITIZE belongs here: it changes the instrumentation compiled into every
+# object, so a build that only changes it MUST rebuild. Its absence made
+# `scripts/test.sh SANITIZE= ...` -- the documented way to get a plain build
+# for trap debugging -- silently re-run the previously instrumented binary,
+# which during this bisect produced a "crashes without sanitizers too" result
+# that was pure artifact and sent the investigation down the wrong path.
+BUILD_CONFIG_SIG := TEST_SEAMS=$(TEST_SEAMS)|CFLAGS_EXTRA=$(CFLAGS_EXTRA)|SANITIZE=$(SANITIZE)
 .PHONY: build-config-check
 build-config-check:
 $(BUILD_DIR)/.build-config: build-config-check | $(BUILD_DIR)
