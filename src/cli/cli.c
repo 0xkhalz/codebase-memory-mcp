@@ -1291,7 +1291,7 @@ static const char skill_content[] =
     "\n"
     "## Edge Types\n"
     "CALLS, HTTP_CALLS, ASYNC_CALLS, DATA_FLOWS, IMPORTS, DEFINES, DEFINES_METHOD,\n"
-    "HANDLES, IMPLEMENTS, OVERRIDE, USAGE, CONFIGURES, FILE_CHANGES_WITH,\n"
+    "HANDLES, IMPLEMENTS, OVERRIDE, USAGE, CALL_REFERENCE, CONFIGURES, FILE_CHANGES_WITH,\n"
     "SIMILAR_TO, SEMANTICALLY_RELATED, CONTAINS_FILE, CONTAINS_FOLDER,\n"
     "CONTAINS_PACKAGE\n"
     "\n"
@@ -6445,7 +6445,10 @@ int cbm_config_delete(cbm_config_t *cfg, const char *key) {
 /* ── Config CLI subcommand ────────────────────────────────────── */
 
 int cbm_cmd_config(int argc, char **argv) {
-    if (argc == 0 || (argv && (strcmp(argv[0], "--help") == 0 || strcmp(argv[0], "-h") == 0))) {
+    /* NULL argv with a nonzero argc previously slipped past this guard (the
+     * inner `argv &&` shielded only the help comparison) and dereferenced
+     * argv[0] below -- caught by the clang-analyzer lane. */
+    if (argc == 0 || !argv || strcmp(argv[0], "--help") == 0 || strcmp(argv[0], "-h") == 0) {
         printf("Usage: codebase-memory-mcp config <command> [args]\n\n");
         printf("Commands:\n");
         printf("  list             Show all config values\n");
