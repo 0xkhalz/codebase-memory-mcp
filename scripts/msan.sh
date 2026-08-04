@@ -81,19 +81,44 @@ export LD_LIBRARY_PATH="$MSAN_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 echo "=== MSan lane: $(clang --version | head -1) ==="
 
-# KNOWN RED — deep-recursion suites under instrumentation (whitelisted, O10)
+# KNOWN RED — THREE DISTINCT CAUSES, whitelisted per cause (O10)
 #
-# WHAT: seven suites abort with "MemorySanitizer: stack-overflow" followed by
-# "nested bug in the same thread, aborting":
-#   grammar_regression grammar_labels pipeline cli lang_contract
-#   grammar_probe_e incremental
-# The fault is always the same pc (inside MSan's memset interceptor, i.e. the
-# instruction that happens to touch the guard page, not the recursion source)
-# on a pipeline worker thread. It reproduces on BOTH arm64 (local) and x86-64
-# (CI), so it is not the aarch64 shadow-mapping artifact an earlier note here
-# claimed.
+# The x86-64 CI leg deliberately runs this lane WITHOUT these exclusions, to
+# settle which limits are architectural. It has now done so, and it SPLIT the
+# seven suites an earlier version of this block lumped together as one cause.
+# That earlier claim -- "seven suites abort with stack-overflow" -- was wrong
+# for two of them and is corrected here.
 #
-# WHAT WAS TRIED — each disproven by measurement, do not repeat:
+# (A) STACK-OVERFLOW under instrumentation — FIVE suites:
+#       grammar_regression grammar_labels pipeline lang_contract grammar_probe_e
+#     Each aborts with "MemorySanitizer: stack-overflow" followed by "nested bug
+#     in the same thread, aborting". The fault is always the same pc (inside
+#     MSan's memset interceptor -- the instruction that happens to touch the
+#     guard page, not the recursion source) on a pipeline worker thread. It
+#     reproduces on BOTH arm64 (local) and x86-64 (CI logged 5 overflows), so it
+#     is NOT the aarch64 shadow-mapping artifact an earlier note here claimed.
+#
+# (B) INSTALL/ACTIVATION failures — cli. NOT an overflow. On x86-64 the suite
+#     runs to completion: 253 passed, 5 failed, every failure in the install or
+#     activation path. The parent process's install returns 1, with
+#     "agent_config agent=OpenClaw op=mcp_install" reported just above it; the
+#     suite is green on every other venue. MSan reported ZERO
+#     use-of-uninitialized-value here, so excluding it costs no uninit coverage
+#     -- which is the only thing this lane exists to provide.
+#     NOT DIAGNOSED, and honestly so: the local lane is arm64, where these
+#     suites hit (A) long before reaching this code, so there is no faithful
+#     venue to iterate in and each attempt costs a ~30min CI round trip.
+#     Recorded as a follow-up rather than guessed at from a log.
+#
+# (C) RSS BUDGET — incremental. FIXED rather than excluded, so it is no longer
+#     in the list below: the budget assertion is now skipped under
+#     __has_feature(memory_sanitizer) in test_incremental.c, because shadow (and
+#     origin) mappings inflate RSS by construction -- 3054MB against a 2304MB
+#     budget -- and cannot be told apart from a real leak. Inflating the budget
+#     instead would blind the guard on the platforms where it does work. The
+#     suite stays IN this lane and keeps its uninitialized-read coverage.
+#
+# WHAT WAS TRIED for (A) — each disproven by measurement, do not repeat:
 #  1. RLIMIT_STACK 8 -> 64 -> 256 MiB, and `ulimit -s unlimited`. No effect;
 #     the crashing thread is not the main thread.
 #  2. CBM_THREAD_STACK_MB at 256 MiB and at 1024 MiB (the cap). The knob is
@@ -119,12 +144,14 @@ echo "=== MSan lane: $(clang --version | head -1) ==="
 # measures remaining stack rather than counted depth, and it would make these
 # suites pass under every sanitizer rather than papering over one lane.
 #
-# WHY EXCLUDED RATHER THAN LEFT RED: the lane is gating. A permanently red
-# gate teaches everyone to ignore it, and it hides the uninitialized-read
-# findings the other ~130 suites DO produce -- which is the entire reason this
-# lane exists. The exclusion is narrow, named, and expires the moment the
-# guard above is fixed. It is not a claim that these suites are covered.
-MSAN_EXCLUDE="${MSAN_EXCLUDE-grammar_regression grammar_labels pipeline cli lang_contract grammar_probe_e incremental}"
+# WHY (A) AND (B) ARE EXCLUDED RATHER THAN LEFT RED: the lane is gating. A
+# permanently red gate teaches everyone to ignore it, and it hides the
+# uninitialized-read findings the other ~130 suites DO produce -- which is the
+# entire reason this lane exists. Each exclusion is narrow, named, and expires
+# with its own fix: (A) when the recursion guard measures bytes, (B) when the
+# install failure is diagnosed on a venue that can run it. Neither is a claim
+# that those suites are covered.
+MSAN_EXCLUDE="${MSAN_EXCLUDE-grammar_regression grammar_labels pipeline cli lang_contract grammar_probe_e}"
 
 if [ "$#" -gt 0 ]; then
     ./build/msan/test-runner "$@"
