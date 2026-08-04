@@ -250,10 +250,25 @@ int64_t cbm_delta_preseed(cbm_store_t *store, const char *project, cbm_gbuf_t *g
         sqlite3_finalize(stmt);
     }
 
+    /* Proxy only what resolution can reach by NAME or QN: the registry
+     * symbols (cbm_label_is_type_like + Function/Method/Variable/Field, the
+     * exact set incr_label_is_registry_symbol admits) plus the structural
+     * nodes edges attach to. Everything else -- overwhelmingly Macro, six of
+     * the kernel's 8.5M nodes -- is never a lookup target, and a proxy for it
+     * would be pure load cost.
+     *
+     * Safety net for the labels this list does not anticipate: a resolver
+     * that upserts an unproxied QN now produces a fresh node that the patch
+     * maps back onto its existing row by qualified name, rather than the
+     * UNIQUE violation the pre-remap patch would have raised. A resolver that
+     * only LOOKS UP still needs its target resident, which is why the list
+     * mirrors the registry's own membership rule instead of guessing. */
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db,
                            "SELECT id, label, name, qualified_name, file_path FROM nodes"
-                           " WHERE project = ?1 ORDER BY id",
+                           " WHERE project = ?1 AND label NOT IN"
+                           " ('Macro','Comment','Section','Branch','Commit','Tag')"
+                           " ORDER BY id",
                            CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK) {
         return -1;
     }
@@ -296,15 +311,80 @@ typedef struct {
     int64_t max_db_id;
     sqlite3_stmt *node_stmt;
     sqlite3_stmt *edge_stmt;
+    sqlite3_stmt *qn_lookup;
+    /* gbuf id -> real database id for any fresh node whose qualified
+     * name turns out to already exist on disk: a resolver referenced
+     * a symbol the narrowed proxy set did not pre-load, so it upserted
+     * a stand-in. Mapping it back keeps the existing row authoritative
+     * and every edge endpoint database-valid. Appended in ascending
+     * gbuf-id order (nodes are visited that way), so lookups binary
+     * search -- CBMHashTable stores key POINTERS without copying,
+     * which a stack-formatted integer key cannot satisfy. */
+    struct {
+        int64_t from;
+        int64_t to;
+    } *remap;
+    int remap_count;
+    int remap_cap;
     bool failed;
     int64_t nodes;
     int64_t edges;
+    int64_t remapped;
 } delta_patch_ctx_t;
+
+static void delta_remap_put(delta_patch_ctx_t *ctx, int64_t from, int64_t to) {
+    if (ctx->remap_count >= ctx->remap_cap) {
+        int ncap = ctx->remap_cap ? ctx->remap_cap * 2 : 256;
+        void *grown = realloc(ctx->remap, (size_t)ncap * sizeof(*ctx->remap));
+        if (!grown) {
+            ctx->failed = true;
+            return;
+        }
+        ctx->remap = grown;
+        ctx->remap_cap = ncap;
+    }
+    ctx->remap[ctx->remap_count].from = from;
+    ctx->remap[ctx->remap_count].to = to;
+    ctx->remap_count++;
+}
+
+static int64_t delta_remap_get(const delta_patch_ctx_t *ctx, int64_t id) {
+    if (id <= ctx->max_db_id || ctx->remap_count == 0) {
+        return id;
+    }
+    int lo = 0;
+    int hi = ctx->remap_count - 1;
+    while (lo <= hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (ctx->remap[mid].from == id) {
+            return ctx->remap[mid].to;
+        }
+        if (ctx->remap[mid].from < id) {
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    return id;
+}
 
 static void delta_patch_node(const cbm_gbuf_node_t *node, void *userdata) {
     delta_patch_ctx_t *ctx = (delta_patch_ctx_t *)userdata;
     if (ctx->failed || node->id <= ctx->max_db_id) {
         return;
+    }
+    if (node->qualified_name) {
+        sqlite3_reset(ctx->qn_lookup);
+        sqlite3_bind_text(ctx->qn_lookup, 1, ctx->project, CBM_NOT_FOUND, SQLITE_TRANSIENT);
+        sqlite3_bind_text(ctx->qn_lookup, 2, node->qualified_name, CBM_NOT_FOUND, SQLITE_TRANSIENT);
+        if (sqlite3_step(ctx->qn_lookup) == SQLITE_ROW) {
+            /* Already on disk: an unchanged file's symbol. A node from a
+             * CHANGED file cannot appear here -- the purge removed it --
+             * so repaired files still receive fresh rows. */
+            delta_remap_put(ctx, node->id, sqlite3_column_int64(ctx->qn_lookup, 0));
+            ctx->remapped++;
+            return;
+        }
     }
     sqlite3_reset(ctx->node_stmt);
     sqlite3_bind_int64(ctx->node_stmt, 1, node->id);
@@ -347,13 +427,16 @@ static void delta_patch_edge(const cbm_gbuf_edge_t *edge, void *userdata) {
     if (ctx->failed) {
         return;
     }
-    if (edge->source_id <= ctx->max_db_id && edge->target_id <= ctx->max_db_id) {
-        return; /* both endpoints pre-existed: nothing new to record */
+    int64_t src = delta_remap_get(ctx, edge->source_id);
+    int64_t tgt = delta_remap_get(ctx, edge->target_id);
+    if (src <= ctx->max_db_id && tgt <= ctx->max_db_id && src == edge->source_id &&
+        tgt == edge->target_id) {
+        return; /* both endpoints pre-existed unremapped: already recorded */
     }
     sqlite3_reset(ctx->edge_stmt);
     sqlite3_bind_text(ctx->edge_stmt, 1, ctx->project, CBM_NOT_FOUND, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(ctx->edge_stmt, 2, edge->source_id);
-    sqlite3_bind_int64(ctx->edge_stmt, 3, edge->target_id);
+    sqlite3_bind_int64(ctx->edge_stmt, 2, src);
+    sqlite3_bind_int64(ctx->edge_stmt, 3, tgt);
     sqlite3_bind_text(ctx->edge_stmt, 4, edge->type, CBM_NOT_FOUND, SQLITE_TRANSIENT);
     sqlite3_bind_text(ctx->edge_stmt, 5, edge->properties_json ? edge->properties_json : "{}",
                       CBM_NOT_FOUND, SQLITE_TRANSIENT);
@@ -376,6 +459,13 @@ int cbm_delta_patch(cbm_store_t *store, const char *project, cbm_gbuf_t *gbuf, i
     }
     delta_patch_ctx_t ctx = {.db = db, .project = project, .max_db_id = max_db_id};
     if (sqlite3_prepare_v2(db,
+                           "SELECT id FROM nodes WHERE project = ?1"
+                           " AND qualified_name = ?2",
+                           CBM_NOT_FOUND, &ctx.qn_lookup, NULL) != SQLITE_OK) {
+        cbm_store_rollback(store);
+        return CBM_NOT_FOUND;
+    }
+    if (sqlite3_prepare_v2(db,
                            "INSERT INTO nodes (id, project, label, name, qualified_name,"
                            " file_path, start_line, end_line, properties)"
                            " VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
@@ -386,6 +476,8 @@ int cbm_delta_patch(cbm_store_t *store, const char *project, cbm_gbuf_t *gbuf, i
                            CBM_NOT_FOUND, &ctx.edge_stmt, NULL) != SQLITE_OK) {
         sqlite3_finalize(ctx.node_stmt);
         sqlite3_finalize(ctx.edge_stmt);
+        sqlite3_finalize(ctx.qn_lookup);
+        free(ctx.remap);
         cbm_store_rollback(store);
         return CBM_NOT_FOUND;
     }
@@ -395,6 +487,7 @@ int cbm_delta_patch(cbm_store_t *store, const char *project, cbm_gbuf_t *gbuf, i
     }
     sqlite3_finalize(ctx.node_stmt);
     sqlite3_finalize(ctx.edge_stmt);
+    sqlite3_finalize(ctx.qn_lookup);
 
     /* Re-link the snapshotted inbound edges by qualified name. A target
      * whose QN no longer exists simply matches no row — full-reindex
@@ -451,9 +544,11 @@ int cbm_delta_patch(cbm_store_t *store, const char *project, cbm_gbuf_t *gbuf, i
     }
 
     if (ctx.failed) {
+        free(ctx.remap);
         cbm_store_rollback(store);
         return CBM_NOT_FOUND;
     }
+    free(ctx.remap);
     if (cbm_store_commit(store) != CBM_STORE_OK) {
         return CBM_NOT_FOUND;
     }
@@ -461,6 +556,8 @@ int cbm_delta_patch(cbm_store_t *store, const char *project, cbm_gbuf_t *gbuf, i
     char edges_buf[32];
     snprintf(nodes_buf, sizeof(nodes_buf), "%lld", (long long)ctx.nodes);
     snprintf(edges_buf, sizeof(edges_buf), "%lld", (long long)ctx.edges);
-    cbm_log_info("delta.patch", "nodes", nodes_buf, "edges", edges_buf);
+    char remap_buf[32];
+    snprintf(remap_buf, sizeof(remap_buf), "%lld", (long long)ctx.remapped);
+    cbm_log_info("delta.patch", "nodes", nodes_buf, "edges", edges_buf, "remapped", remap_buf);
     return 0;
 }
