@@ -11652,6 +11652,13 @@ static int poll_for_input_unix(cbm_mcp_server_t *srv, int fd, FILE *in) {
 int cbm_mcp_server_run(cbm_mcp_server_t *srv, FILE *in, FILE *out) {
     int fd = cbm_fileno(in);
 
+#ifdef _WIN32
+    /* Ensure stdio is in binary mode to prevent CRLF translation from corrupting
+     * Content-Length byte counts and causing fread() to hang. */
+    _setmode(cbm_fileno(in), _O_BINARY);
+    _setmode(cbm_fileno(out), _O_BINARY);
+#endif
+
     for (;;) {
         /* Poll with idle timeout so we can evict unused stores between requests.
          *
