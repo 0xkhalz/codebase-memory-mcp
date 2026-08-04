@@ -282,6 +282,12 @@ CBM_TEST_BINARY="$WATCHDOG_BINARY" bash "$ROOT/tests/test_worker_watchdog.sh"
 echo "=== Step 5c: worker error-response transport regression ==="
 bash "$ROOT/tests/test_worker_error_response.sh"
 
+# Step 5d: a hook client facing a daemon BUILD CONFLICT must surface a stdout
+# systemMessage (stderr is invisible to the hook caller). Needs the TEST_SEAMS
+# binary from step 5's build (CBM_TEST_HOOK_CLIENT_BUILD forces the conflict).
+echo "=== Step 5d: hook daemon-conflict notice regression (#1388) ==="
+bash "$ROOT/tests/test_hook_conflict_notice.sh"
+
 # Step 6: security-strings URL allow-list regression. The MSYS2 CLANG64 toolchain
 # bakes its package-tracker URL into the static Windows .exe; the binary string
 # audit must allow-list it (Windows-only — Linux smoke never saw it).
