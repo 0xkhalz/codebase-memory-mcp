@@ -23,24 +23,46 @@ cleanup() {
 }
 trap cleanup EXIT
 
-CBM_CACHE_DIR="${tmpdir}/cache" "${BINARY}" daemon start >/dev/null 2>&1
+if ! CBM_CACHE_DIR="${tmpdir}/cache" "${BINARY}" daemon start >"${tmpdir}/daemon-start.log" 2>&1; then
+  echo "daemon start failed on this host - cannot exercise the conflict path" >&2
+  cat "${tmpdir}/daemon-start.log" >&2
+  exit 2
+fi
 payload='{"session_id":"probe","hook_event_name":"PreToolUse","tool_name":"Grep","tool_input":{"pattern":"x","path":"/tmp"},"cwd":"/tmp"}'
 forced_build="$(printf 'f%.0s' $(seq 1 64))"
 
-set +e
-out="$(printf '%s' "${payload}" | CBM_CACHE_DIR="${tmpdir}/cache" \
-  CBM_TEST_HOOK_CLIENT_BUILD="${forced_build}" \
-  "${BINARY}" hook-augment 2>"${tmpdir}/probe.err")"
-rc=$?
-set -e
+# The daemon's cohort join completes asynchronously after `daemon start`
+# returns. Wait for the STATE the assertion needs - a probe that observes the
+# build conflict - with a bounded liveness backstop; never a bare sleep. The
+# throttled notice marker is cleared before each probe so the stdout
+# assertion stays valid on whichever probe first observes the conflict.
+rc=0
+out=""
+for _attempt in $(seq 1 40); do
+  rm -f "${tmpdir}/cache/.hook-daemon-absent-notice"
+  set +e
+  out="$(printf '%s' "${payload}" | CBM_CACHE_DIR="${tmpdir}/cache" \
+    CBM_TEST_HOOK_CLIENT_BUILD="${forced_build}" \
+    "${BINARY}" hook-augment 2>"${tmpdir}/probe.err")"
+  rc=$?
+  set -e
+  if [[ ${rc} -ne 0 ]]; then
+    echo "hook-augment must fail open (exit 0); got ${rc}" >&2
+    cat "${tmpdir}/probe.err" >&2
+    exit 1
+  fi
+  if grep -q "conflicting CBM process" "${tmpdir}/probe.err"; then
+    break
+  fi
+  sleep 0.5
+done
 
-if [[ ${rc} -ne 0 ]]; then
-  echo "hook-augment must fail open (exit 0); got ${rc}" >&2
-  cat "${tmpdir}/probe.err" >&2
-  exit 1
-fi
 if ! grep -q "conflicting CBM process" "${tmpdir}/probe.err"; then
-  echo "seam did not produce a build conflict - is this a TEST_SEAMS=1 binary?" >&2
+  echo "no probe observed the build conflict within the backstop - daemon cohort" >&2
+  echo "never became active, or this is not a TEST_SEAMS=1 binary" >&2
+  echo "--- daemon-start.log ---" >&2
+  cat "${tmpdir}/daemon-start.log" >&2
+  echo "--- last probe stderr ---" >&2
   cat "${tmpdir}/probe.err" >&2
   exit 2
 fi
