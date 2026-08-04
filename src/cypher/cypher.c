@@ -1720,6 +1720,8 @@ static int parse_order_by_clause(parser_t *p, cbm_return_clause_t *r) {
     return 0;
 }
 
+static void free_return_clause(cbm_return_clause_t *r);
+
 /* Parse RETURN/WITH clause (shared logic) */
 static int parse_return_or_with(parser_t *p, cbm_return_clause_t **out, bool is_with) {
     cbm_token_type_t tok = (int)is_with ? TOK_WITH : TOK_RETURN;
@@ -1753,8 +1755,7 @@ static int parse_return_or_with(parser_t *p, cbm_return_clause_t **out, bool is_
 
         cbm_return_item_t item = {0};
         if (parse_return_item(p, &item) < 0) {
-            free(r->items);
-            free(r);
+            free_return_clause(r);
             return CBM_NOT_FOUND;
         }
 
@@ -1771,8 +1772,7 @@ static int parse_return_or_with(parser_t *p, cbm_return_clause_t **out, bool is_
      * parsed item count to that width so an over-wide RETURN is rejected here
      * instead of writing past those arrays downstream. */
     if (r->count > CBM_SZ_32) {
-        free(r->items);
-        free(r);
+        free_return_clause(r);
         return CBM_NOT_FOUND;
     }
 
@@ -1780,11 +1780,7 @@ tail:
     /* Optional ORDER BY */
     if (match(p, TOK_ORDER)) {
         if (parse_order_by_clause(p, r) < 0) {
-            for (int k = 0; k < r->order_key_count; k++) {
-                safe_str_free(&r->order_keys[k]);
-            }
-            free(r->items);
-            free(r);
+            free_return_clause(r);
             return CBM_NOT_FOUND;
         }
     }
