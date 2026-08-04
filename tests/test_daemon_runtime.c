@@ -2666,6 +2666,7 @@ TEST(daemon_runtime_rejects_forged_identity_extension) {
     uint64_t forged_client_id = UINT64_MAX - 1;
     uint64_t forged_process_id = UINT64_MAX;
     bool encoded = false;
+    bool connected = false;
     bool sent = false;
     bool rejected = false;
     cbm_daemon_frame_t response_frame = {0};
@@ -2679,12 +2680,27 @@ TEST(daemon_runtime_rejects_forged_identity_extension) {
                &forged_process_id, sizeof(forged_process_id));
         raw = cbm_daemon_ipc_connect(fixture.endpoint, RUNTIME_TEST_TIMEOUT_MS);
     }
+    connected = raw != NULL;
     if (raw && encoded) {
+        /* The forged HELLO is 149 bytes against the 137-byte first-frame
+         * envelope cap, so the worker rejects it from the HEADER and closes
+         * without ever reading the payload -- deliberately, so that no
+         * attacker-controlled bytes are read (cbm_daemon_ipc_receive_frame_bounded).
+         * send_frame writes the header and the payload as two separate writes,
+         * so whether the payload write lands before that close is pure
+         * scheduling: it wins on an idle host and loses on a loaded one. Both
+         * outcomes ARE the rejection, so the transmit result is recorded and
+         * NOT asserted -- asserting it made the verdict a coin flip. */
         sent = cbm_daemon_ipc_send_frame(raw, CBM_DAEMON_FRAME_REQUEST, CBM_DAEMON_RUNTIME_OP_HELLO,
                                          forged, (uint32_t)sizeof(forged));
-        int received = cbm_daemon_ipc_receive_frame(raw, RUNTIME_TEST_TIMEOUT_MS, &response_frame,
-                                                    &response_payload);
-        rejected = received != 1 && cbm_daemon_runtime_service_active_clients(fixture.service) == 0;
+        int received = sent ? cbm_daemon_ipc_receive_frame(raw, RUNTIME_TEST_TIMEOUT_MS,
+                                                           &response_frame, &response_payload)
+                            : 0;
+        /* Wait for the state actually asserted instead of sampling it once: the
+         * forged peer is the only client, so the count is monotonic here and the
+         * bound is a liveness backstop, never the verdict. */
+        rejected = received != 1 && cbm_daemon_runtime_service_wait_for_clients(
+                                        fixture.service, 0, RUNTIME_TEST_TIMEOUT_MS);
     }
     free(response_payload);
     cbm_daemon_ipc_connection_close(raw);
@@ -2715,7 +2731,7 @@ TEST(daemon_runtime_rejects_forged_identity_extension) {
 
     ASSERT_TRUE(started);
     ASSERT_TRUE(encoded);
-    ASSERT_TRUE(sent);
+    ASSERT_TRUE(connected);
     ASSERT_TRUE(rejected);
     ASSERT_TRUE(valid_after_rejection);
     ASSERT_TRUE(exited);
