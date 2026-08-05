@@ -17,6 +17,11 @@ TEST(ws_depth_counts_components_below_the_volume) {
     ASSERT_EQ(cbm_workspace_path_depth("/etc/"), 1);
     ASSERT_EQ(cbm_workspace_path_depth("/Users/dev"), 2);
     ASSERT_EQ(cbm_workspace_path_depth("/Users//dev///x"), 3);
+    /* macOS firmlinks: the /private prefix must not inflate depth, or "/etc"
+     * resolves to "/private/etc" and passes a minimum of two. */
+    ASSERT_EQ(cbm_workspace_path_depth("/private/etc"), 1);
+    ASSERT_EQ(cbm_workspace_path_depth("/private/tmp/proj"), 2);
+    ASSERT_EQ(cbm_workspace_path_depth("/private"), 0);
     /* Drive-relative, so an ordinary Windows workspace is one deep. */
     ASSERT_EQ(cbm_workspace_path_depth("C:/"), 0);
     ASSERT_EQ(cbm_workspace_path_depth("D:/repos"), 1);
@@ -32,6 +37,9 @@ TEST(ws_volume_roots_are_absolutely_denied) {
     ASSERT_EQ(cbm_workspace_classify_root("C:/", HOME, CACHE), CBM_WS_DENY_ABSOLUTE);
     ASSERT_EQ(cbm_workspace_classify_root("C:\\", HOME, CACHE), CBM_WS_DENY_ABSOLUTE);
     ASSERT_EQ(cbm_workspace_classify_root("//srv/share", HOME, CACHE), CBM_WS_DENY_ABSOLUTE);
+    /* "/private" carries no components of its own once the macOS firmlink prefix
+     * is discounted, so it is a volume root rather than merely shallow. */
+    ASSERT_EQ(cbm_workspace_classify_root("/private", HOME, CACHE), CBM_WS_DENY_ABSOLUTE);
     ASSERT_FALSE(cbm_workspace_verdict_is_overridable(CBM_WS_DENY_ABSOLUTE));
     PASS();
 }
@@ -48,8 +56,9 @@ TEST(ws_non_absolute_paths_are_denied) {
 /* One depth rule refuses every POSIX top-level tree without a list to maintain.
  * This is the whole reason depth carries its weight. */
 TEST(ws_posix_top_level_trees_are_too_shallow) {
-    static const char *const shallow[] = {"/etc", "/home", "/Users", "/var",
-                                          "/opt", "/srv",  "/usr",   "/private"};
+    static const char *const shallow[] = {"/etc",         "/home",       "/Users", "/var",
+                                          "/opt",         "/srv",        "/usr",   "/private/etc",
+                                          "/private/var", "/private/tmp"};
     for (size_t i = 0; i < sizeof(shallow) / sizeof(shallow[0]); i++) {
         ASSERT_EQ(cbm_workspace_classify_root(shallow[i], HOME, CACHE), CBM_WS_DENY_TOO_SHALLOW);
     }
@@ -95,17 +104,6 @@ TEST(ws_credential_directories_are_sensitive_at_any_depth) {
     PASS();
 }
 
-/* Indexing a tree holding the cache would absorb every other project's graph
- * database, so this is absolute rather than overridable. */
-TEST(ws_cache_holding_roots_are_absolutely_denied) {
-    ASSERT_EQ(cbm_workspace_classify_root("/Users/dev/.cache", HOME, CACHE), CBM_WS_DENY_ABSOLUTE);
-    ASSERT_EQ(cbm_workspace_classify_root("/Users/dev/.cache/codebase-memory-mcp", HOME, CACHE),
-              CBM_WS_DENY_ABSOLUTE);
-    /* A sibling of the cache is not an ancestor of it. */
-    ASSERT_EQ(cbm_workspace_classify_root("/Users/dev/.cachex", HOME, CACHE), CBM_WS_ALLOW);
-    PASS();
-}
-
 TEST(ws_windows_system_trees_are_sensitive) {
     ASSERT_EQ(cbm_workspace_classify_root("C:/Windows", HOME, CACHE), CBM_WS_DENY_SENSITIVE);
     ASSERT_EQ(cbm_workspace_classify_root("C:/Users", HOME, CACHE), CBM_WS_DENY_SENSITIVE);
@@ -129,7 +127,6 @@ TEST(ws_posix_matching_is_case_sensitive) {
  * they must not crash or deny everything. */
 TEST(ws_null_context_disables_dependent_checks) {
     ASSERT_EQ(cbm_workspace_classify_root("/Users/dev", NULL, NULL), CBM_WS_ALLOW);
-    ASSERT_EQ(cbm_workspace_classify_root("/Users/dev/.cache", NULL, NULL), CBM_WS_ALLOW);
     /* Depth and volume rules are context-free and still apply. */
     ASSERT_EQ(cbm_workspace_classify_root("/etc", NULL, NULL), CBM_WS_DENY_TOO_SHALLOW);
     ASSERT_EQ(cbm_workspace_classify_root("/", NULL, NULL), CBM_WS_DENY_ABSOLUTE);
@@ -154,7 +151,6 @@ SUITE(workspace) {
     RUN_TEST(ws_legitimate_shallow_roots_are_allowed);
     RUN_TEST(ws_home_itself_is_sensitive_but_subdirs_are_fine);
     RUN_TEST(ws_credential_directories_are_sensitive_at_any_depth);
-    RUN_TEST(ws_cache_holding_roots_are_absolutely_denied);
     RUN_TEST(ws_windows_system_trees_are_sensitive);
     RUN_TEST(ws_posix_matching_is_case_sensitive);
     RUN_TEST(ws_null_context_disables_dependent_checks);

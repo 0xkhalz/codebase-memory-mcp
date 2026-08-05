@@ -35,6 +35,7 @@
 #include "foundation/compat_thread.h"
 #include "foundation/subprocess.h" /* cbm_build_win_cmdline — shared MS-CRT arg quoting */
 #include "foundation/win_utf8.h"   /* cbm_utf8_to_wide — CreateProcessW wide cmdline (#423/#20) */
+#include "foundation/workspace.h"
 
 #include <sqlite3/sqlite3.h>
 #include <yyjson/yyjson.h>
@@ -1049,6 +1050,28 @@ static void handle_index_start(cbm_http_server_t *server, cbm_http_conn_t *c,
     if (!cbm_is_dir(rpath)) {
         yyjson_doc_free(doc);
         cbm_http_replyf(c, 400, g_cors_json, "{\"error\":\"directory not found\"}");
+        return;
+    }
+
+    /* Same workspace boundary the MCP indexing tool applies, through the same
+     * function. This route used to check only that the path was a directory, so
+     * it accepted roots the MCP path refused — an operator's boundary held on one
+     * entry point and not the other. Canonicalize first: the policy is defined
+     * over resolved paths, and a symlink would otherwise launder the verdict. */
+    char canonical_root[4096];
+    char boundary_err[1024];
+    if (!cbm_canonical_path(rpath, canonical_root, sizeof(canonical_root))) {
+        yyjson_doc_free(doc);
+        cbm_http_replyf(c, 400, g_cors_json, "{\"error\":\"cannot resolve root_path\"}");
+        return;
+    }
+    if (!cbm_workspace_root_allowed(canonical_root, cbm_workspace_home_dir(),
+                                    cbm_workspace_cache_dir(), getenv("CBM_ALLOWED_ROOT"),
+                                    boundary_err, sizeof(boundary_err))) {
+        yyjson_doc_free(doc);
+        char escaped[1024];
+        cbm_json_escape(escaped, (int)sizeof(escaped), boundary_err);
+        cbm_http_replyf(c, 403, g_cors_json, "{\"error\":\"%s\"}", escaped);
         return;
     }
 
