@@ -107,6 +107,18 @@ TEST(ws_credential_directories_are_sensitive_at_any_depth) {
 TEST(ws_windows_system_trees_are_sensitive) {
     ASSERT_EQ(cbm_workspace_classify_root("C:/Windows", HOME, CACHE), CBM_WS_DENY_SENSITIVE);
     ASSERT_EQ(cbm_workspace_classify_root("C:/Users", HOME, CACHE), CBM_WS_DENY_SENSITIVE);
+    /* THE regression that matters on Windows: every user's work lives under
+     * C:\Users\<name>, so matching "Users" against every component would refuse
+     * every ordinary project path — including a CI runner's own workspace. Only
+     * the tree root is refused. */
+    ASSERT_EQ(cbm_workspace_classify_root("C:/Users/dev/projects/app", HOME, CACHE), CBM_WS_ALLOW);
+    ASSERT_EQ(cbm_workspace_classify_root("C:/Users/runneradmin/work/repo", HOME, CACHE),
+              CBM_WS_ALLOW);
+    /* System trees are refused at any depth inside them, not just at the root. */
+    ASSERT_EQ(cbm_workspace_classify_root("C:/Windows/System32", HOME, CACHE),
+              CBM_WS_DENY_SENSITIVE);
+    /* A project merely named after one is not one. */
+    ASSERT_EQ(cbm_workspace_classify_root("C:/dev/Windows-app", HOME, CACHE), CBM_WS_ALLOW);
     ASSERT_EQ(cbm_workspace_classify_root("C:/ProgramData", HOME, CACHE), CBM_WS_DENY_SENSITIVE);
     ASSERT_EQ(cbm_workspace_classify_root("C:/Program Files/app", HOME, CACHE),
               CBM_WS_DENY_SENSITIVE);

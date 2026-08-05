@@ -147,11 +147,43 @@ static const char *const WS_CREDENTIAL_NAMES[] = {
     ".authinfo",
 };
 
-/* Windows top-level trees below the drive. Small and stable enough to list,
- * which is what lets Windows use a shallower depth minimum. */
-static const char *const WS_WINDOWS_SYSTEM_DIRS[] = {
-    "Windows", "Users", "ProgramData", "Program Files", "Program Files (x86)",
+/* Windows system trees, matched only as the FIRST component below the drive.
+ * Nothing legitimate is indexed inside them at any depth.
+ *
+ * "Users" is deliberately NOT here. Every Windows user's files live under
+ * C:\Users\<name>, so matching it the way credential names are matched — against
+ * every component — refuses every ordinary Windows project path. It is handled
+ * below as the tree root only, mirroring POSIX where "/Users" is refused but
+ * "/Users/dev/projects" is not. */
+static const char *const WS_WINDOWS_SYSTEM_TREES[] = {
+    "Windows",
+    "ProgramData",
+    "Program Files",
+    "Program Files (x86)",
 };
+
+/* Roots that are the tree itself rather than something inside it. */
+static const char *const WS_WINDOWS_USER_TREE = "Users";
+
+/* Match only the first component below the volume prefix. */
+static bool ws_first_component_matches(const char *path, const char *const *names, size_t count,
+                                       bool fold_case) {
+    const char *p = path + ws_volume_prefix_len(path);
+    while (ws_is_sep(*p)) {
+        p++;
+    }
+    const char *start = p;
+    while (*p && !ws_is_sep(*p)) {
+        p++;
+    }
+    size_t len = (size_t)(p - start);
+    for (size_t i = 0; i < count; i++) {
+        if (ws_component_equals(start, len, names[i], fold_case)) {
+            return true;
+        }
+    }
+    return false;
+}
 
 static bool ws_any_component_matches(const char *path, const char *const *names, size_t count,
                                      bool fold_case) {
@@ -257,10 +289,17 @@ cbm_ws_verdict_t cbm_workspace_classify_root(const char *canonical_path, const c
         return CBM_WS_DENY_SENSITIVE;
     }
 
-    if (windows_style &&
-        ws_any_component_matches(canonical_path, WS_WINDOWS_SYSTEM_DIRS,
-                                 sizeof(WS_WINDOWS_SYSTEM_DIRS) / sizeof(WS_WINDOWS_SYSTEM_DIRS[0]),
-                                 true)) {
+    if (windows_style && ws_first_component_matches(canonical_path, WS_WINDOWS_SYSTEM_TREES,
+                                                    sizeof(WS_WINDOWS_SYSTEM_TREES) /
+                                                        sizeof(WS_WINDOWS_SYSTEM_TREES[0]),
+                                                    true)) {
+        return CBM_WS_DENY_SENSITIVE;
+    }
+
+    /* "C:/Users" is the user tree itself — refuse it as a root, but leave the
+     * projects below it alone; that is where Windows users actually work. */
+    if (windows_style && depth == 1 &&
+        ws_first_component_matches(canonical_path, &WS_WINDOWS_USER_TREE, 1, true)) {
         return CBM_WS_DENY_SENSITIVE;
     }
 
