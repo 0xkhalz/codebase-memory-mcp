@@ -14,6 +14,7 @@
 #include "test_framework.h"
 #include "test_helpers.h"
 #include <cli/agent_profiles.h>
+#include <cli/activation_transaction.h>
 #include <cli/cli.h>
 #include <cli/progress_sink.h>
 #include <daemon/bootstrap.h>
@@ -643,6 +644,41 @@ TEST(cli_activation_refuses_when_cohort_does_not_drain) {
     ASSERT_EQ(fake.mutation_lease_release_count, 0);
     ASSERT_FALSE(fake.mutation_lease_held);
     ASSERT_TRUE(fake.diagnostic[0] != '\0');
+    PASS();
+}
+
+/* Regression for #1416: when the activation transaction recorded a concrete
+ * refusal (e.g. the Windows ACL safety check), the CLI must attribute the
+ * failure to that check instead of blaming "active CBM sessions" - reporters
+ * rebooted and hunted phantom handles because no sessions existed. The
+ * sessions wording must remain for refusals with no recorded note. */
+TEST(cli_activation_refusal_note_reaches_diagnostic_issue1416) {
+    cbm_activation_transaction_note_refusal_for_testing(
+        "acl-grants-cross-account-mutation to S-1-5-11", 0UL);
+    cli_activation_fake_t fake = {
+        .participants_active = true,
+        .mutation_reserve_result = 0,
+    };
+    cbm_cli_activation_ops_t ops = {
+        .context = &fake,
+        .reserve_for_mutation = cli_activation_fake_reserve_mutation,
+        .mutation_lease_release = cli_activation_fake_release_mutation,
+        .visible_diagnostic = cli_activation_fake_diagnostic,
+    };
+    ASSERT_EQ(cbm_cli_activation_guard_with_ops(&ops, cli_activation_fake_mutation, &fake), 1);
+    ASSERT_NOT_NULL(strstr(fake.diagnostic, "acl-grants-cross-account-mutation"));
+    ASSERT_NOT_NULL(strstr(fake.diagnostic, "not a session problem"));
+    ASSERT_NULL(strstr(fake.diagnostic, "could not be stopped safely"));
+
+    /* No note recorded -> the sessions wording is still the right message. */
+    cbm_activation_transaction_note_refusal_for_testing(NULL, 0UL);
+    cli_activation_fake_t plain = {
+        .participants_active = true,
+        .mutation_reserve_result = 0,
+    };
+    ops.context = &plain;
+    ASSERT_EQ(cbm_cli_activation_guard_with_ops(&ops, cli_activation_fake_mutation, &plain), 1);
+    ASSERT_NOT_NULL(strstr(plain.diagnostic, "could not be stopped safely"));
     PASS();
 }
 
@@ -11891,6 +11927,7 @@ SUITE(cli) {
     /* Mandatory daemon activation safety */
     RUN_TEST(cli_activation_quiesces_active_cohort_before_mutation);
     RUN_TEST(cli_activation_refuses_when_cohort_does_not_drain);
+    RUN_TEST(cli_activation_refusal_note_reaches_diagnostic_issue1416);
     RUN_TEST(cli_activation_refuses_unsafe_cohort_reservation);
     RUN_TEST(cli_activation_releases_maintenance_lease_after_success);
     RUN_TEST(cli_activation_releases_maintenance_lease_when_mutation_fails);
