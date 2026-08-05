@@ -197,6 +197,24 @@ static const char *g_cli_activation_runtime_parent_for_test = NULL;
 
 static void cli_activation_diagnostic(const cbm_cli_activation_ops_t *ops, const char *message) {
     const char *diagnostic = message ? message : CLI_ACTIVATION_REFUSED_MESSAGE;
+    /* #1416: when the transaction recorded a concrete refusal (an ACL or
+     * filesystem safety check), say THAT. The generic text blames "active CBM
+     * sessions" for what is a validation refusal - reporters rebooted, killed
+     * every process, and hunted phantom handles because the message pointed at
+     * sessions that did not exist. The sessions wording remains for genuine
+     * stop/reservation failures, which record no refusal note. */
+    char attributed[CBM_SZ_1K];
+    const char *note = cbm_activation_transaction_refusal_note();
+    if (diagnostic == CLI_ACTIVATION_REFUSED_MESSAGE && note && note[0]) {
+        (void)snprintf(attributed, sizeof(attributed),
+                       "error: activation was refused by a filesystem safety check before any "
+                       "change was made: %s\n"
+                       "error: this is not a session problem. If the flagged directory is one you "
+                       "trust, remove the flagged permission grant (icacls <dir> /remove:g <sid>) "
+                       "or use an owner-private directory for --dir/CBM_CACHE_DIR, then retry.",
+                       note);
+        diagnostic = attributed;
+    }
     if (ops && ops->visible_diagnostic) {
         ops->visible_diagnostic(ops->context, diagnostic);
         return;
@@ -7177,9 +7195,13 @@ static void install_claude_code_config(const char *home, const char *binary_path
         char hook_path[CLI_BUF_1K];
         gate_ok = cbm_install_hook_gate_script(home, binary_path);
         snprintf(hook_path, sizeof(hook_path), "%s/hooks/%s", config_dir, CMM_HOOK_GATE_SCRIPT);
+        /* #1387: a failed script (re)write must never remove existing hook
+         * entries. The common failure is TEXT_UNOWNED - a script the user
+         * modified or a manual install wrote with another binary path - and
+         * that script still works; deleting the registration turns a skipped
+         * update into config loss. Entry removal belongs to uninstall only. */
         if (!gate_ok) {
             record_agent_config_error(false, "Claude Code", "hook_script_install", hook_path);
-            (void)cbm_remove_claude_hooks(settings_path);
         } else if (cbm_upsert_claude_hooks(settings_path) != CLI_OK) {
             gate_ok = false;
             record_agent_config_error(false, "Claude Code", "hook_register", settings_path);
@@ -7190,7 +7212,6 @@ static void install_claude_code_config(const char *home, const char *binary_path
                  CMM_SESSION_REMINDER_SCRIPT);
         if (!session_ok) {
             record_agent_config_error(false, "Claude Code", "hook_script_install", hook_path);
-            (void)cbm_remove_session_hooks(settings_path);
         } else if (cbm_upsert_session_hooks(settings_path) != CLI_OK) {
             session_ok = false;
             record_agent_config_error(false, "Claude Code", "hook_register", settings_path);
@@ -7201,7 +7222,6 @@ static void install_claude_code_config(const char *home, const char *binary_path
                  CMM_SUBAGENT_REMINDER_SCRIPT);
         if (!subagent_ok) {
             record_agent_config_error(false, "Claude Code", "hook_script_install", hook_path);
-            (void)cbm_remove_claude_subagent_hooks(settings_path);
         } else if (cbm_upsert_claude_subagent_hooks(settings_path) != CLI_OK) {
             subagent_ok = false;
             record_agent_config_error(false, "Claude Code", "hook_register", settings_path);
