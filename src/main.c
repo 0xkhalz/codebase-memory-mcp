@@ -1483,12 +1483,9 @@ static void main_hook_report_absent_daemon(const char *hook_dialect) {
     (void)fprintf(stderr, "codebase-memory-mcp: no CBM daemon is running, so graph "
                           "augmentation is skipped. Start an MCP session or run "
                           "`codebase-memory-mcp daemon start` to enable it.\n");
-    if (!hook_dialect) {
-        /* Claude hook output: a systemMessage is surfaced to the user. */
-        (void)fputs("{\"systemMessage\":\"codebase-memory-mcp: no CBM daemon is running, so "
-                    "graph augmentation is currently skipped. Run `codebase-memory-mcp daemon "
-                    "start` (or open an MCP session) to enable it.\"}",
-                    stdout);
+    const char *notice = cbm_hook_admission_notice(CBM_HOOK_ADMISSION_DAEMON_ABSENT, hook_dialect);
+    if (notice) {
+        (void)fputs(notice, stdout);
         (void)fflush(stdout);
     }
 }
@@ -1503,12 +1500,11 @@ static void main_hook_report_conflicted_daemon(const char *hook_dialect) {
     if (hook_dialect || !main_hook_absent_notice_due()) {
         return;
     }
-    (void)fputs("{\"systemMessage\":\"codebase-memory-mcp: graph augmentation is skipped: the "
-                "active CBM daemon runs a different build than this binary (usually an update "
-                "was installed while the old daemon kept running). Run `codebase-memory-mcp "
-                "daemon stop`, then retry - the next command starts a matching daemon.\"}",
-                stdout);
-    (void)fflush(stdout);
+    const char *notice = cbm_hook_admission_notice(CBM_HOOK_ADMISSION_BUILD_CONFLICT, hook_dialect);
+    if (notice) {
+        (void)fputs(notice, stdout);
+        (void)fflush(stdout);
+    }
 }
 
 static int main_run_hook_frontend(cbm_daemon_runtime_client_t *client, const char *hook_event,
