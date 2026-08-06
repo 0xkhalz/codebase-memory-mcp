@@ -933,11 +933,14 @@ static int main_run_allow_root(int argc, char **argv) {
     const char *path = NULL;
     bool approve_sensitive = false;
     bool list_only = false;
+    bool approve_manifest = false;
     for (int i = 0; i < argc; i++) {
         if (strcmp(argv[i], "--approve-sensitive") == 0) {
             approve_sensitive = true;
         } else if (strcmp(argv[i], "--list") == 0) {
             list_only = true;
+        } else if (strcmp(argv[i], "--approve-manifest") == 0) {
+            approve_manifest = true;
         } else if (argv[i][0] == '-') {
             (void)fprintf(stderr, "error: unknown option: %s\n", argv[i]);
             return EXIT_FAILURE;
@@ -966,9 +969,30 @@ static int main_run_allow_root(int argc, char **argv) {
         if (!path && !list_only) {
             (void)fprintf(stderr,
                           "usage: codebase-memory-mcp allow-root [--approve-sensitive] <path>\n"
+                          "       codebase-memory-mcp allow-root --approve-manifest <project>\n"
                           "       codebase-memory-mcp allow-root --list\n");
             return EXIT_FAILURE;
         }
+        return 0;
+    }
+
+    if (approve_manifest) {
+        /* Approve the manifest a project ships, keyed to its current content. The
+         * file only ever requests; this is the human action that grants. */
+        char canonical_project[CBM_PATH_MAX];
+        if (!cbm_canonical_path(path, canonical_project, sizeof(canonical_project))) {
+            (void)fprintf(stderr, "error: cannot resolve path: %s\n", path);
+            return EXIT_FAILURE;
+        }
+        char merr[CBM_SZ_1K];
+        if (!cbm_workspace_manifest_approve(cache_dir, cbm_workspace_home_dir(), canonical_project,
+                                            merr, sizeof(merr))) {
+            (void)fprintf(stderr, "refused: %s\n", merr[0] ? merr : "manifest not approvable");
+            return EXIT_FAILURE;
+        }
+        printf("manifest approved for %s\n", canonical_project);
+        printf("note: editing %s lapses this approval and it must be granted again.\n",
+               CBM_WS_MANIFEST_NAME);
         return 0;
     }
 
