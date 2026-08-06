@@ -269,7 +269,9 @@ case "${1:-full}" in
         echo "=== Windows: binary version check (cross-compile + Wine) ==="
         $COMPOSE run --rm smoke-windows
         ;;
-    amd64)
+    amd64 | test-amd64)
+        # `--help` advertises `amd64|test-amd64`, but only `amd64` dispatched:
+        # the documented spelling died with "unknown leg 'test-amd64'".
         echo "=== Linux amd64: test + build ==="
         $COMPOSE run --rm -e CBM_SKIP_PERF=1 test-amd64
         $COMPOSE run --rm build-amd64

@@ -145,8 +145,12 @@ vm_ensure_run_checkout() {
     # `fetch origin <branch>` would resolve against whatever the base happens
     # to hold (i.e. another session's state) instead of GitHub. Inherit the
     # base's real origin URL so the isolated tree fetches independently.
-    vm clangarm64 "[ -d '$VM_REPO/.git' ] || { git clone --local '$VM_BASE_REPO' '$VM_REPO' && \
-        git -C '$VM_REPO' remote set-url origin \"\$(git -C '$VM_BASE_REPO' remote get-url origin)\"; }"
+    # The substitution is single-quoted here so it expands in the REMOTE shell
+    # (same pattern as JOBS above); nested double quotes do not survive the
+    # cmd.exe -> msys2_shell wrapper.
+    local base_url_expr='$(git -C '"$VM_BASE_REPO"' remote get-url origin)'
+    vm clangarm64 "[ -d '$VM_REPO/.git' ] || git clone --local '$VM_BASE_REPO' '$VM_REPO'"
+    vm clangarm64 "git -C '$VM_REPO' remote set-url origin $base_url_expr"
 }
 
 # The VM tree must be the one the caller means. A concurrent session running
