@@ -7,8 +7,10 @@
 #include "test_framework.h"
 #include "discover/discover.h"
 #include <string.h> /* strdup (test seam) */
+#ifndef _WIN32
 #include <sys/wait.h> /* fork/waitpid crash-isolation for the backtracking budget */
-#include <unistd.h>
+#include <unistd.h>   /* alarm() as the liveness backstop */
+#endif
 
 /* ── Basic pattern matching ────────────────────────────────────── */
 
