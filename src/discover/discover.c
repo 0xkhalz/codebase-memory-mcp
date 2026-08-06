@@ -13,6 +13,7 @@
 
 #include "foundation/constants.h"
 #include "foundation/compat_fs.h"
+#include "foundation/workspace.h"
 #include "foundation/platform.h"
 #ifdef _WIN32
 #include "foundation/win_utf8.h"
@@ -562,6 +563,30 @@ static bool is_safety_core_dir(const char *name) {
 }
 
 /* Check if a directory entry should be skipped (hardcoded dirs + gitignore). */
+/* The cache directory holds every indexed project's graph database. When a custom
+ * CBM_CACHE_DIR sits inside a repository — which happens in tests and is legal in
+ * production — walking into it would pull other projects' databases into this
+ * project's file list. Prune it by absolute path.
+ *
+ * This is the narrow remedy for a concern that was briefly implemented as
+ * refusing any root containing the cache: refusing a whole root was too blunt,
+ * and not walking the cache is what the concern actually asks for. */
+static bool dir_is_cache_tree(const char *abs_path) {
+    const char *cache = cbm_workspace_cache_dir();
+    if (!cache || !cache[0] || !abs_path || !abs_path[0]) {
+        return false;
+    }
+    size_t n = strlen(cache);
+    while (n > 1 && (cache[n - 1] == '/' || cache[n - 1] == '\\')) {
+        n--;
+    }
+    if (strncmp(abs_path, cache, n) != 0) {
+        return false;
+    }
+    /* Boundary-aware so "<cache>x" is not treated as living under "<cache>". */
+    return abs_path[n] == '\0' || abs_path[n] == '/' || abs_path[n] == '\\';
+}
+
 static bool should_skip_directory(const char *entry_name, const char *rel_path,
                                   const cbm_discover_opts_t *opts, const cbm_gitignore_t *gitignore,
                                   const cbm_gitignore_t *global_gi,
@@ -853,7 +878,8 @@ static void walk_dir_process_entry(cbm_dirent_t *entry, const walk_frame_t *fram
     }
 
     if (S_ISDIR(st.st_mode)) {
-        if (!should_skip_directory(entry->name, rel_path, opts, gitignore, global_gi, cbmignore,
+        if (!dir_is_cache_tree(abs_path) &&
+            !should_skip_directory(entry->name, rel_path, opts, gitignore, global_gi, cbmignore,
                                    frame->local_gi, frame->local_gi_prefix)) {
             walk_push_subdir(ws, abs_path, rel_path, frame, out);
         } else {
