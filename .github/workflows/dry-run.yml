@@ -13,11 +13,18 @@
 # back clean one day and flagged the next, which is precisely why finding out
 # during a dry run is worth the wait.
 #
-# Two independent skips, because they answer different questions:
-#   skip_builds      no artifacts at all — "do lint and tests pass?"
-#   skip_virustotal  build + smoke + soak, no scan — "do the archives pass CI?"
-# The second exists because the scan costs API quota and polls for up to two
-# hours, which is pure noise while iterating on a build or smoke failure.
+# The skips are independent because they answer different questions:
+#   skip_builds      no artifacts at all             "do lint and tests pass?"
+#   skip_smoke       build + scan, no smoke          "does this diff scan red?"
+#   skip_virustotal  build + smoke + soak, no scan   "do the archives pass CI?"
+#
+# skip_virustotal exists because the scan costs API quota and polls for up to
+# two hours, which is pure noise while iterating on a build or smoke failure.
+#
+# skip_smoke is the opposite trip: go straight from build to VirusTotal when the
+# question is only whether a diff turns the scan red. Smoke is in the VirusTotal
+# job's needs, so without this a smoke failure would withhold exactly the answer
+# such a run was dispatched to get.
 name: Dry Run
 
 on:
@@ -33,6 +40,10 @@ on:
         default: false
       skip_builds:
         description: 'Skip build + smoke (also skips VirusTotal — nothing to scan)'
+        type: boolean
+        default: false
+      skip_smoke:
+        description: 'Skip smoke (build straight to VirusTotal)'
         type: boolean
         default: false
       skip_virustotal:
@@ -86,7 +97,7 @@ jobs:
   # (including the macos-15-intel darwin-amd64 binary) is blocking now, so a
   # failed/missing platform binary correctly stops smoke — see _build.yml.
   smoke:
-    if: ${{ inputs.skip_builds != true && !cancelled() && needs.build.result != 'failure' && needs.build.result != 'skipped' }}
+    if: ${{ inputs.skip_builds != true && inputs.skip_smoke != true && !cancelled() && needs.build.result != 'failure' && needs.build.result != 'skipped' }}
     needs: [build]
     uses: ./.github/workflows/_smoke.yml
     with:
@@ -112,6 +123,11 @@ jobs:
   # take up to two hours) and the one most likely to be waiting on someone
   # else's queue, so it must not delay the feedback that is actually about our
   # code.
+  #
+  # It needs smoke and soak only so it runs LAST, not because it depends on
+  # them: a skipped smoke or soak leaves the scan reachable (result 'skipped',
+  # which is not 'failure'), while a FAILED one withholds it — if the artifacts
+  # are broken, a verdict on them is not worth two hours of polling.
   virustotal:
     if: ${{ inputs.skip_builds != true && inputs.skip_virustotal != true && !cancelled() && needs.build.result == 'success' && needs.smoke.result != 'failure' && needs.soak.result != 'failure' }}
     needs: [build, smoke, soak]
