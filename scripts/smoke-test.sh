@@ -390,6 +390,64 @@ if [ "$TOTAL" -lt 1 ]; then
   echo "FAIL: search_graph for 'compute' returned 0 results"
   exit 1
 fi
+
+echo ""
+echo "=== Phase 3z: no tool duplicates its payload into structuredContent (#1375) ==="
+# Asserts on the SHIPPED artifact what the unit suite asserts from source: a
+# non-JSON payload must travel ONCE. It used to appear twice — content[0].text
+# plus an identical structuredContent.text — costing 2.05x the bytes on a large
+# query_graph, i.e. half the 10 MiB transport budget and double the tokens billed
+# to every LLM caller.
+#
+# In smoke as well as the unit suite because this is a WIRE-FORMAT property: it
+# is what a real client actually receives from the real binary, and a from-source
+# test cannot prove the released artifact behaves the same way.
+DUP_TOOLS=0
+DUP_CHECKED=0
+for TOOL_ARGS in "search_graph --project $PROJECT --name-pattern compute" \
+                 "search_code --project $PROJECT --query compute" \
+                 "get_architecture --project $PROJECT" \
+                 "index_status --project $PROJECT"; do
+  # shellcheck disable=SC2086
+  ENVELOPE=$("$BINARY" cli $TOOL_ARGS --json 2>/dev/null || true)
+  [ -z "$ENVELOPE" ] && continue
+  VERDICT=$(printf '%s' "$ENVELOPE" | python3 -c '
+import json,sys
+try:
+    d = json.loads(sys.stdin.read())
+except Exception:
+    print("skip"); raise SystemExit
+if d.get("isError"):
+    print("skip"); raise SystemExit
+content = d.get("content") or []
+text = content[0].get("text", "") if content else ""
+sc = d.get("structuredContent")
+if not isinstance(sc, dict):
+    print("no-structured"); raise SystemExit
+try:
+    payload_is_object = isinstance(json.loads(text), dict)
+except Exception:
+    payload_is_object = False
+if payload_is_object:
+    print("skip"); raise SystemExit
+print("dup" if sc.get("text") == text and text else "ok")
+')
+  case "$VERDICT" in
+    dup) echo "FAIL: $(echo "$TOOL_ARGS" | cut -d" " -f1) repeats its payload in structuredContent (#1375)"; DUP_TOOLS=$((DUP_TOOLS+1)) ;;
+    ok) DUP_CHECKED=$((DUP_CHECKED+1)) ;;
+    no-structured) echo "FAIL: $(echo "$TOOL_ARGS" | cut -d" " -f1) has no structuredContent object (outputSchema requires one)"; DUP_TOOLS=$((DUP_TOOLS+1)) ;;
+  esac
+done
+if [ "$DUP_TOOLS" -ne 0 ]; then
+  echo "FAIL: $DUP_TOOLS tool(s) duplicate their payload on the shipped binary"
+  exit 1
+fi
+if [ "$DUP_CHECKED" -eq 0 ]; then
+  echo "FAIL: no tool produced a non-JSON payload — this check proved nothing"
+  exit 1
+fi
+echo "OK: $DUP_CHECKED tool(s) deliver their payload exactly once"
+
 echo "OK: search_graph found $TOTAL result(s) for 'compute'"
 
 # 3b: trace_path — verify compute has callers
