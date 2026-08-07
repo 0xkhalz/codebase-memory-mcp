@@ -310,8 +310,9 @@ static FILE *cbm_popen_isolated(const char *cmd, const char **stage, DWORD *gle)
         *stage = "cmdline";
         *gle = ERROR_NOT_ENOUGH_MEMORY;
     } else {
-        created = CreateProcessW(app, wcmdline, NULL, NULL, TRUE, EXTENDED_STARTUPINFO_PRESENT,
-                                 NULL, NULL, &si.StartupInfo, &pi);
+        created = CreateProcessW(app, wcmdline, NULL, NULL, TRUE,
+                                 EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW, NULL, NULL,
+                                 &si.StartupInfo, &pi);
         if (!created) {
             *stage = "spawn";
             *gle = GetLastError();
