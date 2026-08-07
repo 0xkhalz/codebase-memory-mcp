@@ -563,6 +563,19 @@ static bool is_safety_core_dir(const char *name) {
 }
 
 /* Check if a directory entry should be skipped (hardcoded dirs + gitignore). */
+/* Snapshot of the cache directory for the current walk.
+ *
+ * cbm_resolve_cache_dir() returns a pointer to a static thread-local buffer, so
+ * calling it once per directory — as an earlier version of this prune did —
+ * rewrites a buffer other code may still be holding. Resolve once at the entry
+ * point and compare against the copy. */
+static _Thread_local char g_walk_cache_dir[CBM_SZ_4K];
+
+static void walk_cache_dir_snapshot(void) {
+    const char *cache = cbm_workspace_cache_dir();
+    snprintf(g_walk_cache_dir, sizeof(g_walk_cache_dir), "%s", cache ? cache : "");
+}
+
 /* The cache directory holds every indexed project's graph database. When a custom
  * CBM_CACHE_DIR sits inside a repository — which happens in tests and is legal in
  * production — walking into it would pull other projects' databases into this
@@ -572,8 +585,8 @@ static bool is_safety_core_dir(const char *name) {
  * refusing any root containing the cache: refusing a whole root was too blunt,
  * and not walking the cache is what the concern actually asks for. */
 static bool dir_is_cache_tree(const char *abs_path) {
-    const char *cache = cbm_workspace_cache_dir();
-    if (!cache || !cache[0] || !abs_path || !abs_path[0]) {
+    const char *cache = g_walk_cache_dir;
+    if (!cache[0] || !abs_path || !abs_path[0]) {
         return false;
     }
     size_t n = strlen(cache);
@@ -1190,6 +1203,7 @@ static cbm_discover_status_t discover_impl(const char *repo_path, const cbm_disc
         .collect_excluded = !count_only && excluded_out != NULL,
         .collect_ignored = !count_only && ignored_out != NULL,
     };
+    walk_cache_dir_snapshot();
     walk_dir(repo_path, "", opts, gitignore, global_gi, cbmignore, &fl);
 
     /* Cleanup */
