@@ -686,7 +686,14 @@ int cbm_exec_no_shell(const char *const *argv) {
     memset(&pi, 0, sizeof(pi));
     si.cb = sizeof(si);
 
-    if (!CreateProcessW(NULL, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+    /* CREATE_NO_WINDOW: the third and last spawn site that still needed it
+     * (#1427). Without it every helper routed through here — git, codesign,
+     * open — flashes a console window, and under a stdio MCP session with
+     * auto_watch those steal focus while the user is typing. The other three
+     * CreateProcessW sites already set it: subprocess.c and cbm_popen_isolated
+     * via #1448, and the detached daemon spawn in daemon/bootstrap.c, which has
+     * had it since it was written. */
+    if (!CreateProcessW(NULL, cmdline, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
         free(cmdline);
         return CBM_NOT_FOUND;
     }
