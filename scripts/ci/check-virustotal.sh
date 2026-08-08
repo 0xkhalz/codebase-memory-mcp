@@ -17,7 +17,7 @@ command -v curl >/dev/null 2>&1 || {
   exit 1
 }
 
-python3 - <<'PY'
+python3 - "$BASH" <<'PY'
 from __future__ import annotations
 
 import csv
@@ -35,6 +35,9 @@ import urllib.parse
 from collections import deque
 from dataclasses import dataclass
 from typing import Deque, Dict, List, Optional, Sequence, Tuple
+
+
+bash_executable = pathlib.Path(sys.argv[1])
 
 
 class GateError(Exception):
@@ -533,6 +536,9 @@ def fetch_analysis(api_key: str, analysis_id: str, curl_timeout: int) -> Optiona
     encoded_id = urllib.parse.quote(analysis_id, safe="")
     response = subprocess.run(
         [
+            str(bash_executable),
+            "-c",
+            'exec curl "$@"',
             "curl",
             "-sf",
             "--max-time",

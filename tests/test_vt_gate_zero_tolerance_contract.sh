@@ -20,6 +20,14 @@ for needle in defender-endpoint-verification av-endpoint-verify false-positive f
   fi
 done
 
+# Source-contract patterns intentionally retain shell variables literally.
+# shellcheck disable=SC2016
+grep -Fq 'python3 - "$BASH"' "$GATE" ||
+  fail "gate must pass its current Bash explicitly to native Windows Python"
+# shellcheck disable=SC2016
+grep -Fq 'exec curl "$@"' "$GATE" ||
+  fail "gate must resolve curl through its current Bash without interpolating argv"
+
 mkdir -p "$FIX/bin" "$FIX/work/binaries/objects" "$FIX/responses"
 printf 'release-bytes\n' > "$FIX/work/binaries/objects/probe"
 printf 'second-object\n' > "$FIX/work/binaries/objects/probe2"
