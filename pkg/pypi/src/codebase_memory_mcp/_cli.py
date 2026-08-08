@@ -58,6 +58,10 @@ _RUNTIME_BACKUP_PREFIX = ".cbm-runtime-backup-"
 _RUNTIME_BACKUP_RE = re.compile(r"\.cbm-runtime-backup-[0-9a-f]{32}\Z")
 _RUNTIME_BACKUP_RETIRED_MARKER = ".retirement-complete"
 _RUNTIME_BACKUP_CLEANUP_MARKER = ".cleanup-only"
+_WINDOWS_SYNCHRONIZE = 0x00100000
+_WINDOWS_WAIT_OBJECT_0 = 0x00000000
+_WINDOWS_WAIT_TIMEOUT = 0x00000102
+_WINDOWS_ERROR_INVALID_PARAMETER = 87
 _runtime_lock_claim_observer = None
 
 
@@ -544,9 +548,67 @@ def _staged_runtime_names(staged_paths, binary_name: str, variant: str):
     return runtime_names
 
 
+def _windows_process_api():
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (
+        wintypes.DWORD,
+        wintypes.BOOL,
+        wintypes.DWORD,
+    )
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = (
+        wintypes.HANDLE,
+        wintypes.DWORD,
+    )
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    return kernel32, ctypes.get_last_error
+
+
+def _windows_process_is_alive(pid: int) -> bool:
+    if pid > 0xFFFFFFFF:
+        # Avoid truncating an unprobeable owner identifier into another PID.
+        return True
+    try:
+        kernel32, get_last_error = _windows_process_api()
+        handle = kernel32.OpenProcess(_WINDOWS_SYNCHRONIZE, False, pid)
+    except Exception:
+        return True
+    if not handle:
+        try:
+            error = get_last_error()
+        except Exception:
+            return True
+        # OpenProcess documents ERROR_INVALID_PARAMETER for a PID that no
+        # longer identifies a process. Access denial remains evidence of a
+        # potentially live owner and must not authorize lock reclamation.
+        return error != _WINDOWS_ERROR_INVALID_PARAMETER
+    try:
+        try:
+            wait_result = kernel32.WaitForSingleObject(handle, 0)
+        except Exception:
+            return True
+        if wait_result == _WINDOWS_WAIT_OBJECT_0:
+            return False
+        if wait_result == _WINDOWS_WAIT_TIMEOUT:
+            return True
+        return True
+    finally:
+        try:
+            kernel32.CloseHandle(handle)
+        except Exception:
+            pass
+
+
 def _process_is_alive(pid: int) -> bool:
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return False
+    if os.name == "nt":
+        return _windows_process_is_alive(pid)
     try:
         os.kill(pid, 0)
         return True
@@ -699,6 +761,35 @@ def _assert_runtime_lock_owner(lock):
         raise RuntimeError("package-cache publication lock ownership changed")
 
 
+def _open_validated_runtime_lock(lock_path: Path, token: str, expected_status):
+    """Reopen a lock name and prove it still names the expected owner object."""
+    try:
+        owner_fd = os.open(lock_path, os.O_RDWR)
+    except OSError as exc:
+        raise RuntimeError(
+            "package-cache publication lock ownership changed"
+        ) from exc
+    try:
+        descriptor_status = os.fstat(owner_fd)
+        canonical_status = _runtime_lock_status(lock_path)
+        owner = _read_runtime_lock_owner(lock_path)
+        if (
+            not _same_runtime_lock_object(expected_status, descriptor_status)
+            or not _same_runtime_lock_object(
+                descriptor_status, canonical_status
+            )
+            or owner is None
+            or owner[:2] != (os.getpid(), token)
+        ):
+            raise RuntimeError(
+                "package-cache publication lock ownership changed"
+            )
+    except BaseException:
+        os.close(owner_fd)
+        raise
+    return owner_fd
+
+
 def _refresh_runtime_lock(lock):
     _assert_runtime_lock_owner(lock)
     _write_runtime_lock_owner(lock[2], lock[1])
@@ -724,16 +815,26 @@ def _acquire_runtime_lock(directory: Path):
                 if _runtime_lock_claim_observer is not None:
                     _runtime_lock_claim_observer()
                 os.link(claim_path, lock_path)
-                claim_path.unlink()
+                linked_status = os.fstat(owner_fd)
                 if not _same_runtime_lock_object(
-                    os.fstat(owner_fd), _runtime_lock_status(lock_path)
+                    linked_status, _runtime_lock_status(lock_path)
                 ):
                     raise RuntimeError(
                         "package-cache publication lock ownership changed"
                     )
-            except BaseException:
+                # Windows does not grant delete sharing to this descriptor.
+                # Close it before removing the claim name, then reopen the
+                # canonical name and revalidate identity plus owner record.
                 os.close(owner_fd)
                 owner_fd = None
+                claim_path.unlink()
+                owner_fd = _open_validated_runtime_lock(
+                    lock_path, token, linked_status
+                )
+            except BaseException:
+                if owner_fd is not None:
+                    os.close(owner_fd)
+                    owner_fd = None
                 try:
                     claim_path.unlink()
                 except OSError:
@@ -762,27 +863,27 @@ def _release_runtime_lock(lock):
     except Exception:
         os.close(owner_fd)
         raise
-    released = lock_path.with_name(f"{lock_path.name}.released-{token}")
-    try:
-        os.rename(lock_path, released)
-    except Exception:
-        os.close(owner_fd)
-        raise
     descriptor_status = os.fstat(owner_fd)
+    # Path mutation while this descriptor is open fails on Windows. Close it,
+    # then reopen the canonical name to prove no object or owner substitution
+    # occurred before releasing the name.
+    os.close(owner_fd)
+    validated_fd = _open_validated_runtime_lock(
+        lock_path, token, descriptor_status
+    )
+    os.close(validated_fd)
+    released = lock_path.with_name(f"{lock_path.name}.released-{token}")
+    os.rename(lock_path, released)
     released_status = _runtime_lock_status(released)
-    owner = _read_runtime_lock_owner(released)
-    if (
-        not _same_runtime_lock_object(descriptor_status, released_status)
-        or owner is None
-        or owner[:2] != (os.getpid(), token)
-    ):
-        _restore_displaced_runtime_lock(released, lock_path, released_status)
-        os.close(owner_fd)
-        raise RuntimeError("package-cache publication lock ownership changed")
     try:
-        released.unlink()
-    finally:
-        os.close(owner_fd)
+        validated_fd = _open_validated_runtime_lock(
+            released, token, descriptor_status
+        )
+    except Exception:
+        _restore_displaced_runtime_lock(released, lock_path, released_status)
+        raise
+    os.close(validated_fd)
+    released.unlink()
 
 
 # A grouped backup is a small crash journal. The retired marker separates a

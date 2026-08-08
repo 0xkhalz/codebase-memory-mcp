@@ -1930,6 +1930,26 @@ func TestStalledRuntimeLockCreatorNeverDeletesSuccessor(t *testing.T) {
 	}
 }
 
+func TestRuntimeSetLockReleaseRetiresDescriptor(t *testing.T) {
+	destination := t.TempDir()
+	lock, err := acquireRuntimeSetLock(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lock.file == nil {
+		t.Fatal("acquired runtime-set lock has no writable descriptor")
+	}
+	if err := releaseRuntimeSetLock(lock); err != nil {
+		t.Fatal(err)
+	}
+	if lock.file != nil {
+		t.Fatal("released runtime-set lock retained its closed descriptor")
+	}
+	if _, err := os.Lstat(lock.path); !os.IsNotExist(err) {
+		t.Fatalf("released runtime-set lock remained at its canonical path: %v", err)
+	}
+}
+
 func TestRuntimeReadinessRejectsMultiplyLinkedLeaves(t *testing.T) {
 	directory := t.TempDir()
 	binary := "codebase-memory-mcp"

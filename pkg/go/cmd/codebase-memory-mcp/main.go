@@ -1742,6 +1742,34 @@ func runtimeSetSameLockObject(left, right os.FileInfo) bool {
 		left.Mode().Type() == right.Mode().Type()
 }
 
+// captureRuntimeSetLockObject resolves the lock's file identity while its
+// canonical pathname still exists. On Windows, os.FileInfo identity can be
+// resolved lazily from its pathname; carrying an untouched Lstat result across
+// a rename therefore loses the object we meant to revalidate.
+func captureRuntimeSetLockObject(
+	lockPath string, observedStatus os.FileInfo,
+) (os.FileInfo, error) {
+	object, err := os.Open(lockPath)
+	if err != nil {
+		return nil, err
+	}
+	descriptorStatus, descriptorErr := object.Stat()
+	canonicalStatus, canonicalErr := os.Lstat(lockPath)
+	identityOK := descriptorErr == nil && canonicalErr == nil &&
+		runtimeSetSameLockObject(observedStatus, descriptorStatus) &&
+		runtimeSetSameLockObject(descriptorStatus, canonicalStatus)
+	closeErr := object.Close()
+	if !identityOK {
+		return nil, fmt.Errorf(
+			"package-cache runtime-set publication lock ownership changed",
+		)
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	return descriptorStatus, nil
+}
+
 func writeRuntimeSetLockRecord(owner *os.File, token string) error {
 	if err := owner.Truncate(0); err != nil {
 		return err
@@ -1812,6 +1840,10 @@ func runtimeSetTryReclaimLock(lockPath, contenderToken string) bool {
 	if err != nil || observedStatus.Mode()&os.ModeSymlink != 0 ||
 		(!observedStatus.Mode().IsRegular() && !observedStatus.IsDir()) {
 		return false
+	}
+	observedStatus, err = captureRuntimeSetLockObject(lockPath, observedStatus)
+	if err != nil {
+		return os.IsNotExist(err)
 	}
 	owner, ownerOK := runtimeSetLockOwner(lockPath)
 	if !runtimeSetOwnerReclaimable(observedStatus, owner, ownerOK) {
@@ -1893,16 +1925,37 @@ func acquireRuntimeSetLock(destinationDirectory string) (*runtimeSetLock, error)
 				return nil, err
 			}
 		}
+		descriptorStatus, descriptorErr := owner.Stat()
+		claimStatus, claimStatusErr := os.Lstat(claimPath)
+		if descriptorErr != nil || claimStatusErr != nil ||
+			!runtimeSetSameLockObject(descriptorStatus, claimStatus) {
+			_ = owner.Close()
+			_ = os.Remove(claimPath)
+			return nil, fmt.Errorf(
+				"package-cache runtime-set publication lock ownership changed",
+			)
+		}
+		if err := owner.Close(); err != nil {
+			_ = os.Remove(claimPath)
+			return nil, err
+		}
 		linkErr := os.Link(claimPath, lockPath)
 		if linkErr == nil {
 			if err := os.Remove(claimPath); err != nil {
-				_ = owner.Close()
 				return nil, err
 			}
-			descriptorStatus, descriptorErr := owner.Stat()
+			owner, openErr := os.OpenFile(lockPath, os.O_RDWR, 0)
+			if openErr != nil {
+				return nil, openErr
+			}
+			reopenedStatus, reopenedErr := owner.Stat()
 			canonicalStatus, canonicalErr := os.Lstat(lockPath)
-			if descriptorErr != nil || canonicalErr != nil ||
-				!runtimeSetSameLockObject(descriptorStatus, canonicalStatus) {
+			lockOwner, ownerOK := runtimeSetLockOwner(lockPath)
+			if reopenedErr != nil || canonicalErr != nil ||
+				!runtimeSetSameLockObject(descriptorStatus, reopenedStatus) ||
+				!runtimeSetSameLockObject(reopenedStatus, canonicalStatus) ||
+				!ownerOK || lockOwner.PID != os.Getpid() ||
+				lockOwner.Token != token {
 				_ = owner.Close()
 				return nil, fmt.Errorf(
 					"package-cache runtime-set publication lock ownership changed",
@@ -1910,7 +1963,6 @@ func acquireRuntimeSetLock(destinationDirectory string) (*runtimeSetLock, error)
 			}
 			return &runtimeSetLock{path: lockPath, token: token, file: owner}, nil
 		}
-		_ = owner.Close()
 		_ = os.Remove(claimPath)
 		if !os.IsExist(linkErr) {
 			return nil, linkErr
@@ -1934,32 +1986,42 @@ func releaseRuntimeSetLock(lock *runtimeSetLock) error {
 	if err := assertRuntimeSetLockOwner(lock); err != nil {
 		if lock != nil && lock.file != nil {
 			_ = lock.file.Close()
+			lock.file = nil
 		}
 		return err
 	}
-	released := lock.path + ".released-" + lock.token
-	if err := os.Rename(lock.path, released); err != nil {
-		_ = lock.file.Close()
-		return err
-	}
 	descriptorStatus, descriptorErr := lock.file.Stat()
-	releasedStatus, releasedErr := os.Lstat(released)
-	owner, ownerOK := runtimeSetLockOwner(released)
-	if descriptorErr != nil || releasedErr != nil ||
-		!runtimeSetSameLockObject(descriptorStatus, releasedStatus) ||
+	canonicalStatus, canonicalErr := os.Lstat(lock.path)
+	owner, ownerOK := runtimeSetLockOwner(lock.path)
+	if descriptorErr != nil || canonicalErr != nil ||
+		!runtimeSetSameLockObject(descriptorStatus, canonicalStatus) ||
 		!ownerOK || owner.PID != os.Getpid() || owner.Token != lock.token {
-		restoreDisplacedRuntimeSetLock(released, lock.path, releasedStatus)
 		_ = lock.file.Close()
+		lock.file = nil
 		return fmt.Errorf(
 			"package-cache runtime-set publication lock ownership changed",
 		)
 	}
-	removeErr := os.Remove(released)
-	closeErr := lock.file.Close()
-	if removeErr != nil {
-		return removeErr
+	if err := lock.file.Close(); err != nil {
+		lock.file = nil
+		return err
 	}
-	return closeErr
+	lock.file = nil
+	released := lock.path + ".released-" + lock.token
+	if err := os.Rename(lock.path, released); err != nil {
+		return err
+	}
+	releasedStatus, releasedErr := os.Lstat(released)
+	owner, ownerOK = runtimeSetLockOwner(released)
+	if releasedErr != nil ||
+		!runtimeSetSameLockObject(descriptorStatus, releasedStatus) ||
+		!ownerOK || owner.PID != os.Getpid() || owner.Token != lock.token {
+		restoreDisplacedRuntimeSetLock(released, lock.path, releasedStatus)
+		return fmt.Errorf(
+			"package-cache runtime-set publication lock ownership changed",
+		)
+	}
+	return os.Remove(released)
 }
 
 func attachRuntimeLockReleaseError(result *error, releaseErr error) {

@@ -205,7 +205,11 @@ test('wrapper uninstall locks the cache and targets the managed install by defau
     Array.from(observed.calls[1].args),
     [
       'uninstall', '--yes', '--dir',
-      'C:\\Users\\test\\AppData\\Local/Programs/codebase-memory-mcp',
+      path.join(
+        'C:\\Users\\test\\AppData\\Local',
+        'Programs',
+        'codebase-memory-mcp',
+      ),
     ],
   );
 });

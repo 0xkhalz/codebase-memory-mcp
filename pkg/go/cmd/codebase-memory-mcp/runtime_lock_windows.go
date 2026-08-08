@@ -166,16 +166,29 @@ func platformRuntimeSetLockProcessAlive(pid int) bool {
 		// evidence that an otherwise valid owner is dead.
 		return true
 	}
-	// PROCESS_QUERY_LIMITED_INFORMATION is sufficient for an existence probe and
-	// is available on every Windows version supported by the package wrapper.
-	handle, err := syscall.OpenProcess(0x1000, false, uint32(pid))
-	if err == nil {
-		_ = syscall.CloseHandle(handle)
+	// A process object can remain open after its process exits. SYNCHRONIZE lets
+	// us distinguish that signaled object from a running process instead of
+	// treating every successful OpenProcess call as proof that the PID is live.
+	handle, err := syscall.OpenProcess(syscall.SYNCHRONIZE, false, uint32(pid))
+	if err != nil {
+		// ERROR_INVALID_PARAMETER is the documented result for a process
+		// identifier whose object no longer exists. Access denial and every other
+		// probe error are conservatively treated as live.
+		return err != syscall.Errno(87)
+	}
+	event, waitErr := syscall.WaitForSingleObject(handle, 0)
+	closeErr := syscall.CloseHandle(handle)
+	if waitErr != nil || closeErr != nil {
 		return true
 	}
-	// ERROR_INVALID_PARAMETER is the documented result for a process identifier
-	// that no longer exists. Access denial is conservatively treated as live.
-	return err != syscall.Errno(87)
+	switch event {
+	case syscall.WAIT_OBJECT_0:
+		return false
+	case syscall.WAIT_TIMEOUT:
+		return true
+	default:
+		return true
+	}
 }
 
 func platformRuntimeSetFileLinkCountOne(path string, _ os.FileInfo) bool {
