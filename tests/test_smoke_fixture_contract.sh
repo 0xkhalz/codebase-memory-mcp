@@ -419,8 +419,9 @@ require(
     "finalize while the activation callback still owns the guard",
 )
 require(
-    "scripts/ci/extract-release-archives.sh assets binaries" in release_workflow,
-    "release verification must use the canonical archive extractor",
+    'ARCHIVE_DIR="$RUNNER_TEMP/release-archives"' in release_workflow
+    and 'scripts/ci/extract-release-archives.sh "$ARCHIVE_DIR" binaries' in release_workflow,
+    "release verification must feed the canonical extractor from an isolated archive directory",
 )
 require(
     "cbm-release-scan-associations-v2" in release_extractor

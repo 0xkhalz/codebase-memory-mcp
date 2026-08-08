@@ -528,6 +528,21 @@ if dry_run.count("ui_only: true") != 2 or "--archive-scope=ui" not in dry_run:
     fail("dry-run must build, smoke and extract only the UI runtime set")
 if "--archive-scope=ui" in release:
     fail("release workflow must retain its dual-variant compatibility scope")
+if (
+    "path: ${{ runner.temp }}/release-archives" not in dry_run
+    or 'extract-release-archives.sh "$RUNNER_TEMP/release-archives" binaries' not in dry_run
+    or "path: assets" in dry_run
+    or "extract-release-archives.sh assets binaries" in dry_run
+):
+    fail("dry-run must isolate downloaded archives from tracked checkout assets")
+if (
+    'ARCHIVE_DIR="$RUNNER_TEMP/release-archives"' not in release
+    or '--dir "$ARCHIVE_DIR"' not in release
+    or 'extract-release-archives.sh "$ARCHIVE_DIR" binaries' not in release
+    or "--dir assets" in release
+    or "extract-release-archives.sh assets binaries" in release
+):
+    fail("release verification must isolate downloaded archives from tracked checkout assets")
 for workflow_name, workflow, arguments in (
     ("release", release, count_args),
     ("dry-run", dry_run, ui_count_args),

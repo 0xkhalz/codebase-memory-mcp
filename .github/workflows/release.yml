@@ -212,9 +212,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ inputs.version }}
         run: |
-          mkdir -p assets binaries
-          gh release download "$VERSION" --dir assets --repo "$GITHUB_REPOSITORY" --pattern '*.tar.gz' --pattern '*.zip'
-          scripts/ci/extract-release-archives.sh assets binaries \
+          ARCHIVE_DIR="$RUNNER_TEMP/release-archives"
+          mkdir -p "$ARCHIVE_DIR" binaries
+          gh release download "$VERSION" --dir "$ARCHIVE_DIR" --repo "$GITHUB_REPOSITORY" --pattern '*.tar.gz' --pattern '*.zip'
+          scripts/ci/extract-release-archives.sh "$ARCHIVE_DIR" binaries \
             --expect-archives=16 \
             --expect-binaries=16 \
             --expect-packs=8 \
