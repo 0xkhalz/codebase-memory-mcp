@@ -16,6 +16,7 @@ $InstallDir = "$env:LOCALAPPDATA\Programs\codebase-memory-mcp"
 $BinName = "codebase-memory-mcp.exe"
 $WindowsArchiveNames = @(
     $BinName,
+    "cbm-integrations.json",
     "LICENSE",
     "install.ps1",
     "THIRD_PARTY_NOTICES.md"
