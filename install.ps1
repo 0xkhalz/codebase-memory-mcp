@@ -322,6 +322,24 @@ if (Test-Path -LiteralPath $DownloadedInstaller -PathType Leaf) {
     }
 }
 
+# Place the integration-template asset beside the installed binary, mirroring
+# install.sh. `install` above published a verified copy to ~/.cbm/assets, but a
+# later install/uninstall run from $InstallDir resolves the asset next to the
+# binary first; without this copy that lookup misses and the run fails closed
+# with "integration assets missing".
+$DownloadedAsset = Join-Path $TmpDir "cbm-integrations.json"
+if (Test-Path -LiteralPath $DownloadedAsset -PathType Leaf) {
+    $AssetDest = Join-Path $InstallDir "cbm-integrations.json"
+    $AssetTmp = "$AssetDest.new"
+    try {
+        Copy-Item -LiteralPath $DownloadedAsset -Destination $AssetTmp -Force -ErrorAction Stop
+        Move-Item -LiteralPath $AssetTmp -Destination $AssetDest -Force -ErrorAction Stop
+    } catch {
+        Remove-Item -LiteralPath $AssetTmp -Force -ErrorAction SilentlyContinue
+        Write-Host "note: could not place cbm-integrations.json in $InstallDir (asset resolves from ~/.cbm/assets)"
+    }
+}
+
 # Verify
 try {
     $ver = & $Dest --version 2>&1
