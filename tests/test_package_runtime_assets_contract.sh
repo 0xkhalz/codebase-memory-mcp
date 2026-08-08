@@ -7,7 +7,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-python3 - "$ROOT" <<'PY'
+python3 - "$ROOT" "$BASH" <<'PY'
 from __future__ import annotations
 
 import json
@@ -26,6 +26,7 @@ import zipfile
 
 
 root = pathlib.Path(sys.argv[1])
+bash_executable = pathlib.Path(sys.argv[2])
 failures: list[str] = []
 
 
@@ -382,7 +383,7 @@ def package_fixture(
     archive_name = f"codebase-memory-mcp{'-ui' if variant == 'ui' else ''}-{host_goos}-fixture{archive_suffix}"
     packaged = subprocess.run(
         [
-            "bash",
+            str(bash_executable),
             str(root / "scripts/package-release.sh"),
             host_goos,
             "fixture",

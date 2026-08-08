@@ -6,7 +6,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-python3 - "$ROOT" <<'PY'
+python3 - "$ROOT" "$BASH" <<'PY'
 from __future__ import annotations
 
 import csv
@@ -25,6 +25,7 @@ from typing import Dict, List, Optional, Tuple
 
 
 root = pathlib.Path(sys.argv[1])
+bash_executable = pathlib.Path(sys.argv[2])
 extractor = root / "scripts/ci/extract-release-archives.sh"
 unix_targets = (
     "linux-amd64",
@@ -307,7 +308,13 @@ def invoke(
     args: Optional[List[str]] = None,
 ) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["bash", str(extractor), str(archive_dir), str(output_dir), *(args or count_args)],
+        [
+            str(bash_executable),
+            str(extractor),
+            str(archive_dir),
+            str(output_dir),
+            *(args or count_args),
+        ],
         cwd=root,
         text=True,
         stdout=subprocess.PIPE,

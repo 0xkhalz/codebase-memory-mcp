@@ -318,6 +318,31 @@ for local, pattern, why in LOCAL_REQUIRED:
     if path.exists() and not re.search(pattern, path.read_text()):
         failures.append(f"{local}: missing required `{pattern}` — {why}")
 
+# Native Windows process lookup searches system locations before PATH. A bare
+# `bash` argv launched by embedded Python can therefore select the WSL alias
+# instead of the MSYS2 Bash that is already running this contract. Every
+# shell-hosted Python block must receive the current `$BASH` as an explicit
+# argument and launch that resolved path. Enforce this textually on every
+# maintained shell surface so the rule is deterministic on non-Windows hosts
+# too, rather than relying on a runner to happen to have the WSL alias.
+BARE_BASH_ARGV = re.compile(r"""[\[(]\s*["']bash["']\s*,""")
+shell_surfaces = list(root.glob("*.sh"))
+for directory in ("tests", "scripts", "test-infrastructure", "pkg"):
+    base = root / directory
+    if not base.exists():
+        continue
+    shell_surfaces.extend(base.rglob("*.sh"))
+for path in sorted(shell_surfaces):
+    text = path.read_text(encoding="utf-8")
+    for match in BARE_BASH_ARGV.finditer(text):
+        number = text.count("\n", 0, match.start()) + 1
+        relative = path.relative_to(root).as_posix()
+        failures.append(
+            f"{relative}:{number}: embedded Python must launch the current "
+            "$BASH by explicit argv path; bare `bash` is WSL-alias-sensitive "
+            "under native Windows process lookup"
+        )
+
 if failures:
     print("VENUE PARITY CONTRACT VIOLATED — one harness, every venue:")
     for failure in failures:
