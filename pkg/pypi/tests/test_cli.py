@@ -11,7 +11,7 @@ import threading
 import time
 import unittest
 import zipfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest import mock
 
 
@@ -208,14 +208,21 @@ class ProcessLivenessTests(unittest.TestCase):
 
 class RuntimeSetTests(unittest.TestCase):
     def test_candidate_probe_authenticates_adjacent_runtime_assets(self):
-        with mock.patch.object(_cli.subprocess, "run") as run:
-            run.return_value.returncode = 0
-            _cli._verify_candidate(Path("/tmp/codebase-memory-mcp"))
-
-        self.assertEqual(
-            run.call_args.args[0],
-            ["/tmp/codebase-memory-mcp", "--verify-runtime-assets"],
+        candidates = (
+            Path("/tmp/codebase-memory-mcp"),
+            PureWindowsPath("/tmp/codebase-memory-mcp"),
         )
+
+        for candidate in candidates:
+            with self.subTest(candidate=candidate):
+                with mock.patch.object(_cli.subprocess, "run") as run:
+                    run.return_value.returncode = 0
+                    _cli._verify_candidate(candidate)
+
+                self.assertEqual(
+                    run.call_args.args[0],
+                    [str(candidate), "--verify-runtime-assets"],
+                )
 
     def test_runtime_readiness_rejects_multiply_linked_cache_leaves(self):
         with tempfile.TemporaryDirectory() as root, mock.patch.object(
