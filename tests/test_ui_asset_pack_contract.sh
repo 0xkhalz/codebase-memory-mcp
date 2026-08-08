@@ -8,6 +8,22 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/cbm-ui-pack-test.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
+make_real_dir_link() {
+    local target="$1" link="$2"
+    if MSYS=winsymlinks:nativestrict ln -s -- "$target" "$link" 2>/dev/null &&
+        [ -L "$link" ]; then
+        return 0
+    fi
+    rm -rf -- "$link"
+    case "$(uname -s)" in
+    MINGW* | MSYS* | CYGWIN*)
+        cmd //c "mklink /J \"$(cygpath -w "$link")\" \"$(cygpath -w "$target")\"" \
+            >/dev/null 2>&1 || true
+        ;;
+    esac
+    [ -L "$link" ]
+}
+
 mkdir -p "$WORK/a/assets" "$WORK/b/assets"
 printf '%s\n' '<!doctype html><title>Codebase Memory — Graph</title>' > "$WORK/a/index.html"
 printf '%s\n' 'console.log("transparent-ui-pack")' > "$WORK/a/assets/app.js"
@@ -122,12 +138,26 @@ assert pack_path.name == f"cbm-ui-{digest}.pack"
 PY
 
 # A source symlink makes the build depend on bytes outside the declared dist
-# tree. It is rejected rather than followed or silently omitted.
-ln -s ../index.html "$WORK/a/assets/linked.html"
-if node "$ROOT/scripts/pack-ui-assets.mjs" \
-    "$WORK/a" "$WORK/a-out" "$WORK/rejected.c" 2>/dev/null; then
+# tree. MSYS2's default `ln -s` silently deep-copies its target, so require a
+# real native link and fall back to an NTFS junction before testing rejection.
+mkdir "$WORK/outside-assets"
+printf '%s\n' 'outside the declared UI root' > "$WORK/outside-assets/linked.html"
+if ! make_real_dir_link "$WORK/outside-assets" "$WORK/a/assets/linked"; then
+    echo "FAIL: could not create a real symlink/junction fixture" >&2
+    exit 1
+fi
+if rejected_output="$(node "$ROOT/scripts/pack-ui-assets.mjs" \
+    "$WORK/a" "$WORK/a-out" "$WORK/rejected.c" 2>&1)"; then
     echo "FAIL: UI pack generator accepted a symlink" >&2
     exit 1
 fi
+case "$rejected_output" in
+*"symbolic links are not allowed"*) ;;
+*)
+    echo "FAIL: UI pack generator rejected the symlink for the wrong reason" >&2
+    printf '%s\n' "$rejected_output" >&2
+    exit 1
+    ;;
+esac
 
 echo "PASS: deterministic, transparent, hash-bound UI asset pack"
