@@ -5,7 +5,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-python3 - "$ROOT" <<'PY'
+python3 - "$ROOT" "$BASH" <<'PY'
 from __future__ import annotations
 
 import hashlib
@@ -21,6 +21,7 @@ import urllib.request
 
 
 root = pathlib.Path(sys.argv[1])
+bash_executable = pathlib.Path(sys.argv[2])
 failures: list[str] = []
 
 
@@ -58,7 +59,10 @@ windows_installer = read("install.ps1")
 # Keep the security-boundary archive checks runnable as a focused, network-free
 # contract while still making them part of the canonical smoke-fixture gate.
 release_archive_contract = subprocess.run(
-    ["bash", str(root / "tests/test_release_archive_extractor_contract.sh")],
+    [
+        str(bash_executable),
+        str(root / "tests/test_release_archive_extractor_contract.sh"),
+    ],
     cwd=root,
     text=True,
     stdout=subprocess.PIPE,
@@ -844,8 +848,16 @@ with tempfile.TemporaryDirectory(prefix="cbm-release-extract-") as extract_temp:
     package_environment = os.environ.copy()
     package_environment["BUILD_DIR"] = str(package_build)
     packaged = subprocess.run(
-        ["bash", str(root / "scripts/package-release.sh"), "linux", "amd64",
-         "--variant", "ui", "--out-dir", str(package_output)],
+        [
+            str(bash_executable),
+            str(root / "scripts/package-release.sh"),
+            "linux",
+            "amd64",
+            "--variant",
+            "ui",
+            "--out-dir",
+            str(package_output),
+        ],
         cwd=root,
         env=package_environment,
         text=True,
