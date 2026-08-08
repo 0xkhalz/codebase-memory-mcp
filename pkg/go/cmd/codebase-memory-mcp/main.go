@@ -109,11 +109,13 @@ type runtimeBackupTransaction struct {
 // lock from one entering the shared publication sequence. Production leaves
 // it nil.
 var (
-	runtimeSetLockWaitObserver     func()
-	runtimeSetLockClaimObserver    func() error
-	runtimeBackupCrashObserver     func(string, string) error
-	runtimeSetProcessAlive         = platformRuntimeSetLockProcessAlive
-	runtimeMutationSnapshotCleanup = os.RemoveAll
+	runtimeSetLockWaitObserver      func()
+	runtimeSetLockClaimObserver     func() error
+	runtimeSetLockCaptureObserver   func()
+	runtimeSetLockOwnerReadObserver func()
+	runtimeBackupCrashObserver      func(string, string) error
+	runtimeSetProcessAlive          = platformRuntimeSetLockProcessAlive
+	runtimeMutationSnapshotCleanup  = os.RemoveAll
 )
 
 func main() {
@@ -1721,8 +1723,16 @@ func runtimeSetLockOwner(lockPath string) (runtimeSetLockOwnerRecord, bool) {
 	if err != nil || !ownerStatus.Mode().IsRegular() {
 		return empty, false
 	}
-	data, err := os.ReadFile(ownerPath)
+	ownerFile, err := platformOpenRuntimeSetLockOwner(ownerPath)
 	if err != nil {
+		return empty, false
+	}
+	if runtimeSetLockOwnerReadObserver != nil {
+		runtimeSetLockOwnerReadObserver()
+	}
+	data, readErr := io.ReadAll(ownerFile)
+	closeErr := ownerFile.Close()
+	if readErr != nil || closeErr != nil {
 		return empty, false
 	}
 	var record runtimeSetLockOwnerRecord
@@ -1752,6 +1762,9 @@ func captureRuntimeSetLockObject(
 	object, err := os.Open(lockPath)
 	if err != nil {
 		return nil, err
+	}
+	if runtimeSetLockCaptureObserver != nil {
+		runtimeSetLockCaptureObserver()
 	}
 	descriptorStatus, descriptorErr := object.Stat()
 	canonicalStatus, canonicalErr := os.Lstat(lockPath)
@@ -1841,13 +1854,15 @@ func runtimeSetTryReclaimLock(lockPath, contenderToken string) bool {
 		(!observedStatus.Mode().IsRegular() && !observedStatus.IsDir()) {
 		return false
 	}
-	observedStatus, err = captureRuntimeSetLockObject(lockPath, observedStatus)
-	if err != nil {
-		return os.IsNotExist(err)
-	}
 	owner, ownerOK := runtimeSetLockOwner(lockPath)
 	if !runtimeSetOwnerReclaimable(observedStatus, owner, ownerOK) {
 		return false
+	}
+	// Pin identity only after the observed owner is reclaimable. On Windows,
+	// opening a proven-live lock here can deny the owner's release rename.
+	observedStatus, err = captureRuntimeSetLockObject(lockPath, observedStatus)
+	if err != nil {
+		return os.IsNotExist(err)
 	}
 	reclaimed := lockPath + ".reclaimed-" + contenderToken
 	if err := os.Rename(lockPath, reclaimed); err != nil {

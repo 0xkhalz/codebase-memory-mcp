@@ -390,17 +390,22 @@ class RuntimeSetTests(unittest.TestCase):
 
             def substitute_object_after_owner_close(owner_fd):
                 nonlocal substituted
-                close(owner_fd)
                 if (
                     owner_fd != lock[2]
                     or substituted
                     or not lock[0].exists()
                 ):
+                    close(owner_fd)
                     return
-                substituted = True
-                owner_record = lock[0].read_text(encoding="utf-8")
-                lock[0].unlink()
-                lock[0].write_text(owner_record, encoding="utf-8")
+                owner_record = lock[0].read_bytes()
+                replacement = directory / "replacement-lock"
+                replacement.write_bytes(owner_record)
+                try:
+                    close(owner_fd)
+                    os.replace(replacement, lock[0])
+                    substituted = True
+                finally:
+                    replacement.unlink(missing_ok=True)
 
             with mock.patch.object(
                 _cli.os,

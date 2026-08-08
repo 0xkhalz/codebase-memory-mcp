@@ -1571,9 +1571,12 @@ func TestMutationSnapshotParentDeathLeavesCacheRecoverable(t *testing.T) {
 			t.Fatal(err)
 		}
 		info := fmt.Sprintf("%d\n%s\n", os.Getpid(), executable)
-		if err := os.WriteFile(
-			os.Getenv("CBM_GO_MUTATION_CHILD_INFO"), []byte(info), 0600,
-		); err != nil {
+		childInfo := os.Getenv("CBM_GO_MUTATION_CHILD_INFO")
+		stagedChildInfo := childInfo + ".tmp"
+		if err := os.WriteFile(stagedChildInfo, []byte(info), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(stagedChildInfo, childInfo); err != nil {
 			t.Fatal(err)
 		}
 		continuePath := os.Getenv("CBM_GO_MUTATION_CHILD_CONTINUE")
@@ -1807,6 +1810,44 @@ func TestRuntimeSetLockReclaimsOnlyDefinitelyDeadOwner(t *testing.T) {
 	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
 		t.Fatal("reclaimed dead-owner runtime-set lock still exists")
 	}
+}
+
+func TestRuntimeSetLiveOwnerSkipsIdentityCapture(t *testing.T) {
+	destination := t.TempDir()
+	lock, err := acquireRuntimeSetLock(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			if err := releaseRuntimeSetLock(lock); err != nil {
+				t.Errorf("release live runtime-set lock: %v", err)
+			}
+		}
+	}()
+
+	priorObserver := runtimeSetLockCaptureObserver
+	priorProcessAlive := runtimeSetProcessAlive
+	defer func() {
+		runtimeSetLockCaptureObserver = priorObserver
+		runtimeSetProcessAlive = priorProcessAlive
+	}()
+	captures := 0
+	runtimeSetLockCaptureObserver = func() { captures++ }
+	runtimeSetProcessAlive = func(int) bool { return true }
+
+	contenderToken := strings.Repeat("b", runtimeSetLockTokenSize*2)
+	if runtimeSetTryReclaimLock(lock.path, contenderToken) {
+		t.Fatal("runtime-set lock reclaimed a proven-live owner")
+	}
+	if captures != 0 {
+		t.Fatalf("live runtime-set lock identity was captured %d times", captures)
+	}
+	if err := releaseRuntimeSetLock(lock); err != nil {
+		t.Fatalf("release live runtime-set lock: %v", err)
+	}
+	released = true
 }
 
 func TestRuntimeSetLockReclaimsOnlyStaleOwnerlessDirectory(t *testing.T) {

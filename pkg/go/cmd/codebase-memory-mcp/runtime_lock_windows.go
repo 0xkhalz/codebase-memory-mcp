@@ -41,6 +41,35 @@ func windowsExtendedPath(path string) (string, error) {
 	return `\\?\` + absolute, nil
 }
 
+func platformOpenRuntimeSetLockOwner(path string) (*os.File, error) {
+	extended, err := windowsExtendedPath(path)
+	if err != nil {
+		return nil, err
+	}
+	pointer, err := syscall.UTF16PtrFromString(extended)
+	if err != nil {
+		return nil, err
+	}
+	handle, err := syscall.CreateFile(
+		pointer,
+		syscall.GENERIC_READ,
+		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE,
+		nil,
+		syscall.OPEN_EXISTING,
+		syscall.FILE_ATTRIBUTE_NORMAL,
+		0,
+	)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(handle), path)
+	if file == nil {
+		_ = syscall.CloseHandle(handle)
+		return nil, syscall.EINVAL
+	}
+	return file, nil
+}
+
 func windowsPrivateDirectorySecurityDescriptor() (uintptr, error) {
 	token, err := syscall.OpenCurrentProcessToken()
 	if err != nil {

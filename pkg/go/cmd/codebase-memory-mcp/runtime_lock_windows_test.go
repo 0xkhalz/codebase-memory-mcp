@@ -5,6 +5,8 @@ package main
 import (
 	"os"
 	"os/exec"
+	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 )
@@ -62,5 +64,45 @@ func TestRuntimeSetProcessProbeRejectsExitedOpenProcess(t *testing.T) {
 func TestRuntimeSetProcessProbeAcceptsCurrentProcess(t *testing.T) {
 	if !platformRuntimeSetLockProcessAlive(os.Getpid()) {
 		t.Fatal("current process was reported dead")
+	}
+}
+
+func TestRuntimeSetLiveOwnerReadAllowsReleaseRename(t *testing.T) {
+	lock, err := acquireRuntimeSetLock(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if lock.file != nil {
+			_ = releaseRuntimeSetLock(lock)
+		}
+	}()
+
+	priorObserver := runtimeSetLockOwnerReadObserver
+	defer func() { runtimeSetLockOwnerReadObserver = priorObserver }()
+	ownerReadHeld := make(chan struct{})
+	releaseOwnerRead := make(chan struct{})
+	var firstOwnerRead atomic.Bool
+	runtimeSetLockOwnerReadObserver = func() {
+		if firstOwnerRead.CompareAndSwap(false, true) {
+			close(ownerReadHeld)
+			<-releaseOwnerRead
+		}
+	}
+
+	waiterResult := make(chan bool, 1)
+	contenderToken := strings.Repeat("b", runtimeSetLockTokenSize*2)
+	go func() {
+		waiterResult <- runtimeSetTryReclaimLock(lock.path, contenderToken)
+	}()
+	<-ownerReadHeld
+	releaseErr := releaseRuntimeSetLock(lock)
+	close(releaseOwnerRead)
+	reclaimed := <-waiterResult
+	if releaseErr != nil {
+		t.Fatalf("release with live owner reader: %v", releaseErr)
+	}
+	if reclaimed {
+		t.Fatal("waiter reclaimed a proven-live owner")
 	}
 }

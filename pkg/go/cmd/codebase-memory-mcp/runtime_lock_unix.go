@@ -8,6 +8,10 @@ import (
 	"syscall"
 )
 
+func platformOpenRuntimeSetLockOwner(path string) (*os.File, error) {
+	return os.Open(path)
+}
+
 func platformCreatePrivateMutationRuntimeDirectory() (string, error) {
 	directory, err := os.MkdirTemp("", "codebase-memory-mcp-mutation-*")
 	if err != nil {
