@@ -1057,7 +1057,11 @@ frontend:
 embed: frontend
 	scripts/embed-frontend.sh graph-ui/dist $(BUILD_DIR)/embedded
 
-cbm-with-ui: embed $(OBJS_VENDORED_PROD)
+# $(INTEGRATIONS_HASH_HDR): generated header included by integration_assets.c.
+# The standard target gets it via $(PROJECT_HDRS); the UI target compiles in one
+# shot and must list it too, or the build fails with "cbm_integrations_hash.h
+# file not found" (seen on the Windows UI build).
+cbm-with-ui: embed $(INTEGRATIONS_HASH_HDR) $(OBJS_VENDORED_PROD)
 	$(CC) $(CFLAGS_PROD) -o $(BUILD_DIR)/codebase-memory-mcp \
 		$(MAIN_SRC) $(PROD_SRCS_WITH_ASSETS) \
 		$(EXTRACTION_SRCS) $(AC_LZ4_SRCS) $(ZSTD_SRCS) $(SQLITE_WRITER_SRC) \
