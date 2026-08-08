@@ -164,7 +164,9 @@ endif
 # is meaningless for PE, so it is gated rather than made "common".
 ELF_HARDENING_FLAGS :=
 ifeq ($(IS_LINUX),yes)
+ifneq ($(IS_MINGW),yes)
 ELF_HARDENING_FLAGS := -Wl,-z,noexecstack
+endif
 endif
 
 # The POSIX wrap shim exists only so the profiler can observe allocations. It

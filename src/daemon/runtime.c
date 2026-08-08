@@ -11,6 +11,7 @@
 #include "foundation/log.h"
 #include "foundation/mem.h"
 #include "foundation/platform.h"
+#include "foundation/win_utf8.h"
 
 #include <limits.h>
 #include <stdatomic.h>
