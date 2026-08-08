@@ -1114,7 +1114,7 @@ lint-tidy:
 	@$(CLANG_TIDY) --quiet $(LINT_SRCS) -- $(CFLAGS_COMMON) $(SYSROOT_FLAG)
 
 # cppcheck: complementary analysis (config in .cppcheck)
-lint-cppcheck:
+lint-cppcheck: $(INTEGRATIONS_HASH_HDR)
 	@echo "=== cppcheck ==="
 	@$(CPPCHECK) --enable=warning,style,performance,portability \
 		--std=c11 --language=c \
