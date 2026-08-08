@@ -699,7 +699,7 @@ BUILD_DIR = build/c
 # Integration-asset hash header (variables defined next to PROJECT_HDRS; the
 # rule lives here because target lines expand $(BUILD_DIR) immediately).
 $(INTEGRATIONS_HASH_HDR): $(INTEGRATIONS_ASSET) scripts/gen-integrations-hash.sh | $(BUILD_DIR)
-	scripts/gen-integrations-hash.sh $(INTEGRATIONS_ASSET) $@
+	sh scripts/gen-integrations-hash.sh $(INTEGRATIONS_ASSET) $@
 
 # ── Object file compilation (grammars need relaxed warnings) ─────
 
