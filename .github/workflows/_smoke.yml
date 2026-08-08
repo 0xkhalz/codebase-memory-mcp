@@ -1,4 +1,4 @@
-# Reusable: smoke test every binary (standard + UI, all platforms)
+# Reusable: smoke test shipped release binaries on all platforms
 name: Smoke
 
 on:
@@ -6,6 +6,10 @@ on:
     inputs:
       broad_platforms:
         description: 'Smoke the shipped binaries on the broad platform matrix (extra OS versions) instead of the core set'
+        type: boolean
+        default: false
+      ui_only:
+        description: 'Smoke only the UI runtime archives'
         type: boolean
         default: false
 
@@ -30,6 +34,7 @@ jobs:
         id: set
         env:
           BROAD: ${{ inputs.broad_platforms }}
+          UI_ONLY: ${{ inputs.ui_only }}
         run: |
           CORE_UNIX='[
             {"os":"ubuntu-latest","goos":"linux","goarch":"amd64"},
@@ -72,13 +77,14 @@ jobs:
             WIN=$(jq -cn --argjson a "$CORE_WIN" '$a')
             PORTABLE=$(jq -cn --argjson a "$CORE_PORTABLE" '$a')
           fi
-          # Expand each OS entry over both variants into a FLAT include list so
-          # every {os,variant} runs as its own job. A {variant:[...],include:$LIST}
-          # matrix collapses under GitHub's include-merge (later os entries
-          # overwrite the variant combos last-wins), which silently dropped every
-          # OS except the last — e.g. only windows-11-arm ran, never windows-latest.
-          # Building the cartesian explicitly avoids that.
-          VARIANTS='["standard","ui"]'
+          # Keep the variant dimension explicit because the smoke wrappers use it
+          # to require and validate the UI pack. VT-focused dry runs select only
+          # UI; release compatibility retains both variants until migration.
+          if [ "$UI_ONLY" = "true" ]; then
+            VARIANTS='["ui"]'
+          else
+            VARIANTS='["standard","ui"]'
+          fi
           UNIX_M=$(jq -cn --argjson a "$UNIX" --argjson v "$VARIANTS" '{include:[$a[] as $o | $v[] as $t | ($o + {variant:$t})]}')
           WIN_M=$(jq -cn --argjson a "$WIN" --argjson v "$VARIANTS" '{include:[$a[] as $o | $v[] as $t | ($o + {variant:$t})]}')
           PORTABLE_M=$(jq -cn --argjson a "$PORTABLE" --argjson v "$VARIANTS" '{include:[$a[] as $o | $v[] as $t | ($o + {variant:$t})]}')
@@ -133,8 +139,8 @@ jobs:
           scripts/security-install.sh "$BIN"
           scripts/security-network.sh "$BIN"
 
-      - name: MCP robustness test (linux-amd64 standard only)
-        if: matrix.variant == 'standard' && matrix.goos == 'linux' && matrix.goarch == 'amd64'
+      - name: MCP robustness test (selected linux-amd64 runtime)
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64' && (inputs.ui_only || matrix.variant == 'standard')
         run: |
           BIN="$RUNNER_TEMP/cbm-artifact/codebase-memory-mcp"
           scripts/security-fuzz.sh "$BIN"
@@ -206,8 +212,8 @@ jobs:
           mkdir -p "$ARTIFACT_DIR"
           unzip -o "codebase-memory-mcp${SUFFIX}-windows-${ARCH}.zip" -d "$ARTIFACT_DIR"
           test -s "$ARTIFACT_DIR/codebase-memory-mcp.exe"
-          # ONE binary per platform: a payload sibling would mean the
-          # AV-flagged launcher stub came back.
+          # ONE executable per runtime set: a payload sibling would mean the
+          # removed launcher split came back.
           test ! -e "$ARTIFACT_DIR/codebase-memory-mcp.payload.exe"
           # Pre-flight the image from a profile-rooted directory: the shared
           # runner workspace is deliberately not a valid install root.
