@@ -425,6 +425,7 @@ jobs:
             mingw-w64-clang-${{ matrix.pkg }}-ccache
             make
             git
+            zip
 
       - name: Create protected per-user temp root
         # One implementation, shared with _soak.yml and the VM leg
