@@ -50,6 +50,7 @@ archive_names = tuple(
         ]
     )
 )
+ui_archive_names = tuple(name for name in archive_names if name.startswith("codebase-memory-mcp-ui-"))
 expected_base_counts = {
     "archives": 16,
     "binaries": 16,
@@ -59,6 +60,19 @@ expected_base_counts = {
 count_args = [
     f"--expect-{key.replace('_', '-')}={value}"
     for key, value in expected_base_counts.items()
+]
+ui_expected_base_counts = {
+    "archives": 8,
+    "binaries": 8,
+    "packs": 8,
+    "runtime_files": 32,
+}
+ui_count_args = [
+    "--archive-scope=ui",
+    *[
+        f"--expect-{key.replace('_', '-')}={value}"
+        for key, value in ui_expected_base_counts.items()
+    ],
 ]
 asset_payloads = {
     "/assets/app.css": b"body{color:#123}\n",
@@ -233,6 +247,7 @@ Association = Tuple[str, str, str, str]
 def build_matrix(
     archive_dir: pathlib.Path,
     mutation: Optional[str] = None,
+    selected_names: Tuple[str, ...] = archive_names,
 ) -> Dict[Association, bytes]:
     archive_dir.mkdir(parents=True)
     expected: Dict[Association, bytes] = {}
@@ -253,7 +268,7 @@ def build_matrix(
         "zip_duplicate": "codebase-memory-mcp-ui-windows-amd64.zip",
     }
     target = targets.get(mutation)
-    for name in archive_names:
+    for name in selected_names:
         if mutation == "missing_archive" and name == "codebase-memory-mcp-linux-amd64.tar.gz":
             continue
         pack_mutation = mutation if name == target and mutation and mutation.startswith("bad_pack_") else None
@@ -350,8 +365,8 @@ def assert_clean_failure(case_root: pathlib.Path, mutation: str, message: str) -
         fail(f"{mutation}: rejected archives left a partial atomic scan bundle")
 
 
-if len(archive_names) != 16:
-    fail("fixture matrix itself no longer describes 16 canonical archives")
+if len(archive_names) != 16 or len(ui_archive_names) != 8:
+    fail("fixture matrix no longer describes 16 canonical archives / eight UI archives")
 
 with tempfile.TemporaryDirectory(prefix="cbm-release-scan-contract-") as temporary:
     work = pathlib.Path(temporary)
@@ -428,6 +443,34 @@ with tempfile.TemporaryDirectory(prefix="cbm-release-scan-contract-") as tempora
         if row["sha256"] != hashlib.sha256(data).hexdigest() or int(row["size"]) != len(data):
             fail(f"scan-set digest/size does not bind {row['scan_path']}")
 
+    ui_only = work / "ui-only"
+    ui_expected = build_matrix(ui_only / "archives", selected_names=ui_archive_names)
+    ui_output = ui_only / "scan"
+    ui_result = invoke(ui_only / "archives", ui_output, ui_count_args)
+    if ui_result.returncode != 0:
+        fail(f"canonical UI-only matrix was rejected: {ui_result.stdout.strip()}")
+    ui_metadata, ui_rows = parse_manifest(
+        ui_output / "associations.tsv", "cbm-release-scan-associations-v2"
+    )
+    ui_associations = 8 + 48 + expected_pack_assets
+    if ui_metadata != {
+        **ui_expected_base_counts,
+        "pack_assets": expected_pack_assets,
+        "associations": ui_associations,
+        "scan_objects": len(set(ui_expected.values())),
+    }:
+        fail(f"UI-only association metadata mismatch: {ui_metadata!r}")
+    if len(ui_rows) != ui_associations or {row["variant"] for row in ui_rows} != {"ui"}:
+        fail("UI-only scan scope does not cover exactly the eight UI archives")
+    ui_as_all_output = ui_only / "scan-as-all"
+    ui_as_all = invoke(ui_only / "archives", ui_as_all_output, count_args)
+    if (
+        ui_as_all.returncode == 0
+        or "expected exact canonical 16 (all)" not in ui_as_all.stdout
+        or ui_as_all_output.exists()
+    ):
+        fail("UI-only archives must require an explicit closed archive scope")
+
     failure_cases = {
         "bad_hash": "UI pack digest does not match its filename",
         "bad_pack_magic": "CBMUIPK header/offset contract failed",
@@ -436,13 +479,13 @@ with tempfile.TemporaryDirectory(prefix="cbm-release-scan-contract-") as tempora
         "bad_pack_mime": "CBMUIPK MIME/path contract failed",
         "directory": "non-regular archive member",
         "extra_pack": "exactly one UI pack",
-        "missing_archive": "expected exact canonical 16",
+        "missing_archive": "expected exact canonical 16 (all)",
         "missing_pack": "exactly one UI pack",
         "nested_member": "unexpected archive member",
         "oversized_archive": "archive exceeds 536870912 byte ceiling",
         "tar_symlink": "non-regular archive member",
         "tar_duplicate": "duplicate archive member",
-        "unexpected_archive": "expected exact canonical 16",
+        "unexpected_archive": "expected exact canonical 16 (all)",
         "zip_directory": "non-regular archive member",
         "zip_duplicate": "duplicate archive member",
         "zip_symlink": "non-regular archive member",
@@ -473,8 +516,23 @@ for ceiling in ("MAX_ARCHIVE_BYTES", "MAX_MEMBER_BYTES", "MAX_TOTAL_MEMBER_BYTES
 
 release = (root / ".github/workflows/release.yml").read_text(encoding="utf-8")
 dry_run = (root / ".github/workflows/dry-run.yml").read_text(encoding="utf-8")
-for workflow_name, workflow in (("release", release), ("dry-run", dry_run)):
-    for argument in count_args:
+build = (root / ".github/workflows/_build.yml").read_text(encoding="utf-8")
+smoke = (root / ".github/workflows/_smoke.yml").read_text(encoding="utf-8")
+if "ui_only:" not in build or build.count("if: ${{ !inputs.ui_only }}") < 4:
+    fail("canonical build workflow must gate every standard build family behind ui_only")
+if build.count("--variant ui") != 4:
+    fail("canonical build workflow must package exactly its four UI build families")
+if "UI_ONLY: ${{ inputs.ui_only }}" not in smoke or "VARIANTS='[\"ui\"]'" not in smoke:
+    fail("release smoke matrix must support an explicit UI-only selection")
+if dry_run.count("ui_only: true") != 2 or "--archive-scope=ui" not in dry_run:
+    fail("dry-run must build, smoke and extract only the UI runtime set")
+if "--archive-scope=ui" in release:
+    fail("release workflow must retain its dual-variant compatibility scope")
+for workflow_name, workflow, arguments in (
+    ("release", release, count_args),
+    ("dry-run", dry_run, ui_count_args),
+):
+    for argument in arguments:
         if argument not in workflow:
             fail(f"{workflow_name} workflow does not assert {argument}")
     for required in (

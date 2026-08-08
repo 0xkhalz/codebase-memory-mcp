@@ -148,7 +148,8 @@ require(
 )
 
 # Each archive variant is still produced through the ONE canonical packaging
-# entry, so the five-or-six-file layout above governs all of them.
+# entry, so the five-or-six-file layout above governs all of them. The standard
+# calls are conditionally skipped by VT-focused UI-only dry runs.
 build_workflow = read(".github/workflows/_build.yml")
 for archive, call, ui in (
     ("codebase-memory-mcp-windows-amd64.zip", "scripts/package-release.sh windows amd64", False),
@@ -164,6 +165,10 @@ for archive, call, ui in (
         re.search(pattern, build_workflow) is not None,
         f"_build.yml must produce {archive} via the canonical packaging entry ('{call}')",
     )
+require(
+    build_workflow.count("if: ${{ !inputs.ui_only }}") >= 4,
+    "_build.yml must skip every standard Windows build/archive in UI-only mode",
+)
 
 # ── 3. install.ps1 delegates every runtime mutation to the candidate ─────────
 installer = read("install.ps1")

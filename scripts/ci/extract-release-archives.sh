@@ -4,7 +4,7 @@
 #
 # Usage:
 #   extract-release-archives.sh <archive-dir> <output-dir> \
-#     [--expect-archives=N] [--expect-binaries=N] [--expect-packs=N] \
+#     [--archive-scope=all|ui] [--expect-archives=N] [--expect-binaries=N] [--expect-packs=N] \
 #     [--expect-runtime-files=N]
 #
 # The output directory is published as one atomic bundle:
@@ -18,7 +18,7 @@
 set -euo pipefail
 
 if [ "$#" -lt 2 ]; then
-  echo "Usage: $0 <archive-dir> <output-dir> [--expect-archives=N] [--expect-binaries=N] [--expect-packs=N] [--expect-runtime-files=N]" >&2
+  echo "Usage: $0 <archive-dir> <output-dir> [--archive-scope=all|ui] [--expect-archives=N] [--expect-binaries=N] [--expect-packs=N] [--expect-runtime-files=N]" >&2
   exit 2
 fi
 
@@ -70,18 +70,21 @@ UNIX_TARGETS = (
     "linux-arm64-portable",
 )
 WINDOWS_TARGETS = ("windows-amd64", "windows-arm64")
-CANONICAL_ARCHIVES = frozenset(
+UI_ARCHIVES = frozenset(
     [
-        f"codebase-memory-mcp{suffix}-{target}.tar.gz"
-        for suffix in ("", "-ui")
+        f"codebase-memory-mcp-ui-{target}.tar.gz"
         for target in UNIX_TARGETS
     ]
     + [
-        f"codebase-memory-mcp{suffix}-{target}.zip"
-        for suffix in ("", "-ui")
+        f"codebase-memory-mcp-ui-{target}.zip"
         for target in WINDOWS_TARGETS
     ]
 )
+STANDARD_ARCHIVES = frozenset(
+    [f"codebase-memory-mcp-{target}.tar.gz" for target in UNIX_TARGETS]
+    + [f"codebase-memory-mcp-{target}.zip" for target in WINDOWS_TARGETS]
+)
+CANONICAL_ARCHIVES = UI_ARCHIVES | STANDARD_ARCHIVES
 PACK_NAME = re.compile(r"cbm-ui-([0-9a-f]{64})\.pack\Z")
 SAFE_LABEL = re.compile(r"[^A-Za-z0-9._-]+")
 SAFE_ASSET_PATH = re.compile(rb"\A[A-Za-z0-9._/-]+\Z")
@@ -290,13 +293,22 @@ class ObjectStore:
 
 def parse_arguments(
     argv: Sequence[str],
-) -> Tuple[pathlib.Path, pathlib.Path, Dict[str, Optional[int]]]:
+) -> Tuple[pathlib.Path, pathlib.Path, Dict[str, Optional[int]], str]:
     archive_dir = pathlib.Path(argv[1]).absolute()
     output_dir = pathlib.Path(argv[2]).absolute()
     expected: Dict[str, Optional[int]] = {value: None for value in COUNT_OPTIONS.values()}
     seen: set[str] = set()
+    archive_scope = "all"
     for argument in argv[3:]:
         option, separator, raw_value = argument.partition("=")
+        if separator and option == "--archive-scope":
+            if "archive_scope" in seen:
+                raise ContractError(f"duplicate option: {option}")
+            if raw_value not in {"all", "ui"}:
+                raise ContractError("--archive-scope must be all or ui")
+            archive_scope = raw_value
+            seen.add("archive_scope")
+            continue
         if not separator or option not in COUNT_OPTIONS:
             raise ContractError(f"unknown option: {argument}")
         key = COUNT_OPTIONS[option]
@@ -306,7 +318,7 @@ def parse_arguments(
             raise ContractError(f"{option} requires a non-negative integer")
         expected[key] = int(raw_value)
         seen.add(key)
-    return archive_dir, output_dir, expected
+    return archive_dir, output_dir, expected, archive_scope
 
 
 def validate_namespace(archive_name: str, names: Iterable[str]) -> Tuple[str, Dict[str, str]]:
@@ -674,7 +686,7 @@ def write_tsv(
 
 
 def main(argv: Sequence[str]) -> None:
-    archive_dir, output_dir, expected = parse_arguments(argv)
+    archive_dir, output_dir, expected, archive_scope = parse_arguments(argv)
     if not archive_dir.is_dir() or archive_dir.is_symlink():
         raise ContractError(f"archive directory is not a regular directory: {archive_dir}")
     if output_dir.name in ("", ".", ".."):
@@ -687,11 +699,13 @@ def main(argv: Sequence[str]) -> None:
 
     archive_paths = sorted(archive_dir.iterdir(), key=lambda candidate: candidate.name)
     actual_names = {path.name for path in archive_paths}
-    if actual_names != CANONICAL_ARCHIVES or len(archive_paths) != len(CANONICAL_ARCHIVES):
-        missing = sorted(CANONICAL_ARCHIVES - actual_names)
-        unexpected = sorted(actual_names - CANONICAL_ARCHIVES)
+    expected_names = UI_ARCHIVES if archive_scope == "ui" else CANONICAL_ARCHIVES
+    if actual_names != expected_names or len(archive_paths) != len(expected_names):
+        missing = sorted(expected_names - actual_names)
+        unexpected = sorted(actual_names - expected_names)
         raise ContractError(
-            f"archive namespace mismatch: expected exact canonical 16; missing={missing}, unexpected={unexpected}"
+            f"archive namespace mismatch: expected exact canonical {len(expected_names)} "
+            f"({archive_scope}); missing={missing}, unexpected={unexpected}"
         )
     for path in archive_paths:
         mode = path.lstat().st_mode
