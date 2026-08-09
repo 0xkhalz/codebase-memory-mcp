@@ -21,9 +21,10 @@ destination override neutralized.
 
 Arguments:
   <binary>     Product binary to smoke (e.g. build/c/codebase-memory-mcp).
-  ui           Mirror the -ui asset naming AND require the embedded UI:
-               Phase 15's "no assets" outcome becomes a FAILURE
-               (SMOKE_REQUIRE_UI=1), so a standard binary cannot pass a ui run.
+
+One composition ships and it carries the embedded UI, so Phase 15's "no assets"
+outcome is always a FAILURE here (SMOKE_REQUIRE_UI=1): a binary built without
+--with-ui cannot pass this smoke.
 
 Environment:
   CBM_SMOKE_ARTIFACT_DIR   Release mode: an EXTRACTED release artifact
