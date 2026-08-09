@@ -221,6 +221,319 @@ class RuntimeSetTests(unittest.TestCase):
                     [str(candidate), "--version"],
                 )
 
+    def test_concurrent_publishers_preserve_the_first_complete_winner(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            binary_name = "codebase-memory-mcp"
+
+            def stages(tag):
+                staged = directory / f".stage-{tag}-{binary_name}"
+                staged.write_bytes(f"binary:{tag}".encode())
+                return {binary_name: staged}
+
+            first_stages = stages("first")
+            second_stages = stages("second")
+            first_holds_lock = threading.Event()
+            allow_first = threading.Event()
+            second_observed_lock = threading.Event()
+            errors = []
+            replace = os.replace
+            read_lock_owner = _cli._read_runtime_lock_owner
+
+            def pause_first(source, destination):
+                replace(source, destination)
+                if Path(destination) == directory / binary_name:
+                    first_holds_lock.set()
+                    if not allow_first.wait(5):
+                        raise RuntimeError("test did not release first publisher")
+
+            def observe_waiter(lock_path):
+                if threading.current_thread().name == "publisher-second":
+                    second_observed_lock.set()
+                return read_lock_owner(lock_path)
+
+            def publish(label, staged_paths, replace_file=None):
+                try:
+                    _cli._publish_runtime_set(
+                        staged_paths,
+                        directory / binary_name,
+                        binary_name,
+                        replace_file=replace_file,
+                    )
+                except Exception as exc:  # surfaced on the test thread below
+                    errors.append((label, exc))
+
+            first = threading.Thread(
+                name="publisher-first",
+                target=publish,
+                args=("first", first_stages, pause_first),
+            )
+            second = threading.Thread(
+                name="publisher-second",
+                target=publish,
+                args=("second", second_stages),
+            )
+            with mock.patch.object(
+                _cli,
+                "_read_runtime_lock_owner",
+                side_effect=observe_waiter,
+            ):
+                first.start()
+                try:
+                    self.assertTrue(first_holds_lock.wait(2))
+                    second.start()
+                    self.assertTrue(second_observed_lock.wait(2))
+                finally:
+                    allow_first.set()
+                    first.join(5)
+                    if second.ident is not None:
+                        second.join(5)
+
+            self.assertFalse(first.is_alive())
+            self.assertFalse(second.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(
+                (directory / binary_name).read_bytes(), b"binary:first"
+            )
+            self.assertFalse((directory / _cli._RUNTIME_LOCK_NAME).exists())
+
+    def test_killed_publisher_is_reconciled_by_locked_readiness(self):
+        helper_source = r"""
+import os
+import sys
+import time
+from pathlib import Path
+
+source_root, directory_raw, staged_raw, marker_raw, crash_name = sys.argv[1:]
+sys.path.insert(0, source_root)
+from codebase_memory_mcp import _cli
+
+directory = Path(directory_raw)
+staged = Path(staged_raw)
+marker = Path(marker_raw)
+binary_name = "codebase-memory-mcp"
+staged_paths = {
+    binary_name: staged / binary_name,
+}
+replace = os.replace
+
+def pausing_replace(source, destination):
+    replace(source, destination)
+    if Path(destination) == directory / crash_name:
+        marker.write_text("reached\n")
+        while True:
+            time.sleep(60)
+
+def verifier(binary):
+    if not Path(binary).read_text().startswith("binary:"):
+        raise RuntimeError("test binary failed verification")
+
+_cli._publish_runtime_set(
+    staged_paths,
+    directory / binary_name,
+    binary_name,
+    replace_file=pausing_replace,
+    verifier=verifier,
+)
+"""
+        binary_name = "codebase-memory-mcp"
+        for crash_name, expected_ready in (
+            (binary_name, True),
+        ):
+            with self.subTest(crash_name=crash_name), tempfile.TemporaryDirectory() as root:
+                root_path = Path(root)
+                directory = root_path / "destination"
+                staged = root_path / "staged"
+                marker = root_path / "crash-reached"
+                directory.mkdir()
+                staged.mkdir()
+                (directory / binary_name).write_text("corrupt:old")
+                (staged / binary_name).write_text("binary:candidate")
+                environment = os.environ.copy()
+                environment["PYTHONPYCACHEPREFIX"] = str(root_path / "pycache")
+                process = subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-c",
+                        helper_source,
+                        str(PACKAGE_ROOT / "src"),
+                        str(directory),
+                        str(staged),
+                        str(marker),
+                        crash_name,
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=environment,
+                )
+                try:
+                    deadline = time.monotonic() + 10
+                    while not marker.exists() and time.monotonic() < deadline:
+                        if process.poll() is not None:
+                            stderr = process.communicate()[1]
+                            self.fail(
+                                "publication helper exited before crash gate: "
+                                f"{stderr}"
+                            )
+                        time.sleep(0.01)
+                    self.assertTrue(
+                        marker.exists(),
+                        "publication helper did not reach crash gate",
+                    )
+                    backups = [
+                        path
+                        for path in directory.iterdir()
+                        if path.name.startswith(".cbm-runtime-backup-")
+                    ]
+                    self.assertEqual(len(backups), 1)
+                    self.assertTrue(backups[0].is_dir())
+                    self.assertTrue(
+                        (backups[0] / ".retirement-complete").is_file()
+                    )
+
+                    process.kill()
+                    process.wait(5)
+                    self.assertNotEqual(process.returncode, 0)
+
+                    def verifier(binary):
+                        if not Path(binary).read_text().startswith("binary:"):
+                            raise RuntimeError("test binary failed verification")
+
+                    with mock.patch.object(
+                        _cli, "_bin_path", return_value=directory / binary_name
+                    ), mock.patch.object(
+                        _cli, "_verify_candidate", side_effect=verifier
+                    ):
+                        ready = _cli._runtime_set_ready_locked("test-version")
+                    self.assertEqual(ready, expected_ready)
+                    if not ready:
+                        self.assertEqual(
+                            (directory / binary_name).read_text(),
+                            "corrupt:old",
+                        )
+                        retry_staged = root_path / "retry-staged"
+                        retry_staged.mkdir()
+                        retry_paths = {
+                            binary_name: retry_staged / binary_name,
+                        }
+                        retry_paths[binary_name].write_text("binary:candidate")
+                        _cli._publish_runtime_set(
+                            retry_paths,
+                            directory / binary_name,
+                            binary_name,
+                            verifier=verifier,
+                        )
+
+                    self.assertEqual(
+                        (directory / binary_name).read_text(), "binary:candidate"
+                    )
+                    self.assertFalse(
+                        any(
+                            path.name.startswith(".cbm-runtime-backup-")
+                            for path in directory.iterdir()
+                        )
+                    )
+                    self.assertFalse(
+                        (directory / _cli._RUNTIME_LOCK_NAME).exists()
+                    )
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait(5)
+                    if process.stderr is not None:
+                        process.stderr.close()
+
+    def test_publication_failure_restores_prior_complete_runtime_set(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            binary_name = "codebase-memory-mcp"
+            (directory / binary_name).write_text("binary:old")
+            staged_paths = {}
+            for name, contents in (
+                (binary_name, b"binary:candidate"),
+            ):
+                staged = directory / f"stage-{name}"
+                staged.write_bytes(contents)
+                staged_paths[name] = staged
+
+            replace = os.replace
+            failed = False
+            retired = []
+
+            def fail_binary_publish(source, destination):
+                nonlocal failed
+                source = Path(source)
+                destination = Path(destination)
+                if destination.parent.name.startswith(".cbm-runtime-backup-"):
+                    retired.append(source.name)
+                if destination == directory / binary_name and not failed:
+                    failed = True
+                    raise OSError("injected binary publication failure")
+                replace(source, destination)
+
+            with self.assertRaises(OSError):
+                _cli._publish_runtime_set(
+                    staged_paths,
+                    directory / binary_name,
+                    binary_name,
+                    replace_file=fail_binary_publish,
+                )
+
+            self.assertTrue(failed)
+            self.assertEqual(retired[0], binary_name)
+            self.assertEqual((directory / binary_name).read_text(), "binary:old")
+            self.assertFalse(
+                any(
+                    path.name.startswith(".cbm-runtime-backup-")
+                    for path in directory.iterdir()
+                )
+            )
+
+    def test_failure_never_deletes_a_complete_foreign_winner(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            binary_name = "codebase-memory-mcp"
+            (directory / binary_name).write_bytes(b"binary:old")
+            staged_paths = {}
+            for name, contents in (
+                (binary_name, b"binary:candidate"),
+            ):
+                staged = directory / f".stage-candidate-{name}"
+                staged.write_bytes(contents)
+                staged_paths[name] = staged
+
+            replace = os.replace
+            injected = False
+
+            def install_foreign_winner(source, destination):
+                nonlocal injected
+                source = Path(source)
+                destination = Path(destination)
+                if destination == directory / binary_name and not injected:
+                    injected = True
+                    (directory / binary_name).write_bytes(b"binary:foreign")
+                    raise OSError("simulated non-cooperating winner")
+                replace(source, destination)
+
+            _cli._publish_runtime_set(
+                staged_paths,
+                directory / binary_name,
+                binary_name,
+                replace_file=install_foreign_winner,
+            )
+
+            self.assertTrue(injected)
+            self.assertEqual(
+                (directory / binary_name).read_bytes(), b"binary:foreign"
+            )
+            self.assertFalse(
+                any(
+                    path.name.startswith(".cbm-runtime-backup-")
+                    for path in directory.iterdir()
+                )
+            )
+
     def test_orphan_reconciliation_rejects_multiply_linked_backup_members(self):
         with tempfile.TemporaryDirectory() as root:
             directory = Path(root)
