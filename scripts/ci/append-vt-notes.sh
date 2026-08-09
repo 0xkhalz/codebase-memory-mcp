@@ -106,7 +106,7 @@ asset_base = (
 )
 association_meta, associations = read_tsv(
     association_path,
-    "cbm-release-scan-associations-v2",
+    "cbm-release-scan-associations-v3",
     ASSOCIATION_FIELDS,
 )
 result_meta, results = read_tsv(
@@ -171,19 +171,22 @@ for association in associations:
     ):
         fail(f"result hash/size differs from association: {association['scan_path']}")
 
-archive_rows = [row for row in associations if row["association_type"] == "archive"]
 member_rows = [row for row in associations if row["association_type"] == "member"]
 asset_rows = [row for row in associations if row["association_type"] == "pack_asset"]
-if len(archive_rows) != association_meta.get("archives"):
-    fail("downloadable archive association count is inconsistent")
-archive_names = [row["archive"] for row in archive_rows]
-if len(set(archive_names)) != len(archive_names):
-    fail("downloadable archive association is duplicated")
-archive_hashes = {row["archive"]: row["archive_sha256"] for row in archive_rows}
-if any(row["archive_sha256"] != row["object_sha256"] for row in archive_rows):
-    fail("downloadable archive SHA is not bound to its scan object")
-if any(archive_hashes.get(row["archive"]) != row["archive_sha256"] for row in associations):
-    fail("member/asset association is not bound to its downloadable archive")
+if len(member_rows) + len(asset_rows) != len(associations):
+    fail("association manifest contains a non-extracted scan target")
+archive_hashes: Dict[str, str] = {}
+for association in associations:
+    archive = association["archive"]
+    archive_sha256 = association["archive_sha256"]
+    if not archive or re.fullmatch(r"[0-9a-f]{64}", archive_sha256) is None:
+        fail("member/asset association lacks valid archive SHA provenance")
+    previous_sha256 = archive_hashes.get(archive)
+    if previous_sha256 is not None and previous_sha256 != archive_sha256:
+        fail(f"conflicting archive SHA provenance: {archive}")
+    archive_hashes[archive] = archive_sha256
+if len(archive_hashes) != association_meta.get("archives"):
+    fail("distinct archive provenance count is inconsistent")
 
 engine_counts = [int(row["completed_engines"]) for row in results]
 minimum = min(engine_counts)
@@ -198,14 +201,20 @@ section = [
     "## Security Verification",
     "",
     (
-        f"VirusTotal completed **{len(results)} distinct byte objects** covering "
-        f"**{len(associations)} exact release associations**: "
-        f"{len(archive_rows)} downloadable archives, {len(member_rows)} archive members, "
-        f"and {len(asset_rows)} independently extracted UI-pack assets."
+        f"VirusTotal completed **{len(results)} distinct extracted byte objects** covering "
+        f"**{len(associations)} exact extracted-file associations**: "
+        f"{len(member_rows)} archive members and "
+        f"{len(asset_rows)} independently extracted UI-pack assets."
+    ),
+    (
+        f"The extraction manifest binds those associations to "
+        f"**{len(archive_hashes)} downloadable "
+        f"{'archive' if len(archive_hashes) == 1 else 'archives'}** by SHA-256 provenance. "
+        "Downloadable .tar.gz/.zip release containers were not submitted to VirusTotal."
     ),
     "",
     (
-        f"Every object returned **0 malicious and 0 suspicious** verdicts with "
+        f"Every scanned object returned **0 malicious and 0 suspicious** verdicts with "
         f"{engine_range} decisive engine results (required minimum: {policy})."
     ),
     (
@@ -217,20 +226,17 @@ section = [
         "Durable public evidence: "
         f"[associations]({asset_base}/virustotal-associations.tsv), "
         f"[exact scan set]({asset_base}/virustotal-scan-set.tsv), "
-        f"[per-object results and report links]({asset_base}/virustotal-results.tsv), "
+        f"[per-extracted-object results and report links]({asset_base}/virustotal-results.tsv), "
         f"[evidence checksums]({asset_base}/virustotal-evidence-checksums.txt)."
     ),
     "",
-    "| Downloadable archive | SHA-256 | Engines | VirusTotal |",
-    "|---|---|---:|---|",
+    "Archive SHA-256 provenance (from the extraction manifest):",
+    "",
+    "| Downloadable archive | SHA-256 provenance |",
+    "|---|---|",
 ]
-for association in sorted(archive_rows, key=lambda row: row["archive"]):
-    result = results_by_path[association["scan_path"]]
-    sha256 = result["sha256"]
-    section.append(
-        f"| `{association['archive']}` | `{sha256}` | "
-        f"{result['completed_engines']} | [0 detections]({result['virustotal_url']}) |"
-    )
+for archive, archive_sha256 in sorted(archive_hashes.items()):
+    section.append(f"| `{archive}` | `{archive_sha256}` |")
 section.append(END)
 replacement = "\n".join(section)
 

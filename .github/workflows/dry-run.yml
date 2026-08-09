@@ -91,7 +91,6 @@ jobs:
     uses: ./.github/workflows/_build.yml
     with:
       attest: false
-      ui_only: true
 
   # ── Smoke test every binary ────────────────────────────────────
   # Run unless builds were skipped or a build leg FAILED. Every build leg
@@ -103,7 +102,6 @@ jobs:
     uses: ./.github/workflows/_smoke.yml
     with:
       broad_platforms: true
-      ui_only: true
 
   # ── Soak tests (optional, parallel with smoke) ────────────────
   soak:
@@ -148,8 +146,8 @@ jobs:
           merge-multiple: true
           path: ${{ runner.temp }}/release-archives
 
-      # Same extraction the release verify job performs, so the bytes handed to
-      # VirusTotal here are the bytes a user would download and run.
+      # Same extraction the release verify job performs. VirusTotal receives
+      # only extracted files and unpacked UI assets, never .tar.gz/.zip containers.
       - name: Extract archive artifacts
         run: |
           scripts/ci/extract-release-archives.sh "$RUNNER_TEMP/release-archives" binaries \
@@ -167,7 +165,7 @@ jobs:
           files: binaries/objects/*
           request_rate: 4
 
-      # Same ZERO-tolerance gate as the release. Every artifact must arrive
+      # Same ZERO-tolerance gate as the release. Every extracted object must arrive
       # naturally clean; any malicious or suspicious verdict fails this run.
       - name: Wait for VirusTotal results
         env:

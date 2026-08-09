@@ -147,27 +147,24 @@ require(
     "Makefile.cbm must not expose a Windows launcher target or variable",
 )
 
-# Each archive variant is still produced through the ONE canonical packaging
-# entry, so the five-or-six-file layout above governs all of them. The standard
-# calls are conditionally skipped by VT-focused UI-only dry runs.
+# The single shipped Windows runtime is UI-enabled and is produced through the
+# ONE canonical packaging entry, so the six-file layout above governs it.
 build_workflow = read(".github/workflows/_build.yml")
-for archive, call, ui in (
-    ("codebase-memory-mcp-windows-amd64.zip", "scripts/package-release.sh windows amd64", False),
+for archive, call in (
     ("codebase-memory-mcp-ui-windows-amd64.zip",
-     "scripts/package-release.sh windows amd64 --variant ui", True),
-    ("codebase-memory-mcp-windows-arm64.zip", "scripts/package-release.sh windows arm64", False),
+     "scripts/package-release.sh windows amd64 --variant ui"),
     ("codebase-memory-mcp-ui-windows-arm64.zip",
-     "scripts/package-release.sh windows arm64 --variant ui", True),
+     "scripts/package-release.sh windows arm64 --variant ui"),
 ):
-    # The lookahead keeps a ui call from satisfying a standard check.
-    pattern = re.escape(call) + ("" if ui else r"(?!\s+--variant)")
     require(
-        re.search(pattern, build_workflow) is not None,
+        build_workflow.count(call) == 1,
         f"_build.yml must produce {archive} via the canonical packaging entry ('{call}')",
     )
 require(
-    build_workflow.count("if: ${{ !inputs.ui_only }}") >= 4,
-    "_build.yml must skip every standard Windows build/archive in UI-only mode",
+    re.search(r"scripts/package-release\.sh windows (?:amd64|arm64)(?!\s+--variant)", build_workflow) is None
+    and "ui_only" not in build_workflow
+    and "Build standard binary" not in build_workflow,
+    "_build.yml must not retain a standard/non-UI Windows release path",
 )
 
 # ── 3. install.ps1 delegates every runtime mutation to the candidate ─────────

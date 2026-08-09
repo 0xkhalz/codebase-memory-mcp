@@ -9,12 +9,14 @@
 #
 # The output directory is published as one atomic bundle:
 #   objects/          one file per distinct byte sequence
-#   associations.tsv  every archive, member and CBMUIPK asset -> scan object
+#   associations.tsv  every extracted member and CBMUIPK asset -> scan object
 #   scan-set.tsv      the exact path/hash/size set the VT action must return
 #
-# The release archives themselves, their exact members, and the uncompressed
-# HTML/JavaScript/CSS/etc payloads inside every CBMUIPK v1 pack are all covered.
-# Identical bytes are uploaded once, but no shipped association is discarded.
+# Every archive is validated and hashed for provenance, but downloadable
+# .tar.gz/.zip release containers are not scanned. Their exact members and the
+# uncompressed HTML/JavaScript/CSS/etc payloads inside every CBMUIPK v1 pack are
+# covered. Identical bytes are uploaded once, but no extracted member/asset
+# association is discarded.
 set -euo pipefail
 
 if [ "$#" -lt 2 ]; then
@@ -733,24 +735,16 @@ def main(argv: Sequence[str]) -> None:
         staged_output = pathlib.Path(temporary) / "bundle"
         staged_output.mkdir(mode=0o700)
         store = ObjectStore(staged_output / "objects")
+        archive_store = ObjectStore(pathlib.Path(temporary) / "archives")
         for archive_path in archive_paths:
             archive_name = archive_path.name
             variant = "ui" if archive_name.startswith("codebase-memory-mcp-ui-") else "standard"
-            archive_object = store.ingest_path(
+            archive_object = archive_store.ingest_path(
                 archive_path,
                 ceiling=MAX_ARCHIVE_BYTES,
                 label=archive_name,
             )
             archive_sha256 = archive_object.sha256
-            add_association(
-                rows,
-                archive_object,
-                association_type="archive",
-                archive=archive_name,
-                archive_sha256=archive_sha256,
-                variant=variant,
-                kind="archive",
-            )
             _, kinds, member_total = (
                 process_tar(
                     archive_object.path,
@@ -792,7 +786,7 @@ def main(argv: Sequence[str]) -> None:
         rows.sort(
             key=lambda row: (
                 str(row["archive"]),
-                {"archive": 0, "member": 1, "pack_asset": 2}[str(row["association_type"])],
+                {"member": 0, "pack_asset": 1}[str(row["association_type"])],
                 str(row["member"]),
                 str(row["asset_path"]),
             )
@@ -808,7 +802,7 @@ def main(argv: Sequence[str]) -> None:
         )
         write_tsv(
             staged_output / "associations.tsv",
-            marker="cbm-release-scan-associations-v2",
+            marker="cbm-release-scan-associations-v3",
             metadata=((key, counts[key]) for key in metadata_order),
             fields=ASSOCIATION_FIELDS,
             rows=rows,
@@ -825,7 +819,7 @@ def main(argv: Sequence[str]) -> None:
         ]
         write_tsv(
             staged_output / "scan-set.tsv",
-            marker="cbm-release-scan-set-v1",
+            marker="cbm-release-scan-set-v2",
             metadata=((key, counts[key]) for key in ("scan_objects", "associations")),
             fields=SCAN_SET_FIELDS,
             rows=scan_rows,
@@ -848,7 +842,7 @@ def main(argv: Sequence[str]) -> None:
     )
     print(
         f"scan bundle: {counts['scan_objects']} distinct byte objects cover "
-        f"{counts['associations']} archive/member/asset associations"
+        f"{counts['associations']} extracted member/asset associations"
     )
     print(f"associations: {output_dir / 'associations.tsv'}")
     print(f"expected scan set: {output_dir / 'scan-set.tsv'}")

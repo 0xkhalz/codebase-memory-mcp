@@ -8,11 +8,6 @@ on:
         description: 'Smoke the shipped binaries on the broad platform matrix (extra OS versions) instead of the core set'
         type: boolean
         default: false
-      ui_only:
-        description: 'Smoke only the UI runtime archives'
-        type: boolean
-        default: false
-
 permissions:
   contents: read
 
@@ -34,7 +29,6 @@ jobs:
         id: set
         env:
           BROAD: ${{ inputs.broad_platforms }}
-          UI_ONLY: ${{ inputs.ui_only }}
         run: |
           CORE_UNIX='[
             {"os":"ubuntu-latest","goos":"linux","goarch":"amd64"},
@@ -77,14 +71,9 @@ jobs:
             WIN=$(jq -cn --argjson a "$CORE_WIN" '$a')
             PORTABLE=$(jq -cn --argjson a "$CORE_PORTABLE" '$a')
           fi
-          # Keep the variant dimension explicit because the smoke wrappers use it
-          # to require and validate the UI pack. VT-focused dry runs select only
-          # UI; release compatibility retains both variants until migration.
-          if [ "$UI_ONLY" = "true" ]; then
-            VARIANTS='["ui"]'
-          else
-            VARIANTS='["standard","ui"]'
-          fi
+          # Keep the UI marker explicit because the smoke wrappers use it to
+          # require and validate the shipped content-addressed frontend pack.
+          VARIANTS='["ui"]'
           UNIX_M=$(jq -cn --argjson a "$UNIX" --argjson v "$VARIANTS" '{include:[$a[] as $o | $v[] as $t | ($o + {variant:$t})]}')
           WIN_M=$(jq -cn --argjson a "$WIN" --argjson v "$VARIANTS" '{include:[$a[] as $o | $v[] as $t | ($o + {variant:$t})]}')
           PORTABLE_M=$(jq -cn --argjson a "$PORTABLE" --argjson v "$VARIANTS" '{include:[$a[] as $o | $v[] as $t | ($o + {variant:$t})]}')
@@ -140,7 +129,7 @@ jobs:
           scripts/security-network.sh "$BIN"
 
       - name: MCP robustness test (selected linux-amd64 runtime)
-        if: matrix.goos == 'linux' && matrix.goarch == 'amd64' && (inputs.ui_only || matrix.variant == 'standard')
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         run: |
           BIN="$RUNNER_TEMP/cbm-artifact/codebase-memory-mcp"
           scripts/security-fuzz.sh "$BIN"
