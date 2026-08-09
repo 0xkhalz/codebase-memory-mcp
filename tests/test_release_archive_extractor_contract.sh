@@ -15,9 +15,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FIX="$(mktemp -d "${TMPDIR:-/tmp}/cbm-extract-contract.XXXXXX")"
 trap 'rm -rf "$FIX"' EXIT
 
-python3 - "$ROOT" "$FIX" <<'PY'
+# "$BASH" by explicit argv: BASH is a shell variable, NOT exported, so reading
+# it from os.environ inside Python silently falls back — and on native Windows a
+# bare "bash" resolves to the WSL stub, which fails every invocation with
+# "Windows Subsystem for Linux has no installed distributions".
+python3 - "$ROOT" "$FIX" "$BASH" <<'PY'
 import hashlib
-import os
 import pathlib
 import subprocess
 import sys
@@ -26,6 +29,7 @@ import zipfile
 
 root = pathlib.Path(sys.argv[1])
 fixtures = pathlib.Path(sys.argv[2])
+bash_executable = sys.argv[3]
 extractor = root / "scripts" / "ci" / "extract-release-archives.sh"
 
 UNIX = ("linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64",
@@ -90,7 +94,7 @@ def build_matrix(directory, **kwargs):
 
 def run_extractor(archive_dir, out_dir, *args):
     return subprocess.run(
-        [os.environ.get("BASH", "bash"), str(extractor), str(archive_dir), str(out_dir), *args],
+        [bash_executable, str(extractor), str(archive_dir), str(out_dir), *args],
         capture_output=True, text=True,
     )
 
