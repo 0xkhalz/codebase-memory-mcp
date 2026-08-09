@@ -118,7 +118,10 @@ done
 ! grep -q '70+' "$FIX/first.md" || fail "unmeasured engine claim returned"
 
 run_notes "$FIX/first.md" "$FIX/second.md"
-cmp -s "$FIX/first.md" "$FIX/second.md" || fail "marked release-note update is not idempotent"
+# python3 rather than cmp/diff: this contract runs on the Windows VM's MSYS2
+# shell too, where neither is guaranteed to be on PATH (cmp is not).
+python3 -c 'import sys;sys.exit(0 if open(sys.argv[1],"rb").read()==open(sys.argv[2],"rb").read() else 1)' \
+  "$FIX/first.md" "$FIX/second.md" || fail "marked release-note update is not idempotent"
 
 cp "$FIX/binaries/vt-results.tsv" "$FIX/binaries/vt-results.clean.tsv"
 printf '\textra-cell\n' >> "$FIX/binaries/vt-results.tsv"
