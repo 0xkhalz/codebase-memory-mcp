@@ -357,4 +357,4 @@ printf 'tampered\n' > "$FIX/work/binaries/objects/probe"
 [ "$(run_gate "$clean_output")" != "0" ] || fail "tampered staged object must block before polling"
 grep -q 'changed after extraction' "$FIX/last.log" || fail "tamper failure is not diagnosable"
 
-echo 'PASS: VT gate is exact-set, content-bound, >=50-engine and zero tolerance'
+echo 'PASS: VT gate is exact-set, content-bound, >=50-engine; tolerates exactly one Microsoft !ml verdict and nothing else'
