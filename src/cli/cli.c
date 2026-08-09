@@ -9449,8 +9449,11 @@ int cbm_cmd_install(int argc, char **argv) {
     char self_path[CLI_BUF_1K] = {0};
     (void)cbm_detect_self_path(self_path, sizeof(self_path), home);
 
-    struct stat target_status;
-    bool target_exists = (stat(bin_target, &target_status) == 0);
+    /* NOT stat(): on Windows it goes through the ANSI code page, so an
+     * extended-length or non-ASCII target reports "absent" and a non-force
+     * install silently overwrites bytes the user asked to keep. */
+    cbm_path_info_t target_status;
+    bool target_exists = cbm_path_info_utf8(bin_target, &target_status) == 0;
     bool same_binary = cbm_same_file(self_path, bin_target);
     bool do_copy = !same_binary && (!target_exists || force);
 
@@ -10954,8 +10957,8 @@ int cbm_cmd_uninstall(int argc, char **argv) {
 #else
     snprintf(bin_path_storage, sizeof(bin_path_storage), "%s/.local/bin/codebase-memory-mcp", home);
 #endif
-    struct stat binary_status;
-    bool binary_exists = stat(bin_path, &binary_status) == 0;
+    cbm_path_info_t binary_status;
+    bool binary_exists = cbm_path_info_utf8(bin_path, &binary_status) == 0;
     cbm_activation_transaction_t *binary_transaction = NULL;
     if (!dry_run && binary_exists) {
         cbm_activation_transaction_status_t stage_status =
