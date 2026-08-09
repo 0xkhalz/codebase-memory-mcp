@@ -332,6 +332,11 @@ def main():
                    got.get("definition_nodes"), base["nodes"], base["edges"],
                    base["definition_nodes"], got.get("name")))
             if not ok:
+                # The counts alone cannot explain a venue-specific failure;
+                # surface the captured error verbatim so CI logs carry the
+                # diagnosis instead of swallowing it.
+                if got.get("error"):
+                    print("       %s error: %s" % (key, got["error"]))
                 failures.append(key)
     finally:
         shutil.rmtree(work, ignore_errors=True)
