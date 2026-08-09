@@ -361,6 +361,20 @@ def main():
                 # diagnosis instead of swallowing it.
                 if got.get("error"):
                     print("       %s error: %s" % (key, got["error"]))
+                # Discriminate order-dependence from path-dependence: the same
+                # repo, fresh cache, immediately again. A passing retry means
+                # the previous case's daemon interfered; a failing retry means
+                # the path itself is the trigger.
+                retry = index_and_count(binary, repo,
+                                        os.path.join(work, "c2_" + key))
+                print("       %s retry: nodes=%s error=%s" % (
+                    key, retry.get("nodes"), retry.get("error", "")[:200] or None))
+                if (not retry.get("error")
+                        and retry.get("nodes") == base["nodes"]
+                        and retry.get("edges") == base["edges"]
+                        and retry.get("definition_nodes") == base["definition_nodes"]):
+                    print("       %s retry matched baseline -- order-dependent, "
+                          "not path-dependent" % key)
                 failures.append(key)
     finally:
         shutil.rmtree(work, ignore_errors=True)
