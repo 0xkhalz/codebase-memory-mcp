@@ -265,8 +265,25 @@ def index_and_count(binary, repo, cache):
                 cache_entries = sorted(os.listdir(cache))
             except OSError as exc:
                 cache_entries = ["<listdir failed: %s>" % exc]
+            # The supervisor's worker logs carry the actual pipeline error.
+            log_tails = []
+            logs_dir = os.path.join(cache, "logs")
+            if os.path.isdir(logs_dir):
+                for log_name in sorted(os.listdir(logs_dir)):
+                    try:
+                        with open(os.path.join(logs_dir, log_name), "rb") as lf:
+                            tail = lf.read()[-800:].decode("utf-8", "replace")
+                        log_tails.append("%s: %s" % (log_name, tail))
+                    except OSError as exc:
+                        log_tails.append("%s: <unreadable: %s>" % (log_name, exc))
+            try:
+                repo_entries = sorted(os.listdir(repo))
+            except OSError as exc:
+                repo_entries = ["<listdir failed: %s>" % exc]
             return {"error": "no project listed after index; index said %r; "
-                             "cache holds %r" % (index_txt[:400], cache_entries)}
+                             "cache holds %r; repo holds %r; worker logs: %s"
+                             % (index_txt[:400], cache_entries, repo_entries,
+                                " | ".join(log_tails) or "<none>")}
         p = projects[0]
         out = {"name": p.get("name"), "nodes": p.get("nodes"),
                "edges": p.get("edges")}
