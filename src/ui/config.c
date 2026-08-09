@@ -6,7 +6,7 @@
  */
 #include "foundation/constants.h"
 #include "ui/config.h"
-#include "ui/asset_pack.h"
+#include "ui/embedded_assets.h"
 #include "foundation/log.h"
 #include "foundation/platform.h"
 #include "foundation/compat_fs.h"
@@ -122,9 +122,8 @@ void cbm_ui_config_load(cbm_ui_config_t *cfg) {
     bool opened = false;
     char *buffer = config_read_file(path, &length, &opened);
     if (!opened) {
-        /* Capability does not transiently disappear while the daemon warms
-         * the verified external pack asynchronously. */
-        if (cbm_ui_assets_supported()) {
+        /* No config file — auto-enable UI if binary has embedded assets */
+        if (CBM_EMBEDDED_FILE_COUNT > 0) {
             cfg->ui_enabled = true;
         }
         return;
