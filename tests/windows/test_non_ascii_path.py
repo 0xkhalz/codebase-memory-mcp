@@ -375,6 +375,20 @@ def main():
                         and retry.get("definition_nodes") == base["definition_nodes"]):
                     print("       %s retry matched baseline -- order-dependent, "
                           "not path-dependent" % key)
+                else:
+                    # The MCP result hides the pipeline's own diagnostics; the
+                    # CLI entrypoint prints them. Same repo, third fresh cache.
+                    cli_env = os.environ.copy()
+                    cli_env["CBM_CACHE_DIR"] = os.path.join(work, "c3_" + key)
+                    cli = subprocess.run(
+                        [binary, "cli", "index_repository",
+                         json.dumps({"repo_path": repo})],
+                        capture_output=True, timeout=180, env=cli_env)
+                    cli_out = (cli.stdout or b"").decode("utf-8", "replace")
+                    cli_err = (cli.stderr or b"").decode("utf-8", "replace")
+                    print("       %s cli probe rc=%s\n       stdout: %s\n"
+                          "       stderr: %s" % (key, cli.returncode,
+                                                 cli_out[-900:], cli_err[-900:]))
                 failures.append(key)
     finally:
         shutil.rmtree(work, ignore_errors=True)
