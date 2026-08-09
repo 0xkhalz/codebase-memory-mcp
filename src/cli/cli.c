@@ -10972,12 +10972,10 @@ int cbm_cmd_uninstall(int argc, char **argv) {
 #else
     static const char kBinaryLeaf[] = "codebase-memory-mcp";
 #endif
-    int bin_path_length =
-        requested_bin_dir
-            ? snprintf(bin_path_storage, sizeof(bin_path_storage), "%s/%s", requested_bin_dir,
-                       kBinaryLeaf)
-            : snprintf(bin_path_storage, sizeof(bin_path_storage), "%s/.local/bin/%s", home,
-                       kBinaryLeaf);
+    int bin_path_length = requested_bin_dir ? snprintf(bin_path_storage, sizeof(bin_path_storage),
+                                                       "%s/%s", requested_bin_dir, kBinaryLeaf)
+                                            : snprintf(bin_path_storage, sizeof(bin_path_storage),
+                                                       "%s/.local/bin/%s", home, kBinaryLeaf);
     if (bin_path_length <= 0 || (size_t)bin_path_length >= sizeof(bin_path_storage)) {
         (void)fprintf(stderr, "error: uninstall target path is too long\n");
         return CLI_TRUE;
