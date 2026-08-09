@@ -183,21 +183,14 @@ if [ "$GOOS" = "windows" ]; then
     (
         cd "$PACK_DIR"
         rm -f "$OUT_DIR/$NAME.zip"
-        ARCHIVE_MEMBERS=(
-            codebase-memory-mcp.exe LICENSE install.ps1
-            THIRD_PARTY_NOTICES.md
-        )
-        zip -q "$OUT_DIR/$NAME.zip" "${ARCHIVE_MEMBERS[@]}"
+        zip -q "$OUT_DIR/$NAME.zip" \
+            codebase-memory-mcp.exe LICENSE install.ps1 THIRD_PARTY_NOTICES.md
     )
     echo "=== package-release: $OUT_DIR/$NAME.zip ==="
 else
-    ARCHIVE_MEMBERS=(
-        codebase-memory-mcp LICENSE install.sh
-        THIRD_PARTY_NOTICES.md
-    )
     # BSD tar otherwise materializes macOS extended attributes as hidden
     # AppleDouble `._*` members, violating the exact four-file inventory.
     COPYFILE_DISABLE=1 tar -czf "$OUT_DIR/$NAME.tar.gz" -C "$PACK_DIR" \
-        "${ARCHIVE_MEMBERS[@]}"
+        codebase-memory-mcp LICENSE install.sh THIRD_PARTY_NOTICES.md
     echo "=== package-release: $OUT_DIR/$NAME.tar.gz ==="
 fi

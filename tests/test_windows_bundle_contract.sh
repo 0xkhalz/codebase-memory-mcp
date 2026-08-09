@@ -216,7 +216,7 @@ single_binary_contracts = {
     ),
     "pkg/pypi/src/codebase_memory_mcp/_cli.py": (
         r"_WINDOWS_BINARY_NAME\s*=\s*['\"]codebase-memory-mcp\.exe['\"]",
-        r"def\s+_windows_binary_ready\(",
+        r"def\s+_runtime_set_ready\(",
     ),
 }
 for relative, patterns in single_binary_contracts.items():
