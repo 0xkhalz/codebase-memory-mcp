@@ -3273,11 +3273,9 @@ if [ "$DL_OS" = "darwin" ] || [ "$DL_OS" = "linux" ]; then
 else
   DL_EXT="zip"
 fi
-# Try standard name first, fall back to UI variant
 DL_ARCHIVE="codebase-memory-mcp-${DL_OS}-${DL_ARCH}.${DL_EXT}"
-DL_ARCHIVE_UI="codebase-memory-mcp-ui-${DL_OS}-${DL_ARCH}.${DL_EXT}"
 
-# 12a: curl download (try standard, then UI variant)
+# 12a: curl download
 echo "--- Phase 12a: curl download ---"
 # --noproxy '*': never route the local test server through a proxy — a proxy env
 # var present on some runners (notably windows-11-arm) made curl fail to reach
@@ -3285,15 +3283,10 @@ echo "--- Phase 12a: curl download ---"
 # surface curl's stderr instead of swallowing it so the reason is visible.
 CURL12_ERR="$DL_DIR/curl12a.err"
 if ! curl -fSL --noproxy '*' -o "$DL_DIR/$DL_ARCHIVE" "$SMOKE_DOWNLOAD_URL/$DL_ARCHIVE" 2>"$CURL12_ERR"; then
-  # Try UI variant
-  if curl -fSL --noproxy '*' -o "$DL_DIR/$DL_ARCHIVE_UI" "$SMOKE_DOWNLOAD_URL/$DL_ARCHIVE_UI" 2>>"$CURL12_ERR"; then
-    DL_ARCHIVE="$DL_ARCHIVE_UI"
-  else
-    echo "FAIL 12a: curl download failed (tried standard and ui variants)"
-    echo "--- curl stderr (url: $SMOKE_DOWNLOAD_URL/$DL_ARCHIVE) ---"
-    cat "$CURL12_ERR" 2>/dev/null || true
-    exit 1
-  fi
+  echo "FAIL 12a: curl download failed"
+  echo "--- curl stderr (url: $SMOKE_DOWNLOAD_URL/$DL_ARCHIVE) ---"
+  cat "$CURL12_ERR" 2>/dev/null || true
+  exit 1
 fi
 if [ ! -s "$DL_DIR/$DL_ARCHIVE" ]; then
   echo "FAIL 12a: downloaded archive is empty"

@@ -28,7 +28,6 @@ Run inside the VM's CLANGARM64 shell (or a CI msys2 shell) from the repo root.
 
 Environment:
   SMOKE_ARCH      arm64 (default) | amd64 — selects the served artifact name.
-  SMOKE_VARIANT   standard (default) | ui. ui requires the embedded UI:
                   Phase 15's "no assets" SKIP becomes a FAILURE, so a standard
                   binary cannot pass a ui run.
   CBM_SMOKE_ARTIFACT_DIR
@@ -70,20 +69,13 @@ else
 fi
 
 SMOKE_ARCH="${SMOKE_ARCH:-arm64}"
-SMOKE_VARIANT="${SMOKE_VARIANT:-standard}"
 case "$SMOKE_ARCH" in
 arm64 | amd64) ;;
 *) echo "vm-smoke: SMOKE_ARCH must be arm64 or amd64. Please consult --help." >&2; exit 2 ;;
 esac
-# A ui run must be handed a binary that actually carries the embedded assets;
-# the suffix alone only renames the archive. SMOKE_REQUIRE_UI turns Phase 15's
-# documented "no embedded assets" SKIP into a failure, so asking for ui and
-# supplying a standard binary can no longer pass quietly.
-case "$SMOKE_VARIANT" in
-standard) SUFFIX="" ; REQUIRE_UI=0 ;;
-ui) SUFFIX="-ui" ; REQUIRE_UI=1 ;;
-*) echo "vm-smoke: SMOKE_VARIANT must be standard or ui. Please consult --help." >&2; exit 2 ;;
-esac
+# Every shipped binary carries the embedded UI, so Phase 15's documented
+# "no embedded assets" SKIP is always a failure here.
+REQUIRE_UI=1
 
 PROFILE_ROOT="$(cygpath -u "$USERPROFILE")"
 SMOKE_DIR="$(mktemp -d "$PROFILE_ROOT/cbm-vm-smoke.XXXXXX")"
@@ -158,14 +150,11 @@ else
 fi
 
 # Member set + ORDER mirror scripts/package-release.sh (Windows).
-EXPECTED_ARTIFACT="codebase-memory-mcp${SUFFIX}-windows-${SMOKE_ARCH}.zip"
+EXPECTED_ARTIFACT="codebase-memory-mcp-windows-${SMOKE_ARCH}.zip"
 (
     cd "$FIXTURE_DIR"
     zip -q "$EXPECTED_ARTIFACT" \
         codebase-memory-mcp.exe LICENSE install.ps1 THIRD_PARTY_NOTICES.md
-    if [ -n "$SUFFIX" ]; then
-        cp "$EXPECTED_ARTIFACT" "codebase-memory-mcp-windows-${SMOKE_ARCH}.zip"
-    fi
     sha256sum *.zip > checksums.txt
 )
 

@@ -48,7 +48,6 @@ if [ $# -gt 2 ]; then
 fi
 
 BINARY="${1:?smoke-local: missing <binary> argument. Please consult --help.}"
-VARIANT="${2:-standard}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BINARY="$(cd "$(dirname "$BINARY")" && pwd)/$(basename "$BINARY")"
 
@@ -56,15 +55,9 @@ if [ ! -x "$BINARY" ]; then
     echo "smoke-local: binary is not executable: $BINARY" >&2
     exit 2
 fi
-# A ui run must be handed a binary that actually carries the embedded assets;
-# the suffix alone only renames the archive. SMOKE_REQUIRE_UI turns Phase 15's
-# documented "no embedded assets" SKIP into a failure, so asking for ui and
-# supplying a standard binary can no longer pass quietly.
-case "$VARIANT" in
-standard) SUFFIX="" ; REQUIRE_UI=0 ;;
-ui) SUFFIX="-ui" ; REQUIRE_UI=1 ;;
-*) echo "smoke-local: variant must be 'standard' or 'ui'. Please consult --help." >&2; exit 2 ;;
-esac
+# Every shipped binary carries the embedded UI, so Phase 15's documented
+# "no embedded assets" SKIP is always a failure here.
+REQUIRE_UI=1
 
 # Unset (the local + PR default): synthesize the release sidecars from this
 # checkout. Set: take them from an EXTRACTED release artifact, so the release
@@ -133,23 +126,15 @@ fi
 # Member set and ORDER mirror scripts/package-release.sh (the Windows
 # single-binary contract locks that order); a fixture with a different inventory
 # would smoke a release layout we never ship.
-EXPECTED_ARTIFACT="codebase-memory-mcp${SUFFIX}-${OS}-${ARCH}.tar.gz"
+EXPECTED_ARTIFACT="codebase-memory-mcp-${OS}-${ARCH}.tar.gz"
 tar -czf "$FIXTURE_DIR/$EXPECTED_ARTIFACT" -C "$FIXTURE_DIR" \
     codebase-memory-mcp LICENSE install.sh THIRD_PARTY_NOTICES.md
-if [ -n "$SUFFIX" ]; then
-    cp "$FIXTURE_DIR/$EXPECTED_ARTIFACT" \
-        "$FIXTURE_DIR/codebase-memory-mcp-${OS}-${ARCH}.tar.gz"
-fi
 
 # Linux install/update resolves the portable release asset even when this local
 # smoke started from the dynamic production binary.
 if [ "$OS" = "linux" ]; then
     cp "$FIXTURE_DIR/$EXPECTED_ARTIFACT" \
-        "$FIXTURE_DIR/codebase-memory-mcp${SUFFIX}-${OS}-${ARCH}-portable.tar.gz"
-    if [ -n "$SUFFIX" ]; then
-        cp "$FIXTURE_DIR/codebase-memory-mcp${SUFFIX}-${OS}-${ARCH}-portable.tar.gz" \
-            "$FIXTURE_DIR/codebase-memory-mcp-${OS}-${ARCH}-portable.tar.gz"
-    fi
+        "$FIXTURE_DIR/codebase-memory-mcp-${OS}-${ARCH}-portable.tar.gz"
 fi
 (cd "$FIXTURE_DIR" && { sha256sum *.tar.gz > checksums.txt 2>/dev/null ||
     shasum -a 256 *.tar.gz > checksums.txt; })
