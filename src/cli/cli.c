@@ -10905,6 +10905,10 @@ static int cli_uninstall_activate(void *opaque) {
 int cbm_cmd_uninstall(int argc, char **argv) {
     parse_auto_answer(argc, argv);
     bool dry_run = false;
+    /* An install into a custom --dir must be removable from that same dir:
+     * without this, anyone who installed outside ~/.local/bin has no supported
+     * uninstall path at all. Mirrors cbm_cmd_install's parsing. */
+    const char *requested_bin_dir = NULL;
     for (int i = 0; i < argc; i++) {
         /* The public command dispatcher passes option-only argv, while the
          * long-standing direct API/tests include the subcommand at argv[0]. */
@@ -10913,6 +10917,18 @@ int cbm_cmd_uninstall(int argc, char **argv) {
         }
         if (strcmp(argv[i], "--dry-run") == 0) {
             dry_run = true;
+        } else if (strncmp(argv[i], "--dir=", SLEN("--dir=")) == 0) {
+            requested_bin_dir = argv[i] + SLEN("--dir=");
+            if (!requested_bin_dir[0]) {
+                (void)fprintf(stderr, "error: --dir requires a non-empty path\n");
+                return CLI_TRUE;
+            }
+        } else if (strcmp(argv[i], "--dir") == 0) {
+            if (i + 1 >= argc || !argv[i + 1] || !argv[i + 1][0] || argv[i + 1][0] == '-') {
+                (void)fprintf(stderr, "error: --dir requires a non-empty path\n");
+                return CLI_TRUE;
+            }
+            requested_bin_dir = argv[++i];
         } else if (strcmp(argv[i], "-y") != 0 && strcmp(argv[i], "--yes") != 0 &&
                    strcmp(argv[i], "-n") != 0 && strcmp(argv[i], "--no") != 0) {
             (void)fprintf(stderr, "error: unknown uninstall option: %s\n", argv[i]);
@@ -10952,11 +10968,20 @@ int cbm_cmd_uninstall(int argc, char **argv) {
     char bin_path_storage[CLI_BUF_1K];
     const char *bin_path = bin_path_storage;
 #ifdef _WIN32
-    snprintf(bin_path_storage, sizeof(bin_path_storage), "%s/.local/bin/codebase-memory-mcp.exe",
-             home);
+    static const char kBinaryLeaf[] = "codebase-memory-mcp.exe";
 #else
-    snprintf(bin_path_storage, sizeof(bin_path_storage), "%s/.local/bin/codebase-memory-mcp", home);
+    static const char kBinaryLeaf[] = "codebase-memory-mcp";
 #endif
+    int bin_path_length =
+        requested_bin_dir
+            ? snprintf(bin_path_storage, sizeof(bin_path_storage), "%s/%s", requested_bin_dir,
+                       kBinaryLeaf)
+            : snprintf(bin_path_storage, sizeof(bin_path_storage), "%s/.local/bin/%s", home,
+                       kBinaryLeaf);
+    if (bin_path_length <= 0 || (size_t)bin_path_length >= sizeof(bin_path_storage)) {
+        (void)fprintf(stderr, "error: uninstall target path is too long\n");
+        return CLI_TRUE;
+    }
     cbm_path_info_t binary_status;
     bool binary_exists = cbm_path_info_utf8(bin_path, &binary_status) == 0;
     cbm_activation_transaction_t *binary_transaction = NULL;
