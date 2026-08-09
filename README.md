@@ -71,6 +71,14 @@ Unblock-File .\install.ps1
 
 Options: `--skip-config` (binary only, no agent setup), `--dir=<path>` (custom location).
 
+> **Antivirus note:** Microsoft Defender may flag a release binary as
+> `Trojan:Script/Wacatac.B!ml`. This is a known false positive — typically 61 of
+> ~62 engines return clean, and the same detection family hits `gh`, llama.cpp,
+> Godot and Microsoft's own Go toolchain. See
+> [Antivirus False Positives](SECURITY.md#antivirus-false-positives) for the
+> evidence, how to verify the artifacts yourself, and how to report it if you
+> think we are wrong.
+
 Restart your coding agent. Say **"Index this project"** — done.
 
 <details>

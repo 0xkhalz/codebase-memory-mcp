@@ -148,9 +148,8 @@ is no exception path in this release gate.
 - **CORS locked to localhost** — graph UI only accessible from localhost origins
 - **Path containment** — `realpath()` check prevents reading files outside project root
 - **Process-kill restriction** — only server-spawned PIDs can be terminated
-- **Release-set verification** — installers verify downloaded archives, then the
-  candidate executable authenticates its adjacent runtime assets before
-  activation
+- **Release-set verification** — installers verify the downloaded archive's exact
+  member set and SHA-256 before the candidate executable is activated
 
 ### Verification
 
@@ -171,6 +170,119 @@ sha256sum -c checksums.txt
 # VirusTotal (follow the durable per-object results link in the release notes)
 # https://www.virustotal.com/
 ```
+
+## Antivirus False Positives
+
+Some release binaries are reported by **one** engine — Microsoft — as
+`Trojan:Script/Wacatac.B!ml`. We believe this is a false positive, we do not hide
+it, and this section exists so you can check that judgement yourself rather than
+take our word for it.
+
+### What the detection is
+
+The `!ml` suffix marks a **machine-learning / heuristic** classification, not a
+signature match. The `Script` token is a generic bucket in that naming scheme and
+says nothing about script content — GitHub's own `gh` CLI and Anthropic's Claude
+installer have both carried `Trojan:Script/Wacatac.H!ml` on native binaries.
+
+Typically 61 of ~62 engines on VirusTotal return clean for the same file.
+
+### What we measured
+
+We dissected a full release matrix built from one commit. The verdicts split
+across every axis at once:
+
+| Binary | Link | Verdict |
+|---|---|---|
+| linux-amd64 | dynamic | flagged |
+| linux-amd64-portable | static | clean |
+| linux-arm64 | dynamic | clean |
+| linux-arm64-portable | static | flagged |
+| darwin-amd64 | — | flagged |
+| darwin-arm64 | — | clean |
+| windows amd64 / arm64 | — | clean |
+
+The static/dynamic axis **inverts** between architectures, so no build or link
+property explains it. The two macOS binaries have identical segment structure and
+still split. Sibling artifacts from one build landed in *different* variant
+buckets (`.B` vs `.C`).
+
+We also tested and rejected the obvious structural hypothesis: entropy is low
+everywhere (embedded vectors 4.17, parse tables 3.46 bits/byte, against 7.5–8.0
+for genuinely packed payloads), so the binary does not resemble a packed dropper.
+
+### What we changed, and what we reverted
+
+We removed every embedded shell script from the binary and moved the UI bundle
+and the agent integration templates out into separate verified files. **The
+detection count did not drop** — it simply moved between artifacts. We reverted
+both changes rather than keep permanent complexity that bought nothing. We are
+documenting that here because a negative result is still evidence.
+
+### This is endemic, not specific to us
+
+The same `!ml` family repeatedly hits large, unsigned, native open-source
+binaries:
+
+- [llama.cpp #15874](https://github.com/ggml-org/llama.cpp/issues/15874),
+  [#24487](https://github.com/ggml-org/llama.cpp/issues/24487),
+  [#24558](https://github.com/ggml-org/llama.cpp/issues/24558) — including one
+  DLL of many in a single archive, with nothing found on reverse engineering
+- [GitHub CLI #13306](https://github.com/cli/cli/issues/13306)
+- [Microsoft's own Go toolchain #1255](https://github.com/microsoft/go/issues/1255)
+- [Anthropic Claude Code #36796](https://github.com/anthropics/claude-code/issues/36796)
+- [yt-dlp #7532](https://github.com/yt-dlp/yt-dlp/issues/7532),
+  [Godot #110612](https://github.com/godotengine/godot/issues/110612),
+  [PyInstaller #5854](https://github.com/pyinstaller/pyinstaller/issues/5854),
+  [Tauri #2486](https://github.com/tauri-apps/tauri/issues/2486),
+  [OpenAI Codex #2228](https://github.com/openai/codex/issues/2228),
+  [rust-lang/rust #88297](https://github.com/rust-lang/rust/issues/88297)
+
+A Microsoft engineer on the Go team [put it plainly](https://github.com/microsoft/go/issues/1255):
+*"we're aware of Windows Security/Defender issues with Go apps… we can't exactly
+go fix something and solve all Go false positives."*
+
+### Why we do not obfuscate around it
+
+Deliberately reshaping a binary to avoid a classifier is what malware does, and
+it measurably backfires — the same Microsoft engineer reports that obfuscation
+*"increases scrutiny rather than avoiding it."* We would rather be scannable and
+explain a false positive than be unreadable and score well.
+
+### Verify it yourself
+
+Every release ships the material needed to check our artifacts independently.
+Use the commands in [Verification](#verification) above: SLSA Build Level 3
+provenance ties the archive to the workflow run that produced it, Sigstore cosign
+verifies the signature, and `checksums.txt` pins the bytes. The release notes
+carry a durable per-object VirusTotal link for every scanned file, including any
+tolerated detection — we publish those results whether or not they are clean.
+
+You can also rebuild from source and compare: `scripts/build.sh --with-ui`
+produces the shipped composition.
+
+### Our release policy
+
+A release may ship with **at most one** detection, and only when the engine is
+Microsoft and the label ends in `!ml`. Two or more engines, any signature-based
+label, any other vendor, or any "suspicious" verdict blocks the release. That
+rule is enforced in `scripts/ci/check-virustotal.sh` and pinned by
+`tests/test_vt_gate_policy_contract.sh`.
+
+### If you find something real
+
+We would genuinely rather be wrong in public than confidently wrong. If you find
+anything that explains or contradicts the assessment above:
+
+- Open an issue with the **`av-analysis`** label — include the artifact SHA-256,
+  the engine and label, and what you found.
+- If it looks like an actual compromise rather than a classifier artifact, use
+  the private process in [Reporting a Vulnerability](#reporting-a-vulnerability)
+  instead.
+
+A concrete finding changes our position. Signing is on the roadmap and will help
+on Windows, but note that no code-signing scheme exists that AV engines honour
+for Linux ELF binaries, so it is not a complete answer either.
 
 ## Supported Versions
 
