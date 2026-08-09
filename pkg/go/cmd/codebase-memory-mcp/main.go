@@ -35,9 +35,9 @@ import (
 )
 
 const (
-	repo                 = "DeusData/codebase-memory-mcp"
-	version              = "0.8.1"
-	windowsBinaryName    = "codebase-memory-mcp.exe"
+	repo              = "DeusData/codebase-memory-mcp"
+	version           = "0.8.1"
+	windowsBinaryName = "codebase-memory-mcp.exe"
 
 	maxRedirects            = 5
 	requestTimeout          = 2 * time.Minute
@@ -802,8 +802,7 @@ func extractTarGzWithLimits(
 	if err != nil {
 		return nil, err
 	}
-	err := validateArchiveMemberNames(names, archiveNames, false)
-	if err != nil {
+	if err := validateArchiveMemberNames(names, archiveNames, false); err != nil {
 		return nil, err
 	}
 	runtimeNames := append([]string(nil), extractNames...)
@@ -948,8 +947,7 @@ func extractZipWithLimits(
 		names = append(names, name)
 		declaredSizes[name] = declaredSize
 	}
-	err := validateArchiveMemberNames(names, archiveNames, true)
-	if err != nil {
+	if err := validateArchiveMemberNames(names, archiveNames, true); err != nil {
 		return nil, err
 	}
 	runtimeNames := append([]string(nil), extractNames...)
