@@ -93,6 +93,15 @@ write_response low-engines 0 0 49 "$PROBE_SHA" "$PROBE_SIZE"
 write_response wrong-hash 0 0 60 "$PROBE2_SHA" "$PROBE_SIZE"
 write_response wrong-size 0 0 60 "$PROBE_SHA" "$((PROBE_SIZE + 1))"
 
+cat > "$FIX/responses/upload-alias.json" <<EOF
+{"meta":{"file_info":{"sha256":"$PROBE_SHA","size":$PROBE_SIZE}},
+ "data":{"id":"canonical-analysis","type":"analysis","attributes":{"status":"completed",
+ "stats":{"malicious":0,"suspicious":0,"undetected":60,"harmless":0,
+          "timeout":0,"confirmed-timeout":0,"failure":0,"type-unsupported":0},
+ "results":{"Microsoft":{"category":"undetected","result":null,
+               "engine_version":"1.26070","engine_update":"20260808"}}}}}
+EOF
+
 cat > "$FIX/responses/named-engine.json" <<EOF
 {"meta":{"file_info":{"sha256":"$PROBE_SHA","size":$PROBE_SIZE}},
  "data":{"id":"named-engine","type":"analysis","attributes":{"status":"completed",
@@ -200,11 +209,16 @@ run_gate() { # action-output -> prints rc
 
 clean_output="binaries/objects/probe=$(url_for clean-analysis)"
 [ "$(run_gate "$clean_output")" = "0" ] || fail "clean exact scan must pass: $(cat "$FIX/last.log")"
+alias_output="binaries/objects/probe=$(url_for upload-alias)"
+[ "$(run_gate "$alias_output")" = "0" ] || \
+  fail "a content-bound canonical response alias must pass: $(cat "$FIX/last.log")"
 RESULTS="$FIX/work/binaries/vt-results.tsv"
 [ -f "$RESULTS" ] || fail "clean gate did not atomically publish its results manifest"
 grep -q '^# cbm-virustotal-results-v1$' "$RESULTS" || fail "results marker missing"
 grep -q "objects/probe.*$PROBE_SHA.*$PROBE_SIZE.*60" "$RESULTS" || \
   fail "results do not bind path/hash/size/actual engine count"
+grep -Fq 'upload-alias' "$RESULTS" || \
+  fail "results must retain the action's submitted analysis ID"
 
 for id in one-malicious one-suspicious; do
   [ "$(run_gate "binaries/objects/probe=$(url_for "$id")")" != "0" ] || \

@@ -425,8 +425,8 @@ def parse_completed(document: object, submission: Submission) -> Tuple[str, Opti
     if data.get("type") != "analysis":
         raise GateError(f"VirusTotal response is not an analysis for {submission.expected.scan_path}")
     response_id = data.get("id")
-    if response_id != submission.analysis_id:
-        raise GateError(f"VirusTotal response id mismatch for {submission.expected.scan_path}")
+    if not isinstance(response_id, str) or ANALYSIS_ID_RE.fullmatch(response_id) is None:
+        raise GateError(f"VirusTotal response has an invalid analysis id: {submission.expected.scan_path}")
     attributes = data.get("attributes")
     if not isinstance(attributes, dict):
         raise GateError("VirusTotal response has no analysis attributes")
