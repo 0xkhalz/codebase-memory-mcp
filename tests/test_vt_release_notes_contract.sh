@@ -10,32 +10,32 @@ trap 'rm -rf "$FIX"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 mkdir -p "$FIX/bin" "$FIX/binaries"
-SHA_A='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-SHA_B='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+ARCHIVE_SHA='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+MEMBER_SHA='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+ASSET_SHA='cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'
 cat > "$FIX/binaries/associations.tsv" <<EOF
-# cbm-release-scan-associations-v2
+# cbm-release-scan-associations-v3
 # archives=1
 # binaries=1
 # packs=0
 # runtime_files=0
 # pack_assets=1
-# associations=3
+# associations=2
 # scan_objects=2
 association_type	archive	archive_sha256	variant	kind	member	asset_path	mime	scan_path	object_sha256	size
-archive	codebase-memory-mcp-linux-amd64.tar.gz	$SHA_A	standard	archive				objects/archive	$SHA_A	100
-member	codebase-memory-mcp-linux-amd64.tar.gz	$SHA_A	standard	binary	codebase-memory-mcp			objects/archive	$SHA_A	100
-pack_asset	codebase-memory-mcp-linux-amd64.tar.gz	$SHA_A	ui	ui_asset	cbm-ui-$SHA_B.pack	/assets/app.js	application/javascript	objects/script	$SHA_B	20
+member	codebase-memory-mcp-linux-amd64.tar.gz	$ARCHIVE_SHA	standard	binary	codebase-memory-mcp			objects/member	$MEMBER_SHA	40
+pack_asset	codebase-memory-mcp-linux-amd64.tar.gz	$ARCHIVE_SHA	ui	ui_asset	cbm-ui-$ASSET_SHA.pack	/assets/app.js	application/javascript	objects/script	$ASSET_SHA	20
 EOF
 cat > "$FIX/binaries/vt-results.tsv" <<EOF
 # cbm-virustotal-results-v1
 # scan_objects=2
-# associations=3
+# associations=2
 # min_engines_policy=50
 # min_completed_engines=59
 # max_completed_engines=61
 scan_path	sha256	size	association_count	completed_engines	total_engines	malicious	suspicious	analysis_id	microsoft_category	microsoft_engine_version	microsoft_engine_update	virustotal_url
-objects/archive	$SHA_A	100	2	59	62	0	0	analysis-a	undetected	1.26070	20260808	https://www.virustotal.com/gui/file/$SHA_A/detection
-objects/script	$SHA_B	20	1	61	64	0	0	analysis-b				https://www.virustotal.com/gui/file/$SHA_B/detection
+objects/member	$MEMBER_SHA	40	1	59	62	0	0	analysis-a	undetected	1.26070	20260808	https://www.virustotal.com/gui/file/$MEMBER_SHA/detection
+objects/script	$ASSET_SHA	20	1	61	64	0	0	analysis-b				https://www.virustotal.com/gui/file/$ASSET_SHA/detection
 EOF
 cat > "$FIX/current.md" <<'EOF'
 Intro text.
@@ -99,13 +99,21 @@ run_notes "$FIX/current.md" "$FIX/first.md"
 grep -q 'Intro text.' "$FIX/first.md" || fail "content before marked section was lost"
 grep -q 'Outro text.' "$FIX/first.md" || fail "content after marked section was lost"
 ! grep -q 'stale data' "$FIX/first.md" || fail "stale marked section was appended instead of replaced"
-grep -q '2 distinct byte objects' "$FIX/first.md" || fail "unique-object scope missing"
-grep -q '3 exact release associations' "$FIX/first.md" || fail "association scope missing"
+grep -q '2 distinct extracted byte objects' "$FIX/first.md" || fail "unique extracted-object scope missing"
+grep -q '2 exact extracted-file associations' "$FIX/first.md" || fail "extracted-file association scope missing"
+grep -q '1 downloadable archive' "$FIX/first.md" || fail "archive provenance scope missing"
 grep -q '59–61 decisive engine results' "$FIX/first.md" || fail "measured engine range missing"
 grep -q 'Microsoft returned a decisive clean verdict for all 1 executable objects' "$FIX/first.md" || \
   fail "executable Microsoft coverage is not stated"
-grep -q "$SHA_A" "$FIX/first.md" || fail "full archive SHA-256 missing"
-grep -q "gui/file/$SHA_A/detection" "$FIX/first.md" || fail "archive VirusTotal link missing"
+grep -q "$ARCHIVE_SHA" "$FIX/first.md" || fail "full archive SHA-256 provenance missing"
+grep -q '| Downloadable archive | SHA-256 provenance |' "$FIX/first.md" || \
+  fail "archive SHA provenance table missing"
+grep -q 'Downloadable .tar.gz/.zip release containers were not submitted to VirusTotal' "$FIX/first.md" || \
+  fail "archive exclusion is not explicit"
+! grep -q "gui/file/$ARCHIVE_SHA/detection" "$FIX/first.md" || \
+  fail "archive VirusTotal link must not be published"
+! grep -q '| Engines | VirusTotal |' "$FIX/first.md" || \
+  fail "archive provenance table must not imply archive scans"
 for asset in virustotal-associations.tsv virustotal-scan-set.tsv virustotal-results.tsv virustotal-evidence-checksums.txt; do
   grep -q "releases/download/v1.0.0/$asset" "$FIX/first.md" || fail "public evidence link missing: $asset"
 done
@@ -120,6 +128,14 @@ if run_notes "$FIX/current.md" "$FIX/surplus-capture.md"; then
   fail "surplus result TSV cells must fail closed"
 fi
 mv "$FIX/binaries/vt-results.clean.tsv" "$FIX/binaries/vt-results.tsv"
+
+cp "$FIX/binaries/associations.tsv" "$FIX/binaries/associations.clean.tsv"
+sed 's/# archives=1/# archives=2/' "$FIX/binaries/associations.clean.tsv" > \
+  "$FIX/binaries/associations.tsv"
+if run_notes "$FIX/current.md" "$FIX/archive-count-capture.md"; then
+  fail "archive provenance count must match association metadata"
+fi
+mv "$FIX/binaries/associations.clean.tsv" "$FIX/binaries/associations.tsv"
 
 cat > "$FIX/reversed.md" <<'EOF'
 Intro text.
@@ -146,12 +162,12 @@ run_publish() {
       bash "$PUBLISH")
 }
 cat > "$FIX/binaries/scan-set.tsv" <<EOF
-# cbm-release-scan-set-v1
+# cbm-release-scan-set-v2
 # scan_objects=2
-# associations=3
+# associations=2
 scan_path	sha256	size	association_count	association_kinds
-objects/archive	$SHA_A	100	2	archive,binary
-objects/script	$SHA_B	20	1	ui_asset
+objects/member	$MEMBER_SHA	40	1	binary
+objects/script	$ASSET_SHA	20	1	ui_asset
 EOF
 run_publish
 for asset in virustotal-associations.tsv virustotal-scan-set.tsv virustotal-results.tsv virustotal-evidence-checksums.txt; do
@@ -160,7 +176,7 @@ done
 [ "$(wc -l < "$FIX/public/virustotal-evidence-checksums.txt" | tr -d ' ')" = 3 ] || \
   fail "public evidence checksum inventory is incomplete"
 cp "$FIX/binaries/scan-set.tsv" "$FIX/binaries/scan-set.clean.tsv"
-sed '1s/cbm-release-scan-set-v1/wrong-marker/' "$FIX/binaries/scan-set.clean.tsv" > "$FIX/binaries/scan-set.tsv"
+sed '1s/cbm-release-scan-set-v2/wrong-marker/' "$FIX/binaries/scan-set.clean.tsv" > "$FIX/binaries/scan-set.tsv"
 if run_publish; then
   fail "public evidence publication must reject a wrong scan-set marker"
 fi

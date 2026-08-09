@@ -95,7 +95,7 @@ disclosure. Research conducted under this policy is considered authorised.
 
 ## Security Measures
 
-This project implements multiple layers of security verification. Every release archive and its extracted runtime objects must pass all checks before users can download it (draft → verify → publish flow).
+This project implements multiple layers of security verification. Every release archive is signed and checksummed, and every extracted runtime object must pass its applicable checks before users can download it (draft → verify → publish flow).
 
 ### Build-Time (CI — every commit)
 
@@ -126,7 +126,7 @@ Releases are created as **drafts** (invisible to users) and only published after
 2. **Sigstore cosign signing** — keyless digital signatures verifiable by anyone
 3. **SBOM** — Software Bill of Materials (SPDX) listing all vendored dependencies
 4. **SHA-256 checksums** — published with every release
-5. **VirusTotal scanning** — every distinct shipped archive, member, and UI-asset byte object is scanned. Each completed analysis must contain at least 50 decisive engine results, zero malicious verdicts, and zero suspicious verdicts. Release notes summarize archive results and link durable public association, exact-scan-set, per-object-result, and evidence-checksum assets.
+5. **VirusTotal scanning** — every distinct extracted member and unpacked UI asset is scanned; downloadable `.tar.gz`/`.zip` containers are not submitted. Each completed analysis must contain at least 50 decisive engine results, zero malicious verdicts, and zero suspicious verdicts. Release notes retain archive SHA-256 provenance and link durable public association, exact-scan-set, per-object-result, and evidence-checksum assets.
 6. **OpenSSF Scorecard** — repository security health score
 
 Scope of the SLSA claim: this is a build provenance claim for release

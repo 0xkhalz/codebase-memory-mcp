@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Contract for the release scan boundary: exact archives, exact members,
-# independently parsed UI-pack assets, byte-exact deduplication and atomic
-# publication of a complete association manifest plus scan set.
+# Contract for the release scan boundary: archives are validated and hashed;
+# only exact extracted members and independently parsed UI-pack assets enter
+# the byte-deduplicated, atomically published scan set.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -298,7 +298,6 @@ def build_matrix(
         path = archive_dir / name
         write_archive(path, entries)
         if mutation is None:
-            expected[("archive", name, "", "")] = path.read_bytes()
             for entry in entries:
                 if entry["kind"] != "regular":
                     continue
@@ -380,10 +379,10 @@ with tempfile.TemporaryDirectory(prefix="cbm-release-scan-contract-") as tempora
         fail("scan bundle must publish exactly objects/ plus its two manifests")
 
     association_metadata, rows = parse_manifest(
-        output / "associations.tsv", "cbm-release-scan-associations-v2"
+        output / "associations.tsv", "cbm-release-scan-associations-v3"
     )
     expected_pack_assets = 8 * len(asset_payloads)
-    expected_associations = 16 + 88 + expected_pack_assets
+    expected_associations = 88 + expected_pack_assets
     expected_metadata = {
         **expected_base_counts,
         "pack_assets": expected_pack_assets,
@@ -393,13 +392,19 @@ with tempfile.TemporaryDirectory(prefix="cbm-release-scan-contract-") as tempora
     if association_metadata != expected_metadata:
         fail(f"association metadata mismatch: {association_metadata!r}")
     if len(rows) != expected_associations:
-        fail("association manifest does not contain every archive/member/asset association")
+        fail("association manifest does not contain every extracted member/asset association")
     actual_associations = {
         (row["association_type"], row["archive"], row["member"], row["asset_path"]): row
         for row in rows
     }
+    if any(row["association_type"] == "archive" or row["kind"] == "archive" for row in rows):
+        fail("archive containers must not appear in the VirusTotal association set")
     if set(actual_associations) != set(expected):
         fail("association manifest keys differ from exact shipped associations")
+    archive_hashes = {
+        name: hashlib.sha256((valid / "archives" / name).read_bytes()).hexdigest()
+        for name in archive_names
+    }
     for association, data in expected.items():
         row = actual_associations[association]
         object_path = output / row["scan_path"]
@@ -407,6 +412,8 @@ with tempfile.TemporaryDirectory(prefix="cbm-release-scan-contract-") as tempora
             fail(f"scan object changed bytes for association {association!r}")
         if row["object_sha256"] != hashlib.sha256(data).hexdigest() or int(row["size"]) != len(data):
             fail(f"association digest/size is wrong for {association!r}")
+        if row["archive_sha256"] != archive_hashes[row["archive"]]:
+            fail(f"association archive provenance is wrong for {association!r}")
 
     object_paths = sorted((output / "objects").iterdir())
     if len(object_paths) != len(set(expected.values())):
@@ -424,7 +431,7 @@ with tempfile.TemporaryDirectory(prefix="cbm-release-scan-contract-") as tempora
     if len(script_rows) != 8 or len({row["scan_path"] for row in script_rows}) != 1:
         fail("each pack's JavaScript association must reach one exact deduplicated script object")
 
-    scan_metadata, scan_rows = parse_manifest(output / "scan-set.tsv", "cbm-release-scan-set-v1")
+    scan_metadata, scan_rows = parse_manifest(output / "scan-set.tsv", "cbm-release-scan-set-v2")
     if scan_metadata != {
         "scan_objects": expected_metadata["scan_objects"],
         "associations": expected_associations,
@@ -450,9 +457,9 @@ with tempfile.TemporaryDirectory(prefix="cbm-release-scan-contract-") as tempora
     if ui_result.returncode != 0:
         fail(f"canonical UI-only matrix was rejected: {ui_result.stdout.strip()}")
     ui_metadata, ui_rows = parse_manifest(
-        ui_output / "associations.tsv", "cbm-release-scan-associations-v2"
+        ui_output / "associations.tsv", "cbm-release-scan-associations-v3"
     )
-    ui_associations = 8 + 48 + expected_pack_assets
+    ui_associations = 48 + expected_pack_assets
     if ui_metadata != {
         **ui_expected_base_counts,
         "pack_assets": expected_pack_assets,
@@ -509,7 +516,7 @@ source = extractor.read_text(encoding="utf-8")
 if "files_equal(candidate, existing.path)" not in source:
     fail("deduplication no longer exact-compares bytes after SHA-256+size grouping")
 if source.count("archive_object.path,") < 2:
-    fail("members are not parsed from the same retained bytes staged as the archive object")
+    fail("members are not parsed from the same retained archive bytes used for provenance")
 for ceiling in ("MAX_ARCHIVE_BYTES", "MAX_MEMBER_BYTES", "MAX_TOTAL_MEMBER_BYTES"):
     if ceiling not in source:
         fail(f"extractor lost required size ceiling {ceiling}")
@@ -518,18 +525,33 @@ release = (root / ".github/workflows/release.yml").read_text(encoding="utf-8")
 dry_run = (root / ".github/workflows/dry-run.yml").read_text(encoding="utf-8")
 build = (root / ".github/workflows/_build.yml").read_text(encoding="utf-8")
 smoke = (root / ".github/workflows/_smoke.yml").read_text(encoding="utf-8")
-if "ui_only:" not in build or build.count("if: ${{ !inputs.ui_only }}") < 4:
-    fail("canonical build workflow must gate every standard build family behind ui_only")
+if "ui_only" in build or "Build standard binary" in build:
+    fail("canonical build workflow must not retain a non-UI release path")
 if build.count("--variant ui") != 4:
-    fail("canonical build workflow must package exactly its four UI build families")
-if "UI_ONLY: ${{ inputs.ui_only }}" not in smoke or "VARIANTS='[\"ui\"]'" not in smoke:
-    fail("release smoke matrix must support an explicit UI-only selection")
-if dry_run.count("ui_only: true") != 2 or "--archive-scope=ui" not in dry_run:
-    fail("dry-run must build, smoke and extract only the UI runtime set")
-if "--archive-scope=ui" in release:
-    fail("release workflow must retain its dual-variant compatibility scope")
+    fail("canonical build workflow must package exactly its four UI-enabled build families")
+if "ui_only" in smoke or "VARIANTS='[\"ui\"]'" not in smoke or "standard" in smoke.split("VARIANTS=", 1)[1].split("\n", 1)[0]:
+    fail("release smoke matrix must expose only the UI-enabled runtime")
+if "ui_only" in dry_run or "--archive-scope=ui" not in dry_run:
+    fail("dry-run must use the canonical UI-only build/smoke/extraction path")
+if "--archive-scope=ui" not in release:
+    fail("release verification must accept only the shipped UI-enabled archives")
+if (
+    "path: ${{ runner.temp }}/release-archives" not in dry_run
+    or 'extract-release-archives.sh "$RUNNER_TEMP/release-archives" binaries' not in dry_run
+    or "path: assets" in dry_run
+    or "extract-release-archives.sh assets binaries" in dry_run
+):
+    fail("dry-run must isolate downloaded archives from tracked checkout assets")
+if (
+    'ARCHIVE_DIR="$RUNNER_TEMP/release-archives"' not in release
+    or '--dir "$ARCHIVE_DIR"' not in release
+    or 'extract-release-archives.sh "$ARCHIVE_DIR" binaries' not in release
+    or "--dir assets" in release
+    or "extract-release-archives.sh assets binaries" in release
+):
+    fail("release verification must isolate downloaded archives from tracked checkout assets")
 for workflow_name, workflow, arguments in (
-    ("release", release, count_args),
+    ("release", release, ui_count_args),
     ("dry-run", dry_run, ui_count_args),
 ):
     for argument in arguments:

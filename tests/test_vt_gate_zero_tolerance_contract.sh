@@ -33,32 +33,34 @@ printf 'release-bytes\n' > "$FIX/work/binaries/objects/probe"
 printf 'second-object\n' > "$FIX/work/binaries/objects/probe2"
 PROBE_SHA="$(hash_file "$FIX/work/binaries/objects/probe")"
 PROBE2_SHA="$(hash_file "$FIX/work/binaries/objects/probe2")"
+ARCHIVE_SHA='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+ARCHIVE2_SHA='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 PROBE_SIZE="$(wc -c < "$FIX/work/binaries/objects/probe" | tr -d ' ')"
 PROBE2_SIZE="$(wc -c < "$FIX/work/binaries/objects/probe2" | tr -d ' ')"
 
 write_manifest() { # one|two
-  local count=1 associations=3
-  if [ "$1" = "two" ]; then count=2; associations=4; fi
+  local count=1 associations=2 archives=1
+  if [ "$1" = "two" ]; then count=2; associations=3; archives=2; fi
   {
-    echo '# cbm-release-scan-set-v1'
+    echo '# cbm-release-scan-set-v2'
     echo "# scan_objects=$count"
     echo "# associations=$associations"
     printf 'scan_path\tsha256\tsize\tassociation_count\tassociation_kinds\n'
-    printf 'objects/probe\t%s\t%s\t3\tarchive,binary,runtime\n' "$PROBE_SHA" "$PROBE_SIZE"
+    printf 'objects/probe\t%s\t%s\t2\tbinary,runtime\n' "$PROBE_SHA" "$PROBE_SIZE"
     if [ "$1" = "two" ]; then
-      printf 'objects/probe2\t%s\t%s\t1\tarchive\n' "$PROBE2_SHA" "$PROBE2_SIZE"
+      printf 'objects/probe2\t%s\t%s\t1\truntime\n' "$PROBE2_SHA" "$PROBE2_SIZE"
     fi
   } > "$FIX/work/binaries/scan-set.tsv"
   {
-    echo '# cbm-release-scan-associations-v2'
+    echo '# cbm-release-scan-associations-v3'
+    echo "# archives=$archives"
     echo "# associations=$associations"
     echo "# scan_objects=$count"
     printf 'association_type\tarchive\tarchive_sha256\tvariant\tkind\tmember\tasset_path\tmime\tscan_path\tobject_sha256\tsize\n'
-    printf 'archive\tprobe.tar.gz\t%s\tstandard\tarchive\t\t\t\tobjects/probe\t%s\t%s\n' "$PROBE_SHA" "$PROBE_SHA" "$PROBE_SIZE"
-    printf 'member\tprobe.tar.gz\t%s\tstandard\tbinary\tcodebase-memory-mcp\t\t\tobjects/probe\t%s\t%s\n' "$PROBE_SHA" "$PROBE_SHA" "$PROBE_SIZE"
-    printf 'member\tprobe.tar.gz\t%s\tstandard\truntime\tLICENSE\t\t\tobjects/probe\t%s\t%s\n' "$PROBE_SHA" "$PROBE_SHA" "$PROBE_SIZE"
+    printf 'member\tprobe.tar.gz\t%s\tstandard\tbinary\tcodebase-memory-mcp\t\t\tobjects/probe\t%s\t%s\n' "$ARCHIVE_SHA" "$PROBE_SHA" "$PROBE_SIZE"
+    printf 'member\tprobe.tar.gz\t%s\tstandard\truntime\tLICENSE\t\t\tobjects/probe\t%s\t%s\n' "$ARCHIVE_SHA" "$PROBE_SHA" "$PROBE_SIZE"
     if [ "$1" = "two" ]; then
-      printf 'archive\tprobe2.zip\t%s\tstandard\tarchive\t\t\t\tobjects/probe2\t%s\t%s\n' "$PROBE2_SHA" "$PROBE2_SHA" "$PROBE2_SIZE"
+      printf 'member\tprobe2.zip\t%s\tstandard\truntime\tREADME.md\t\t\tobjects/probe2\t%s\t%s\n' "$ARCHIVE2_SHA" "$PROBE2_SHA" "$PROBE2_SIZE"
     fi
   } > "$FIX/work/binaries/associations.tsv"
 }
@@ -92,6 +94,15 @@ write_response one-suspicious 0 1 59 "$PROBE_SHA" "$PROBE_SIZE"
 write_response low-engines 0 0 49 "$PROBE_SHA" "$PROBE_SIZE"
 write_response wrong-hash 0 0 60 "$PROBE2_SHA" "$PROBE_SIZE"
 write_response wrong-size 0 0 60 "$PROBE_SHA" "$((PROBE_SIZE + 1))"
+
+cat > "$FIX/responses/upload-alias.json" <<EOF
+{"meta":{"file_info":{"sha256":"$PROBE_SHA","size":$PROBE_SIZE}},
+ "data":{"id":"canonical-analysis","type":"analysis","attributes":{"status":"completed",
+ "stats":{"malicious":0,"suspicious":0,"undetected":60,"harmless":0,
+          "timeout":0,"confirmed-timeout":0,"failure":0,"type-unsupported":0},
+ "results":{"Microsoft":{"category":"undetected","result":null,
+               "engine_version":"1.26070","engine_update":"20260808"}}}}}
+EOF
 
 cat > "$FIX/responses/named-engine.json" <<EOF
 {"meta":{"file_info":{"sha256":"$PROBE_SHA","size":$PROBE_SIZE}},
@@ -200,11 +211,16 @@ run_gate() { # action-output -> prints rc
 
 clean_output="binaries/objects/probe=$(url_for clean-analysis)"
 [ "$(run_gate "$clean_output")" = "0" ] || fail "clean exact scan must pass: $(cat "$FIX/last.log")"
+alias_output="binaries/objects/probe=$(url_for upload-alias)"
+[ "$(run_gate "$alias_output")" = "0" ] || \
+  fail "a content-bound canonical response alias must pass: $(cat "$FIX/last.log")"
 RESULTS="$FIX/work/binaries/vt-results.tsv"
 [ -f "$RESULTS" ] || fail "clean gate did not atomically publish its results manifest"
 grep -q '^# cbm-virustotal-results-v1$' "$RESULTS" || fail "results marker missing"
 grep -q "objects/probe.*$PROBE_SHA.*$PROBE_SIZE.*60" "$RESULTS" || \
   fail "results do not bind path/hash/size/actual engine count"
+grep -Fq 'upload-alias' "$RESULTS" || \
+  fail "results must retain the action's submitted analysis ID"
 
 for id in one-malicious one-suspicious; do
   [ "$(run_gate "binaries/objects/probe=$(url_for "$id")")" != "0" ] || \
@@ -233,7 +249,21 @@ done
 # The independently validated association rows, not a mutable summary cell,
 # decide whether an object is executable and therefore requires Microsoft.
 write_manifest one
-sed -i.bak 's/archive,binary,runtime/archive,runtime/' "$FIX/work/binaries/scan-set.tsv"
+sed -i.bak 's/binary,runtime/archive,binary,runtime/' "$FIX/work/binaries/scan-set.tsv"
+rm -f "$FIX/work/binaries/scan-set.tsv.bak"
+[ "$(run_gate "$clean_output")" != "0" ] || \
+  fail "archive container kinds must be rejected from the VirusTotal scan set"
+grep -q 'unassociated object in expected set' "$FIX/last.log" || \
+  fail "archive-container scan-set rejection is not diagnosable"
+write_manifest one
+sed -i.bak $'s/^member\t/archive\t/' "$FIX/work/binaries/associations.tsv"
+rm -f "$FIX/work/binaries/associations.tsv.bak"
+[ "$(run_gate "$clean_output")" != "0" ] || \
+  fail "archive containers must be rejected from the VirusTotal association set"
+grep -q 'malformed release association' "$FIX/last.log" || \
+  fail "archive-container association rejection is not diagnosable"
+write_manifest one
+sed -i.bak 's/binary,runtime/runtime/' "$FIX/work/binaries/scan-set.tsv"
 rm -f "$FIX/work/binaries/scan-set.tsv.bak"
 [ "$(run_gate "$clean_output")" != "0" ] || \
   fail "scan-set kinds that contradict association rows must block"

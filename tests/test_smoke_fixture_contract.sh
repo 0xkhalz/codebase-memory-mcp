@@ -419,19 +419,20 @@ require(
     "finalize while the activation callback still owns the guard",
 )
 require(
-    "scripts/ci/extract-release-archives.sh assets binaries" in release_workflow,
-    "release verification must use the canonical archive extractor",
+    'ARCHIVE_DIR="$RUNNER_TEMP/release-archives"' in release_workflow
+    and 'scripts/ci/extract-release-archives.sh "$ARCHIVE_DIR" binaries' in release_workflow,
+    "release verification must feed the canonical extractor from an isolated archive directory",
 )
 require(
-    "cbm-release-scan-associations-v2" in release_extractor
-    and "cbm-release-scan-set-v1" in release_extractor
+    "cbm-release-scan-associations-v3" in release_extractor
+    and "cbm-release-scan-set-v2" in release_extractor
     and "files_equal(candidate, existing.path)" in release_extractor
     and "parse_pack_assets" in release_extractor
     and "PACK_NAME.fullmatch" in release_extractor
     and "non-regular archive member" in release_extractor
     and "duplicate archive member" in release_extractor,
-    "release extraction must validate every exact archive/member/UI-asset association "
-    "and retain one exact-compared scan object per distinct byte sequence",
+    "release extraction must validate and hash every archive, then retain only exact "
+    "member/UI-asset associations and one scan object per distinct extracted byte sequence",
 )
 require(
     "MSYS2_ARG_CONV_EXCL='*'" in smoke_test

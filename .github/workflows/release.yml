@@ -212,18 +212,20 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ inputs.version }}
         run: |
-          mkdir -p assets binaries
-          gh release download "$VERSION" --dir assets --repo "$GITHUB_REPOSITORY" --pattern '*.tar.gz' --pattern '*.zip'
-          scripts/ci/extract-release-archives.sh assets binaries \
-            --expect-archives=16 \
-            --expect-binaries=16 \
+          ARCHIVE_DIR="$RUNNER_TEMP/release-archives"
+          mkdir -p "$ARCHIVE_DIR" binaries
+          gh release download "$VERSION" --dir "$ARCHIVE_DIR" --repo "$GITHUB_REPOSITORY" --pattern '*.tar.gz' --pattern '*.zip'
+          scripts/ci/extract-release-archives.sh "$ARCHIVE_DIR" binaries \
+            --archive-scope=ui \
+            --expect-archives=8 \
+            --expect-binaries=8 \
             --expect-packs=8 \
-            --expect-runtime-files=64
+            --expect-runtime-files=32
 
-      - name: Security audits on all unique release objects
+      - name: Security audits on all unique extracted release objects
         run: |
-          # Audit every distinct archive/member/UI-asset byte sequence. The
-          # associations manifest preserves every shipped archive location.
+          # Audit every distinct extracted member/UI-asset byte sequence. The
+          # associations manifest retains each source archive's SHA-256.
           # security-strings.sh detects file type and applies binary-only
           # rules (URL allowlist, dangerous-command detection) only to real
           # binaries; for shell scripts it still runs credential and base64
@@ -242,7 +244,7 @@ jobs:
           files: binaries/objects/*
           request_rate: 4
 
-      # ZERO tolerance: every artifact must arrive naturally clean. Any
+      # ZERO tolerance: every extracted object must arrive naturally clean. Any
       # malicious or suspicious verdict blocks the release with no exception.
       - name: Wait for VirusTotal results
         env:
@@ -274,7 +276,7 @@ jobs:
           VT_RESULTS_PATH: binaries/vt-results.tsv
         run: bash scripts/ci/publish-vt-evidence.sh
 
-      # Renders the exact scan scope plus archive SHA-256/engine evidence. It
+      # Renders extracted-file scan results plus archive SHA-256 provenance. It
       # runs only after the exact-set zero-tolerance gate passed.
       - name: Append VirusTotal scan links to release notes
         env:

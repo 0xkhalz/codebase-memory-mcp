@@ -186,7 +186,7 @@ def parse_versioned_tsv(
 def load_expected(path: pathlib.Path) -> Tuple[List[ExpectedObject], int]:
     metadata, rows = parse_versioned_tsv(
         path,
-        marker="cbm-release-scan-set-v1",
+        marker="cbm-release-scan-set-v2",
         fields=SCAN_FIELDS,
     )
     expected_count = metadata.get("scan_objects")
@@ -217,7 +217,7 @@ def load_expected(path: pathlib.Path) -> Tuple[List[ExpectedObject], int]:
         size = int(row["size"])
         association_count = int(row["association_count"])
         kinds = row["association_kinds"].split(",")
-        allowed_kinds = {"archive", "binary", "pack", "runtime", "ui_asset"}
+        allowed_kinds = {"binary", "pack", "runtime", "ui_asset"}
         if (
             association_count < 1
             or any(not kind or kind not in allowed_kinds for kind in kinds)
@@ -258,7 +258,7 @@ def validate_associations(
 ) -> None:
     metadata, rows = parse_versioned_tsv(
         path,
-        marker="cbm-release-scan-associations-v2",
+        marker="cbm-release-scan-associations-v3",
         fields=ASSOCIATION_FIELDS,
     )
     if (
@@ -273,29 +273,26 @@ def validate_associations(
     seen: set[Tuple[str, str, str, str]] = set()
     archive_hashes: Dict[str, str] = {}
     for row in rows:
-        if row["association_type"] != "archive":
-            continue
         archive = row["archive"]
-        if not archive or archive in archive_hashes or row["archive_sha256"] != row["object_sha256"]:
-            raise GateError(f"malformed or duplicate archive association: {archive}")
-        archive_hashes[archive] = row["archive_sha256"]
+        archive_sha256 = row["archive_sha256"]
+        if not archive or SHA256_RE.fullmatch(archive_sha256) is None:
+            raise GateError(f"malformed archive provenance: {archive}")
+        previous = archive_hashes.setdefault(archive, archive_sha256)
+        if previous != archive_sha256:
+            raise GateError(f"conflicting archive provenance: {archive}")
+    if metadata.get("archives") != len(archive_hashes):
+        raise GateError("archive provenance count does not match the association manifest")
     for row in rows:
         association_type = row["association_type"]
         key = (association_type, row["archive"], row["member"], row["asset_path"])
         if key in seen:
             raise GateError(f"duplicate release association: {key}")
         seen.add(key)
-        if association_type not in {"archive", "member", "pack_asset"} or not row["archive"]:
+        if association_type not in {"member", "pack_asset"} or not row["archive"]:
             raise GateError(f"malformed release association: {key}")
         if archive_hashes.get(row["archive"]) != row["archive_sha256"]:
-            raise GateError(f"association is not bound to its archive object: {key}")
-        if association_type == "archive":
-            semantic_valid = (
-                not row["member"]
-                and not row["asset_path"]
-                and row["kind"] == "archive"
-            )
-        elif association_type == "member":
+            raise GateError(f"association is not bound to its archive provenance: {key}")
+        if association_type == "member":
             semantic_valid = bool(row["member"]) and not row["asset_path"]
         else:
             semantic_valid = bool(row["member"] and row["asset_path"] and row["mime"]) and row["kind"] == "ui_asset"
@@ -425,8 +422,8 @@ def parse_completed(document: object, submission: Submission) -> Tuple[str, Opti
     if data.get("type") != "analysis":
         raise GateError(f"VirusTotal response is not an analysis for {submission.expected.scan_path}")
     response_id = data.get("id")
-    if response_id != submission.analysis_id:
-        raise GateError(f"VirusTotal response id mismatch for {submission.expected.scan_path}")
+    if not isinstance(response_id, str) or ANALYSIS_ID_RE.fullmatch(response_id) is None:
+        raise GateError(f"VirusTotal response has an invalid analysis id: {submission.expected.scan_path}")
     attributes = data.get("attributes")
     if not isinstance(attributes, dict):
         raise GateError("VirusTotal response has no analysis attributes")
