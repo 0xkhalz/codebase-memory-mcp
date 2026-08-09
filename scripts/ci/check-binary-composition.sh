@@ -147,6 +147,29 @@ resolve_elf_reader() {
 
 # Echoes the GNU_STACK flag field ("RWE", "RW", "rwx", "rw-"), empty if the
 # header is absent or unparseable.
+exec_load_bytes() {
+    # Total size of PT_LOAD segments carrying the execute bit. With
+    # -z separate-code the executable segment holds only code; without it the
+    # linker merges .rodata in, so this number balloons to nearly the whole file.
+    case "$ELF_READER_KIND" in
+    readelf)
+        # NOT strtonum(): that is a gawk extension, and CI's awk is mawk, where
+        # it is undefined -- the sum would silently be 0 and this gate would
+        # pass vacuously on exactly the artifacts it exists to catch. Emit the
+        # hex MemSiz fields and convert in the shell.
+        total=0
+        for hex in $("$ELF_READER" -lW "$1" 2>/dev/null |
+            awk '/^  LOAD/ && $0 ~ /R E/ { print $6 }'); do
+            total=$((total + 16#${hex#0x}))
+        done
+        echo "$total"
+        ;;
+    objdump)
+        echo unsupported
+        ;;
+    esac
+}
+
 gnu_stack_flags() {
     case "$ELF_READER_KIND" in
     readelf)
@@ -257,6 +280,32 @@ check_file() {
         esac
     else
         printf 'n/a  %-22s %s: executable-stack check is ELF-only\n' A1-noexec-stack "$token"
+    fi
+
+
+    # A1b — read-only DATA must not live in the executable mapping. GNU ld
+    # enables -z separate-code by default on x86-64 but NOT on aarch64, so the
+    # arm64 binaries shipped ONE R E PT_LOAD spanning the whole image: 259 MB of
+    # tree-sitter parse tables mapped executable while amd64 mapped the same
+    # bytes R only. Section flags said A, not AX -- the kernel applies SEGMENT
+    # permissions, so section flags were never the control. Heuristic on
+    # purpose: if executable segments cover most of the file, .rodata is in them.
+    if [ "$fmt" = elf ]; then
+        exec_bytes=$(exec_load_bytes "$file")
+        file_bytes=$(wc -c < "$file" | tr -d ' ')
+        if [ "$exec_bytes" = unsupported ]; then
+            printf 'n/a  %-22s %s: %s cannot report segment sizes\n' \
+                A1b-rodata-noexec "$token" "$ELF_READER_KIND"
+        elif [ "${exec_bytes:-0}" -gt 0 ] && [ "$file_bytes" -gt 0 ] &&
+            [ $((exec_bytes * 100 / file_bytes)) -gt 60 ]; then
+            report FAIL A1b-rodata-noexec "$token" \
+                "executable PT_LOAD segments cover $((exec_bytes * 100 / file_bytes))% of the file ($exec_bytes/$file_bytes bytes) — read-only data is mapped executable (link with -z separate-code)"
+        else
+            report PASS A1b-rodata-noexec "$token" \
+                "executable PT_LOAD segments cover $((exec_bytes * 100 / file_bytes))% of the file (read-only data is outside them)"
+        fi
+    else
+        printf 'n/a  %-22s %s: segment-permission check is ELF-only\n' A1b-rodata-noexec "$token"
     fi
 
     # A2 — test-only seams.
