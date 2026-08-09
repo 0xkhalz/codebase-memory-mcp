@@ -252,14 +252,21 @@ def index_and_count(binary, repo, cache):
     with McpServer(binary, cache_dir=cache) as s:
         s.initialize()
         resp = s.call_tool("index_repository", {"repo_path": repo}, timeout=180)
-        _, err = s.tool_text(resp)
+        index_txt, err = s.tool_text(resp)
         if err:
             return {"error": "index tools/call error: %r" % err}
         lp = s.call_tool("list_projects", {}, timeout=60)
         lp_txt, _ = s.tool_text(lp)
         projects = json.loads(lp_txt).get("projects") or []
         if not projects:
-            return {"error": "no project listed after index"}
+            # The count summary cannot explain a venue-specific empty listing;
+            # carry the index response and the cache contents into the log.
+            try:
+                cache_entries = sorted(os.listdir(cache))
+            except OSError as exc:
+                cache_entries = ["<listdir failed: %s>" % exc]
+            return {"error": "no project listed after index; index said %r; "
+                             "cache holds %r" % (index_txt[:400], cache_entries)}
         p = projects[0]
         out = {"name": p.get("name"), "nodes": p.get("nodes"),
                "edges": p.get("edges")}
