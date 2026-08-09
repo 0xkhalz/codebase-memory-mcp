@@ -75,6 +75,9 @@ CANONICAL_ARCHIVES = frozenset(
     [f"codebase-memory-mcp-{target}.tar.gz" for target in UNIX_TARGETS]
     + [f"codebase-memory-mcp-{target}.zip" for target in WINDOWS_TARGETS]
 )
+# One composition ships; the association column is retained so the schema stays
+# stable for the gate and release-notes consumers.
+RELEASE_VARIANT = "release"
 SAFE_LABEL = re.compile(r"[^A-Za-z0-9._-]+")
 SAFE_ASSET_PATH = re.compile(rb"\A[A-Za-z0-9._/-]+\Z")
 COUNT_OPTIONS = {
@@ -333,7 +336,6 @@ def add_association(
     association_type: str,
     archive: str,
     archive_sha256: str,
-    variant: str,
     kind: str,
     member: str = "",
     asset_path: str = "",
@@ -346,7 +348,7 @@ def add_association(
             "association_type": association_type,
             "archive": archive,
             "archive_sha256": archive_sha256,
-            "variant": variant,
+            "variant": RELEASE_VARIANT,
             "kind": kind,
             "member": member,
             "asset_path": asset_path,
@@ -383,7 +385,7 @@ def process_member(
     kind: str,
     archive_name: str,
     archive_sha256: str,
-    variant: str,
+    variant: str = RELEASE_VARIANT,
 ) -> None:
     scan_object = store.ingest_stream(
         source,
@@ -397,7 +399,6 @@ def process_member(
         association_type="member",
         archive=archive_name,
         archive_sha256=archive_sha256,
-        variant=variant,
         kind=kind,
         member=member,
     )
@@ -439,7 +440,6 @@ def process_tar(
                     kind=kinds[info.name],
                     archive_name=archive_name,
                     archive_sha256=archive_sha256,
-                    variant=variant,
                 )
         return kinds, total
 
@@ -482,7 +482,6 @@ def process_zip(
                     kind=kinds[info.filename],
                     archive_name=archive_name,
                     archive_sha256=archive_sha256,
-                    variant=variant,
                 )
         return kinds, total
 
@@ -555,9 +554,6 @@ def main(argv: Sequence[str]) -> None:
         archive_store = ObjectStore(pathlib.Path(temporary) / "archives")
         for archive_path in archive_paths:
             archive_name = archive_path.name
-            # One composition ships; the column is retained so the association
-            # schema stays stable for the release-notes and gate consumers.
-            variant = "release"
             archive_object = archive_store.ingest_path(
                 archive_path,
                 ceiling=MAX_ARCHIVE_BYTES,
