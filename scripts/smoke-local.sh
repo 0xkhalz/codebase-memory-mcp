@@ -22,9 +22,11 @@ destination override neutralized.
 Arguments:
   <binary>     Product binary to smoke (e.g. build/c/codebase-memory-mcp).
 
-One composition ships and it carries the embedded UI, so Phase 15's "no assets"
-outcome is always a FAILURE here (SMOKE_REQUIRE_UI=1): a binary built without
---with-ui cannot pass this smoke.
+Environment:
+  SMOKE_REQUIRE_UI=1   Phase 15's "no embedded assets" SKIP becomes a FAILURE.
+                       Set by scripts/ci/smoke-artifact.sh, which builds and
+                       packages the shipped --with-ui composition. Unset in the
+                       fast PR lane, which builds without the frontend.
 
 Environment:
   CBM_SMOKE_ARTIFACT_DIR   Release mode: an EXTRACTED release artifact
@@ -56,9 +58,12 @@ if [ ! -x "$BINARY" ]; then
     echo "smoke-local: binary is not executable: $BINARY" >&2
     exit 2
 fi
-# Every shipped binary carries the embedded UI, so Phase 15's documented
-# "no embedded assets" SKIP is always a failure here.
-REQUIRE_UI=1
+# Whether the UI must be present is the CALLER's claim, not this script's:
+# scripts/ci/smoke-artifact.sh builds --with-ui and packages the real archive, so
+# it sets SMOKE_REQUIRE_UI=1 and Phase 15's "no embedded assets" SKIP becomes a
+# FAILURE there. The fast PR lane deliberately builds without the frontend to
+# skip an npm build on every product PR, so it must not assert UI presence.
+REQUIRE_UI="${SMOKE_REQUIRE_UI:-0}"
 
 # Unset (the local + PR default): synthesize the release sidecars from this
 # checkout. Set: take them from an EXTRACTED release artifact, so the release

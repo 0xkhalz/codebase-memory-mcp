@@ -3506,10 +3506,12 @@ fi
 # ── Phase 15: UI HTTP server reachability ──
 # Only runs if the binary was built with embedded UI assets.
 #
-# SMOKE_REQUIRE_UI=1 (set by the wrappers for a -ui variant) makes the
-# no-assets outcome a FAILURE instead of a SKIP: a ui run that smoked a
-# standard binary under a ui name would otherwise pass green, and a skip that
-# cannot fail is not a gate.
+# SMOKE_REQUIRE_UI=1 makes the no-assets outcome a FAILURE instead of a SKIP.
+# scripts/ci/smoke-artifact.sh sets it because that lane builds --with-ui and
+# packages the real archive, so a binary serving no frontend is a defect there.
+# The fast PR lane builds without the frontend on purpose and leaves it unset --
+# a skip that cannot fail is not a gate, but neither is asserting a property the
+# lane deliberately does not produce.
 SMOKE_REQUIRE_UI="${SMOKE_REQUIRE_UI:-0}"
 smoke_ui_missing() {
   if [ "$SMOKE_REQUIRE_UI" = "1" ]; then

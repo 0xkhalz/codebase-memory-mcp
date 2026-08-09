@@ -73,9 +73,12 @@ case "$SMOKE_ARCH" in
 arm64 | amd64) ;;
 *) echo "vm-smoke: SMOKE_ARCH must be arm64 or amd64. Please consult --help." >&2; exit 2 ;;
 esac
-# Every shipped binary carries the embedded UI, so Phase 15's documented
-# "no embedded assets" SKIP is always a failure here.
-REQUIRE_UI=1
+# Whether the UI must be present is the CALLER's claim, not this script's:
+# scripts/ci/smoke-artifact.sh builds --with-ui and packages the real archive, so
+# it sets SMOKE_REQUIRE_UI=1 and Phase 15's "no embedded assets" SKIP becomes a
+# FAILURE there. The fast PR lane deliberately builds without the frontend to
+# skip an npm build on every product PR, so it must not assert UI presence.
+REQUIRE_UI="${SMOKE_REQUIRE_UI:-0}"
 
 PROFILE_ROOT="$(cygpath -u "$USERPROFILE")"
 SMOKE_DIR="$(mktemp -d "$PROFILE_ROOT/cbm-vm-smoke.XXXXXX")"

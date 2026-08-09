@@ -55,6 +55,9 @@ for arg in "$@"; do
 done
 [ -n "$GOOS" ] && [ -n "$GOARCH" ] || { usage >&2; exit 2; }
 UI_FLAG=(--with-ui)
+# This lane builds and packages the SHIPPED composition, so a binary that serves
+# no frontend is a defect here, not a documented skip.
+export SMOKE_REQUIRE_UI=1
 case "$GOARCH" in
 *-portable) BUILD_ARGS+=("STATIC=1") ;;
 esac
