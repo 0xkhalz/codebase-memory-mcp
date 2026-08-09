@@ -604,6 +604,390 @@ func TestMutationSnapshotCleanupFailurePreservesNativeResult(t *testing.T) {
 	}
 }
 
+func TestConcurrentRuntimePublishersAreSerialized(t *testing.T) {
+	root := t.TempDir()
+	firstSource := filepath.Join(root, "source-first")
+	secondSource := filepath.Join(root, "source-second")
+	destination := filepath.Join(root, "destination")
+	binary := "codebase-memory-mcp"
+	writeTestRuntimeSet(t, firstSource, binary, "first")
+	writeTestRuntimeSet(t, secondSource, binary, "second")
+
+	firstPaused := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondWaiting := make(chan struct{})
+	secondEnteredPublication := make(chan struct{})
+	firstResult := make(chan error, 1)
+	secondResult := make(chan error, 1)
+	var pauseOnce sync.Once
+	var waitOnce sync.Once
+	var enteredOnce sync.Once
+	priorObserver := runtimeSetLockWaitObserver
+	runtimeSetLockWaitObserver = func() {
+		waitOnce.Do(func() { close(secondWaiting) })
+	}
+	defer func() { runtimeSetLockWaitObserver = priorObserver }()
+
+	firstRenamer := func(sourcePath, destinationPath string) error {
+		if err := os.Rename(sourcePath, destinationPath); err != nil {
+			return err
+		}
+		// One file publishes now, so the mid-publication pause hooks the binary
+		// rename itself: the runtime lock is still held until publish returns.
+		if destinationPath == filepath.Join(destination, binary) {
+			pauseOnce.Do(func() {
+				close(firstPaused)
+				<-releaseFirst
+			})
+		}
+		return nil
+	}
+	secondRenamer := func(sourcePath, destinationPath string) error {
+		name := filepath.Base(destinationPath)
+		if filepath.Dir(destinationPath) == destination && name == binary {
+			enteredOnce.Do(func() { close(secondEnteredPublication) })
+		}
+		return os.Rename(sourcePath, destinationPath)
+	}
+
+	go func() {
+		firstResult <- publishRuntimeSetWithRecoveryAndRenamer(
+			firstSource,
+			destination,
+			binary,
+			verifyTestBinary,
+			firstRenamer,
+		)
+	}()
+	select {
+	case <-firstPaused:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first publisher did not reach the held publication gate")
+	}
+
+	go func() {
+		secondResult <- publishRuntimeSetWithRecoveryAndRenamer(
+			secondSource,
+			destination,
+			binary,
+			verifyTestBinary,
+			secondRenamer,
+		)
+	}()
+
+	concurrentPublication := false
+	var secondErr error
+	select {
+	case <-secondWaiting:
+		// The serialized implementation reaches this branch while the first
+		// publisher still owns the held publication gate.
+	case <-secondEnteredPublication:
+		concurrentPublication = true
+		select {
+		case secondErr = <-secondResult:
+		case <-time.After(5 * time.Second):
+			close(releaseFirst)
+			t.Fatal("concurrent second publisher did not finish")
+		}
+	case <-time.After(5 * time.Second):
+		close(releaseFirst)
+		t.Fatal("second publisher neither waited nor entered publication")
+	}
+	close(releaseFirst)
+
+	var firstErr error
+	select {
+	case firstErr = <-firstResult:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first publisher did not finish after its gate was released")
+	}
+	if !concurrentPublication {
+		select {
+		case secondErr = <-secondResult:
+		case <-time.After(5 * time.Second):
+			t.Fatal("serialized second publisher did not finish")
+		}
+	}
+	if concurrentPublication {
+		t.Fatal("second publisher entered publication while the first sequence was held")
+	}
+	if firstErr != nil {
+		t.Fatalf("first publisher failed: %v", firstErr)
+	}
+	if secondErr != nil {
+		t.Fatalf("serialized second publisher failed: %v", secondErr)
+	}
+	assertRuntimeTag(t, destination, binary, "first")
+}
+
+func TestKilledRuntimePublisherIsReconciledByLockedReadiness(t *testing.T) {
+	for _, testCase := range []struct {
+		name                  string
+		crashPhase            string
+		expectedReady         bool
+		expectedBackupMembers int
+		expectRetiredMarker   bool
+		expectCleanupMarker   bool
+	}{
+		{
+			name:                  "executable retired before other leaves",
+			crashPhase:            "retired-executable",
+			expectedReady:         false,
+			expectedBackupMembers: 1,
+		},
+		{
+			name:                  "all leaves retired before retirement marker",
+			crashPhase:            runtimeBackupBeforeMarkerEvent,
+			expectedReady:         false,
+			expectedBackupMembers: 1,
+		},
+		{
+			name:                  "complete publish before cleanup",
+			crashPhase:            "published-binary",
+			expectedReady:         true,
+			expectedBackupMembers: 1,
+			expectRetiredMarker:   true,
+		},
+		{
+			name:                  "cleanup interrupted after one retired member",
+			crashPhase:            runtimeBackupCleanupRemovedEvent,
+			expectedReady:         true,
+			expectedBackupMembers: 0,
+			expectRetiredMarker:   true,
+			expectCleanupMarker:   true,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			root := t.TempDir()
+			source := filepath.Join(root, "source")
+			destination := filepath.Join(root, "destination")
+			marker := filepath.Join(root, "crash-reached")
+			binary := "codebase-memory-mcp"
+			writeTestRuntimeSet(t, source, binary, "candidate")
+			writeTestRuntimeSet(t, destination, binary, "old")
+			if err := os.WriteFile(
+				filepath.Join(destination, binary), []byte("corrupt:old"), 0755,
+			); err != nil {
+				t.Fatal(err)
+			}
+
+			command := exec.Command(
+				os.Args[0], "-test.run=^TestRuntimePublicationCrashHelper$",
+			)
+			command.Env = append(
+				os.Environ(),
+				"CBM_TEST_RUNTIME_CRASH_HELPER=1",
+				"CBM_TEST_RUNTIME_CRASH_SOURCE="+source,
+				"CBM_TEST_RUNTIME_CRASH_DESTINATION="+destination,
+				"CBM_TEST_RUNTIME_CRASH_MARKER="+marker,
+				"CBM_TEST_RUNTIME_CRASH_PHASE="+testCase.crashPhase,
+			)
+			var stderr bytes.Buffer
+			command.Stderr = &stderr
+			if err := command.Start(); err != nil {
+				t.Fatal(err)
+			}
+			waitResult := make(chan error, 1)
+			go func() { waitResult <- command.Wait() }()
+			finished := false
+			defer func() {
+				if !finished {
+					_ = command.Process.Kill()
+					<-waitResult
+				}
+			}()
+
+			deadline := time.Now().Add(10 * time.Second)
+			for {
+				if _, err := os.Stat(marker); err == nil {
+					break
+				}
+				select {
+				case err := <-waitResult:
+					finished = true
+					t.Fatalf(
+						"publication helper exited before crash gate: %v: %s",
+						err, stderr.String(),
+					)
+				default:
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf(
+						"publication helper did not reach crash gate: %s",
+						stderr.String(),
+					)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+
+			entries, err := os.ReadDir(destination)
+			if err != nil {
+				t.Fatal(err)
+			}
+			backupCount := 0
+			for _, entry := range entries {
+				if runtimeBackupDirectoryName(entry.Name()) {
+					backupCount++
+					if !entry.IsDir() {
+						t.Fatal("killed publisher backup transaction is not a directory")
+					}
+					backupPath := filepath.Join(destination, entry.Name())
+					backupEntries, err := os.ReadDir(backupPath)
+					if err != nil {
+						t.Fatal(err)
+					}
+					memberCount := 0
+					for _, backupEntry := range backupEntries {
+						if runtimeBackupTargetName(backupEntry.Name(), binary) {
+							memberCount++
+						}
+					}
+					if memberCount != testCase.expectedBackupMembers {
+						t.Fatalf(
+							"backup member count at crash gate = %d, want %d",
+							memberCount, testCase.expectedBackupMembers,
+						)
+					}
+					for markerName, expected := range map[string]bool{
+						runtimeBackupRetired:     testCase.expectRetiredMarker,
+						runtimeBackupCleanupOnly: testCase.expectCleanupMarker,
+					} {
+						_, markerErr := os.Stat(filepath.Join(backupPath, markerName))
+						if expected && markerErr != nil {
+							t.Fatalf("expected backup marker %s is missing: %v", markerName, markerErr)
+						}
+						if !expected && !os.IsNotExist(markerErr) {
+							t.Fatalf("unexpected backup marker %s exists", markerName)
+						}
+					}
+				}
+			}
+			if backupCount != 1 {
+				t.Fatalf("killed publisher backup count = %d, want 1", backupCount)
+			}
+
+			if err := command.Process.Kill(); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-waitResult; err == nil {
+				t.Fatal("publication helper was not killed")
+			}
+			finished = true
+
+			ready, err := runtimeSetReadyLocked(
+				destination, binary, verifyTestBinary,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ready != testCase.expectedReady {
+				t.Fatalf(
+					"reconciled readiness = %v, want %v",
+					ready, testCase.expectedReady,
+				)
+			}
+			if !ready {
+				contents, err := os.ReadFile(filepath.Join(destination, binary))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(contents) != "corrupt:old" {
+					t.Fatalf("recovered prior binary = %q", contents)
+				}
+				if err := publishRuntimeSetWithRecovery(
+					source, destination, binary, verifyTestBinary,
+				); err != nil {
+					t.Fatal(err)
+				}
+			}
+			assertRuntimeTag(
+				t, destination, binary, "candidate",
+			)
+			entries, err = os.ReadDir(destination)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), runtimeBackupPrefix) {
+					t.Fatalf("orphan backup survived recovery: %s", entry.Name())
+				}
+			}
+			if _, err := os.Stat(filepath.Join(
+				destination, runtimeSetLockName,
+			)); !os.IsNotExist(err) {
+				t.Fatal("runtime-set lock survived killed-process recovery")
+			}
+		})
+	}
+}
+
+func TestRuntimePublicationCrashHelper(t *testing.T) {
+	if os.Getenv("CBM_TEST_RUNTIME_CRASH_HELPER") != "1" {
+		return
+	}
+	source := os.Getenv("CBM_TEST_RUNTIME_CRASH_SOURCE")
+	destination := os.Getenv("CBM_TEST_RUNTIME_CRASH_DESTINATION")
+	marker := os.Getenv("CBM_TEST_RUNTIME_CRASH_MARKER")
+	crashPhase := os.Getenv("CBM_TEST_RUNTIME_CRASH_PHASE")
+	binary := "codebase-memory-mcp"
+	reachCrashGate := func() error {
+		if err := os.WriteFile(marker, []byte("reached\n"), 0600); err != nil {
+			return err
+		}
+		for {
+			time.Sleep(time.Hour)
+		}
+	}
+	priorCrashObserver := runtimeBackupCrashObserver
+	defer func() { runtimeBackupCrashObserver = priorCrashObserver }()
+	runtimeBackupCrashObserver = func(event, _ string) error {
+		if event == crashPhase {
+			return reachCrashGate()
+		}
+		return nil
+	}
+	renameFile := func(sourcePath, destinationPath string) error {
+		if err := os.Rename(sourcePath, destinationPath); err != nil {
+			return err
+		}
+		backupParent := filepath.Base(filepath.Dir(destinationPath))
+		if crashPhase == "retired-executable" &&
+			runtimeBackupDirectoryName(backupParent) &&
+			filepath.Base(destinationPath) == binary {
+			return reachCrashGate()
+		}
+		if crashPhase == "published-binary" &&
+			destinationPath == filepath.Join(destination, binary) {
+			return reachCrashGate()
+		}
+		return nil
+	}
+	if err := publishRuntimeSetWithRecoveryAndRenamer(
+		source,
+		destination,
+		binary,
+		verifyTestBinary,
+		renameFile,
+	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRuntimeReadinessRejectsMultiplyLinkedLeaves(t *testing.T) {
+	directory := t.TempDir()
+	binary := "codebase-memory-mcp"
+	writeTestRuntimeSet(t, directory, binary, "linked")
+	if err := os.Link(
+		filepath.Join(directory, binary),
+		filepath.Join(directory, "binary-hardlink"),
+	); err != nil {
+		t.Skipf("filesystem does not support hard links: %v", err)
+	}
+	if runtimeSetReady(directory, binary, verifyTestBinary) {
+		t.Fatal("runtime set accepted a multiply-linked binary leaf")
+	}
+}
+
 func TestRuntimeSetLockReclaimsOnlyDefinitelyDeadOwner(t *testing.T) {
 	destination := t.TempDir()
 	lockPath := filepath.Join(destination, runtimeSetLockName)
