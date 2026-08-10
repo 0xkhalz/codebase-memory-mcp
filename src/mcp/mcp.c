@@ -636,16 +636,19 @@ static const tool_def_t TOOLS[] = {
      "use scopes before negative/exhaustive claims because fully skipped files cannot appear in "
      "normal graph results. Returns coverage status separately from filesystem metadata freshness, "
      "plus structured parse-error ranges and direct-source fallback actions. The signal is "
-     "best-effort: indexed_no_recorded_gap is not a completeness guarantee.",
+     "best-effort: indexed_no_recorded_gap is not a completeness guarantee. At least one of "
+     "'paths' or 'scopes' is required; the call is rejected at runtime if both are omitted.",
      "{\"type\":\"object\",\"properties\":{"
      "\"project\":{\"type\":\"string\"},"
      "\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"maxItems\":128,"
-     "\"description\":\"Repository-relative files to check exactly.\"},"
+     "\"description\":\"Repository-relative files to check exactly. Required if 'scopes' is "
+     "omitted.\"},"
      "\"scopes\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"maxItems\":32,"
-     "\"description\":\"Repository-relative path prefixes; use . for the project root.\"},"
+     "\"description\":\"Repository-relative path prefixes; use . for the project root. Required "
+     "if 'paths' is omitted.\"},"
      "\"scope_limit\":{\"type\":\"integer\",\"default\":200,\"minimum\":1,\"maximum\":1000},"
      "\"scope_offset\":{\"type\":\"integer\",\"default\":0,\"minimum\":0}},"
-     "\"required\":[\"project\"],\"anyOf\":[{\"required\":[\"paths\"]},{\"required\":[\"scopes\"]}]"
+     "\"required\":[\"project\"]"
      "}"},
 
     {"detect_changes", "Detect changes",
