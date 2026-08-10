@@ -378,8 +378,13 @@ def main():
                 else:
                     # The MCP result hides the pipeline's own diagnostics; the
                     # CLI entrypoint prints them. Same repo, third fresh cache.
+                    cli_cache = os.path.join(work, "c3_" + key)
                     cli_env = os.environ.copy()
-                    cli_env["CBM_CACHE_DIR"] = os.path.join(work, "c3_" + key)
+                    cli_env["CBM_CACHE_DIR"] = cli_cache
+                    # CBM_PROFILE keeps the supervisor from unlinking the worker
+                    # log on a clean exit (index.supervisor.profile_log), which
+                    # is the only record of the pipeline's own diagnostics.
+                    cli_env["CBM_PROFILE"] = "1"
                     cli = subprocess.run(
                         [binary, "cli", "index_repository",
                          json.dumps({"repo_path": repo})],
@@ -389,6 +394,16 @@ def main():
                     print("       %s cli probe rc=%s\n       stdout: %s\n"
                           "       stderr: %s" % (key, cli.returncode,
                                                  cli_out[-900:], cli_err[-900:]))
+                    probe_logs = os.path.join(cli_cache, "logs")
+                    if os.path.isdir(probe_logs):
+                        for log_name in sorted(os.listdir(probe_logs)):
+                            try:
+                                with open(os.path.join(probe_logs, log_name), "rb") as lf:
+                                    tail = lf.read()[-1500:].decode("utf-8", "replace")
+                            except OSError as exc:
+                                tail = "<unreadable: %s>" % exc
+                            print("       %s worker log %s:\n%s"
+                                  % (key, log_name, tail))
                 failures.append(key)
     finally:
         shutil.rmtree(work, ignore_errors=True)
