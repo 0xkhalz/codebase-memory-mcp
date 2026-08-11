@@ -335,8 +335,17 @@ jobs:
         # A prerelease must never become npm `latest` — plain `npm install`
         # would serve the RC to everyone. Publish prereleases under the
         # `next` dist-tag; testers opt in via `npm i codebase-memory-mcp@next`.
+        #
+        # Idempotency: npm versions are immutable, so a re-run of this job
+        # after a partial success (v0.10.1: npm published, then the twine
+        # step died) can never republish — it 403s on its own earlier
+        # success and the release wedges in draft forever. If the exact
+        # version already exists on the registry, publishing is DONE; skip.
         run: |
-          if [[ "$RELEASE_VERSION" == *-* ]]; then
+          V="${RELEASE_VERSION#v}"
+          if npm view "codebase-memory-mcp@$V" version >/dev/null 2>&1; then
+            echo "npm already has codebase-memory-mcp@$V — skipping publish (idempotent re-run)"
+          elif [[ "$RELEASE_VERSION" == *-* ]]; then
             npm publish --access public --provenance --tag next
           else
             npm publish --access public --provenance
@@ -354,15 +363,25 @@ jobs:
           # Pin to specific versions (typosquatting / supply-chain mitigation).
           # OSSF scorecard prefers --require-hashes, but that needs full
           # transitive deps; version pinning is the practical compromise.
-          python -m pip install --upgrade 'build==1.3.0' 'twine==6.2.0'
+          #
+          # twine >= 7 is required: `python -m build` resolves the UNPINNED
+          # hatchling backend fresh in its isolated env, and current hatchling
+          # emits Metadata-Version 2.5, which twine 6.2.0 rejects as invalid
+          # ("'2.5' is not a valid metadata version" — the v0.10.1 failure).
+          # Verified locally: identical artifacts, 6.2.0 rejects / 7.0.0 passes.
+          python -m pip install --upgrade 'build==1.3.0' 'twine==7.0.0'
           python -m build
+          twine check dist/*
 
       - name: Publish to PyPI
         working-directory: pkg/pypi
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
-        run: twine upload --non-interactive dist/*
+        # --skip-existing: PyPI files are immutable like npm versions; a
+        # re-run after partial success must treat already-uploaded files
+        # as done, not as a fatal collision.
+        run: twine upload --non-interactive --skip-existing dist/*
 
   # ── 8b. Publish server.json to the official MCP Registry ──────
   # Runs after npm + PyPI so the registry can verify package ownership
