@@ -311,9 +311,25 @@ require(
     and "& $args[1]" not in smoke_test,
     "Windows Phase 13 must execute install.ps1 directly with native paths",
 )
+# A count cannot tell "we still have four curls" from "every curl is safe" — it
+# passed while a loopback UI probe carried no --noproxy at all, which is the
+# exact failure this rule exists to prevent (an ambient http_proxy makes a
+# 127.0.0.1 request leave the machine). Assert the property on every invocation
+# instead, so adding or removing a curl cannot silently satisfy the rule.
+unproxied_curls = [
+    line.strip()
+    for line in smoke_test.splitlines()
+    # An invocation starts a command: line start, or after ; & | ( or `if`/`then`
+    # etc. Mentions inside echo/comment strings are not invocations.
+    if re.search(r"(?:^|[;&|(]|\b(?:if|then|else|do|not)\s)\s*curl\s", line)
+    and not line.lstrip().startswith("#")
+    and not re.search(r"echo\s", line.split("curl")[0])
+    and "--noproxy" not in line
+]
 require(
-    smoke_test.count("--noproxy '*'") >= 4,
-    "all loopback release-fixture curl requests must bypass ambient proxies",
+    not unproxied_curls,
+    "every curl in the smoke fixture must bypass ambient proxies (--noproxy '*'): "
+    + "; ".join(unproxied_curls[:3]),
 )
 require(
     "/tmp/cbm-curl12a.err" not in smoke_test

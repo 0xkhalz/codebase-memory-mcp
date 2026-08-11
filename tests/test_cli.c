@@ -1383,8 +1383,8 @@ TEST(cli_update_download_failure_does_not_quiesce_sessions) {
     };
     cbm_cli_activation_ops_t ops = cli_activation_fake_ops(&fake);
     cbm_cli_set_activation_ops_for_test(&ops);
-    char *argv[] = {"--force", "--standard", "--yes"};
-    int rc = cli_test_cmd_update(3, argv);
+    char *argv[] = {"--force", "--yes"};
+    int rc = cli_test_cmd_update(2, argv);
     cbm_cli_set_activation_ops_for_test(NULL);
     cbm_set_auto_answer_for_test(0);
 
@@ -1444,7 +1444,7 @@ TEST(cli_update_already_current_does_not_quiesce_sessions) {
     };
     cbm_cli_activation_ops_t ops = cli_activation_fake_ops(&fake);
     cbm_cli_set_activation_ops_for_test(&ops);
-    char *argv[] = {"--standard"};
+    char *argv[] = {"--yes"};
     int rc = fixture_ready ? cli_test_cmd_update(1, argv) : -1;
     cbm_cli_set_activation_ops_for_test(NULL);
 
@@ -1576,8 +1576,8 @@ TEST(cli_update_agent_configs_finish_before_guard_release) {
     };
     cbm_cli_activation_ops_t ops = cli_activation_fake_ops(&fake);
     cbm_cli_set_activation_ops_for_test(&ops);
-    char *argv[] = {"--force", "--standard"};
-    int rc = cli_test_cmd_update(2, argv);
+    char *argv[] = {"--force"};
+    int rc = cli_test_cmd_update(1, argv);
     cbm_cli_set_activation_ops_for_test(NULL);
 
     /* Re-run against a known old target while one independently detected agent
@@ -1599,7 +1599,7 @@ TEST(cli_update_agent_configs_finish_before_guard_release) {
     };
     cbm_cli_activation_ops_t failure_ops = cli_activation_fake_ops(&config_failure);
     cbm_cli_set_activation_ops_for_test(&failure_ops);
-    int config_failure_rc = cli_test_cmd_update(2, argv);
+    int config_failure_rc = cli_test_cmd_update(1, argv);
     cbm_cli_set_activation_ops_for_test(NULL);
     struct stat updated_status;
     bool replacement_kept = stat(bin_target, &updated_status) == 0 &&
@@ -1767,11 +1767,11 @@ TEST(cli_activation_guard_is_bypassed_for_dry_run_and_plan) {
     cbm_cli_set_activation_ops_for_test(&ops);
     char *install_dry[] = {"--force", "--dry-run"};
     char *install_plan[] = {"--force", "--plan"};
-    char *update_dry[] = {"--force", "--dry-run", "--standard"};
+    char *update_dry[] = {"--force", "--dry-run"};
     char *uninstall_dry[] = {"--dry-run", "--yes"};
     int install_dry_rc = cli_test_cmd_install(2, install_dry);
     int install_plan_rc = cli_test_cmd_install(2, install_plan);
-    int update_dry_rc = cli_test_cmd_update(3, update_dry);
+    int update_dry_rc = cli_test_cmd_update(2, update_dry);
     int uninstall_dry_rc = cli_test_cmd_uninstall(2, uninstall_dry);
     cbm_cli_set_activation_ops_for_test(NULL);
     cbm_set_auto_answer_for_test(0);
