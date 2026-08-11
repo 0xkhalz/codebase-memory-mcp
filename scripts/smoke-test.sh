@@ -1166,7 +1166,7 @@ if ! echo "$UNINSTALL_OUT" | grep -qi 'uninstall\|remov'; then
 fi
 echo "OK: uninstall --dry-run completed"
 
-# 6c: update --dry-run --standard -y
+# 6c: update --dry-run -y
 # The product binary never replaces itself on ANY platform. `update` is a
 # handoff: it prints the shipped install script's command and exits 0. An
 # in-process updater is structurally a downloader -- fetch archive, extract,
@@ -1178,7 +1178,7 @@ if [[ "$BINARY" == *.exe ]]; then
 else
   UPDATE_SCRIPT="install.sh"
 fi
-if ! UPDATE_OUT=$(run_dryrun_env "$BINARY" update --dry-run --standard -y 2>&1); then
+if ! UPDATE_OUT=$(run_dryrun_env "$BINARY" update --dry-run -y 2>&1); then
   echo "FAIL: update handoff exited non-zero"
   echo "$UPDATE_OUT"
   exit 1
@@ -3002,7 +3002,7 @@ echo "OK 9b-8: double uninstall doesn't crash"
 retire_account_daemon "9b-8-cleanup"
 smoke_rmtree "$DBL_HOME"
 
-# 9b-9: Non-interactive update without --standard/--ui should fail cleanly (not hang)
+# 9b-9: Non-interactive update must not hang (no variant prompt exists since #1538)
 if [ "$(uname -s)" != "MINGW64_NT" ] 2>/dev/null; then
   NONINT_OUT=$(echo "" | "$BINARY" update --dry-run 2>&1) || true
   if echo "$NONINT_OUT" | grep -qi 'terminal\|requires.*flag\|error'; then
@@ -3226,11 +3226,7 @@ if [ -n "${SMOKE_DOWNLOAD_URL:-}" ]; then
     'import json, os; print(json.dumps({"mcpServers":{"codebase-memory-mcp":{"command":os.environ["STALE_CMD"]}}}))' \
     > "$UPDATE_HOME/.claude.json"
 
-  # 14a: Run actual update command (detect variant from available archive)
-  UPDATE_VARIANT="--standard"
-  if curl --noproxy '*' -sf "$SMOKE_DOWNLOAD_URL/" 2>/dev/null | grep -q "ui-"; then
-    UPDATE_VARIANT="--ui"
-  fi
+  # 14a: Run actual update command (one composition ships — no variant flag)
   UPDATE_LOG=$(smoke_mktemp_file)
   # Hash the driver BEFORE the run and compare it against itself afterwards.
   # Comparing against "$BINARY" instead looks equivalent but is not: the POSIX
@@ -3238,7 +3234,7 @@ if [ -n "${SMOKE_DOWNLOAD_URL:-}" ]; then
   # is ever invoked and the assertion fires on a difference the fixture created.
   UPDATE_BIN_SHA_BEFORE=$(smoke_file_sha256 "$UPDATE_DRIVER")
   HOME="$UPDATE_HOME" CBM_DOWNLOAD_URL="$UPDATE_DOWNLOAD_URL" \
-    "$UPDATE_DRIVER" update $UPDATE_VARIANT -y > "$UPDATE_LOG" 2>&1
+    "$UPDATE_DRIVER" update -y > "$UPDATE_LOG" 2>&1
   UPDATE_RC=$?
   cat "$UPDATE_LOG"
 
@@ -3657,13 +3653,13 @@ UI_PID=$!
 UI_READY=0
 for _ in $(seq 1 150); do
   if ! kill -0 "$UI_PID" 2>/dev/null; then break; fi
-  if curl -sf "http://127.0.0.1:$UI_PORT/" -o /dev/null 2>/dev/null; then UI_READY=1; break; fi
+  if curl --noproxy '*' -sf "http://127.0.0.1:$UI_PORT/" -o /dev/null 2>/dev/null; then UI_READY=1; break; fi
   sleep 0.2
 done
 
 if [ "$UI_READY" -eq 1 ] || kill -0 "$UI_PID" 2>/dev/null; then
   # 15a: GET / returns 200 with HTML content
-  UI_BODY=$(curl -sf "http://127.0.0.1:$UI_PORT/" 2>/dev/null || echo "")
+  UI_BODY=$(curl --noproxy '*' -sf "http://127.0.0.1:$UI_PORT/" 2>/dev/null || echo "")
   if echo "$UI_BODY" | grep -qi "<html"; then
     echo "OK 15a: UI serves HTML at /"
   elif [ -z "$UI_BODY" ]; then
@@ -3679,7 +3675,7 @@ if [ "$UI_READY" -eq 1 ] || kill -0 "$UI_PID" 2>/dev/null; then
   # old probe POSTed an MCP initialize at /rpc, but the UI's /rpc speaks the
   # UI's own narrow query protocol, not MCP — the probe asserted a request
   # the endpoint never answered; protocol depth belongs to the UI guards.)
-  RPC_BODY=$(curl -sf "http://127.0.0.1:$UI_PORT/api/ui-config" 2>/dev/null || echo "")
+  RPC_BODY=$(curl --noproxy '*' -sf "http://127.0.0.1:$UI_PORT/api/ui-config" 2>/dev/null || echo "")
   if echo "$RPC_BODY" | grep -q "{"; then
     echo "OK 15b: /api/ui-config returns JSON"
   elif [ -z "$RPC_BODY" ]; then
