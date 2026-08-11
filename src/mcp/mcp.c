@@ -2156,9 +2156,34 @@ static cbm_store_t *resolve_store_internal(cbm_mcp_server_t *srv, const char *pr
             }
 
             /* The lease may have waited behind a publisher. Re-open and trust
-             * only the current generation, never the stale pre-wait verdict. */
+             * only the current generation, never the stale pre-wait verdict.
+             * Use the verdict API here — this is the point that decides whether
+             * a healthy DB gets quarantined. The plain bool check cannot tell
+             * corruption from a transient SQLITE_BUSY race (#1206: concurrent
+             * instances quarantining each other's DBs) and does not run
+             * quick_check, so page-torn DBs with an intact projects table sail
+             * through (#1037). Only a confirmed CORRUPT verdict is quarantined;
+             * TRANSIENT (lock/IO) falls through and retries on next access. */
             srv->store = cbm_store_open_path_query(path);
-            bool current_valid = srv->store && cbm_store_check_integrity(srv->store);
+            cbm_integrity_verdict_t verdict = srv->store
+                                                  ? cbm_store_check_integrity_verdict(srv->store)
+                                                  : CBM_INTEGRITY_TRANSIENT;
+            bool current_valid = (verdict == CBM_INTEGRITY_OK);
+            if (verdict == CBM_INTEGRITY_TRANSIENT) {
+                /* The DB could not be conclusively evaluated (lock contention,
+                 * busy writer, IO hiccup). Do NOT quarantine — close and let
+                 * the next resolve retry. A spurious quarantine here is exactly
+                 * what destroys healthy DBs under concurrent access. */
+                cbm_store_close(srv->store);
+                srv->store = NULL;
+                if (recovery_status) {
+                    *recovery_status = STORE_RECOVERY_BUSY;
+                }
+                if (!mutation_already_held) {
+                    mcp_project_mutation_end(srv, project);
+                }
+                return NULL;
+            }
             if (!current_valid) {
                 cbm_store_close(srv->store);
                 srv->store = NULL;
