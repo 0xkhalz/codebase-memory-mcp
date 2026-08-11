@@ -137,6 +137,11 @@ for relative, source in (
 # Unix fixtures mirror the release archive surface and Linux update aliases.
 for name in ("LICENSE", "install.sh", "THIRD_PARTY_NOTICES.md"):
     require(name in smoke_local, f"smoke-local.sh archive must include {name}")
+install_script = read("install.sh")
+require(
+    'tar --no-same-owner -xzf "$DLDIR/$ARCHIVE" -C "$DLDIR"' in install_script,
+    "install.sh must not preserve release-builder ownership when extracting tar archives",
+)
 # One composition ships, so there is one archive name and no variant alias.
 require(
     "codebase-memory-mcp-${OS}-${ARCH}.tar.gz" in smoke_local

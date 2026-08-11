@@ -225,7 +225,7 @@ echo "Extracting..."
 if [ "$EXT" = "zip" ]; then
     unzip -q "$DLDIR/$ARCHIVE" -d "$DLDIR"
 else
-    tar -xzf "$DLDIR/$ARCHIVE" -C "$DLDIR"
+    tar --no-same-owner -xzf "$DLDIR/$ARCHIVE" -C "$DLDIR"
 fi
 
 DLBIN="$DLDIR/codebase-memory-mcp"
