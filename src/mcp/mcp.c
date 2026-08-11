@@ -301,35 +301,32 @@ char *cbm_mcp_text_result(const char *text, bool is_error) {
             yyjson_doc_free(structured_doc);
         }
     }
-    if (!has_structured_content) {
-        /* Every advertised MCP tool declares an object outputSchema, so a
-         * conforming structuredContent object is mandatory even for compact
-         * TOON/plain-text and error results. What is NOT mandatory is putting
-         * the whole payload in it a second time.
+    if (!has_structured_content && is_error) {
+        /* structuredContent has now been wrong in both directions, so the rule
+         * is spelled out here in full:
          *
-         * It used to. For any result that is not a JSON object — which is every
-         * TOON answer, i.e. the large ones — structuredContent was
-         * {"text": <the entire payload>} sitting beside an identical
-         * content[0].text. Measured at 2.05x the payload on a 20k-node
-         * query_graph, so half of every reply was redundant bytes: half the
-         * usable transport budget, and double the tokens billed to every LLM
-         * caller (#1375).
+         *   - JSON-object payload  -> structuredContent = the PARSED object
+         *     (the branch above; the spec's structured+serialized pattern).
+         *   - error                -> structuredContent = {"error": <text>} —
+         *     bounded, small, and the only machine-readable failure form.
+         *   - anything else       -> NO structuredContent key at all.
          *
-         * Nothing is lost by dropping it. structuredContent exists to carry
-         * STRUCTURE, and a string re-wrapped in a one-key object has none —
-         * a client parsing structuredContent.text learns exactly what
-         * content[0].text already told it. The empty object still satisfies
-         * outputSchema ({"type":"object","additionalProperties":true}), and the
-         * JSON branch above is untouched: when a tool really does return an
-         * object, callers still get it parsed.
+         * Pre-#1488 the "anything else" case duplicated the payload verbatim
+         * ({"text": <payload>} beside an identical content[0].text — 2.05x the
+         * bytes on a 20k-node query_graph, #1375). #1488 replaced that with an
+         * EMPTY object on the theory that it "still satisfies outputSchema" —
+         * but clients that honor a declared outputSchema treat structuredContent
+         * as THE authoritative result, so every tree-format reply rendered as
+         * literally "{}" in Claude Code and friends (#1522). An empty object
+         * beside a non-empty payload is not conservative; it is a wrong answer.
          *
-         * Errors keep their payload. They are bounded and small, the duplication
-         * costs nothing measurable, and structuredContent.error is the only
-         * machine-readable form of a failure a client has. */
+         * The key is therefore OMITTED for text-shaped payloads, and no tool
+         * declares an outputSchema anymore (see mcp_add_tool_def): output is
+         * format-parameter-polymorphic, so a static schema was never truthful.
+         * tests/test_mcp.c binds all three branches; scripts/smoke-test.sh
+         * asserts the same contract on the shipped binary. */
         yyjson_mut_val *structured = yyjson_mut_obj(doc);
-        if (is_error) {
-            yyjson_mut_obj_add_str(doc, structured, "error", text ? text : "");
-        }
+        yyjson_mut_obj_add_str(doc, structured, "error", text ? text : "");
         yyjson_mut_obj_add_val(doc, root, "structuredContent", structured);
     }
     yyjson_mut_obj_add_bool(doc, root, "isError", is_error);
@@ -693,8 +690,6 @@ static const tool_def_t TOOLS[] = {
 
 static const int TOOL_COUNT = sizeof(TOOLS) / sizeof(TOOLS[0]);
 
-static const char MCP_TOOL_OUTPUT_SCHEMA[] = "{\"type\":\"object\",\"additionalProperties\":true}";
-
 typedef struct {
     const char *name;
     bool read_only;
@@ -752,7 +747,13 @@ static void mcp_add_tool_def(yyjson_mut_doc *doc, yyjson_mut_val *tools, int i) 
     yyjson_mut_obj_add_str(doc, tool, "description", TOOLS[i].description);
 
     mcp_add_json_schema(doc, tool, "inputSchema", TOOLS[i].input_schema);
-    mcp_add_json_schema(doc, tool, "outputSchema", MCP_TOOL_OUTPUT_SCHEMA);
+    /* Deliberately NO outputSchema. Tool output is format-parameter-polymorphic
+     * (tree text by default, a JSON object under format:"json"), so no static
+     * schema is truthful — and a declared schema makes spec-honoring clients
+     * read structuredContent as the authoritative result, which is exactly how
+     * the empty-object regression rendered every tree reply as "{}" (#1522).
+     * The blanket {"type":"object","additionalProperties":true} it replaced
+     * validated anything and informed nobody. */
 
     const tool_annotation_def_t *def = mcp_tool_annotations(TOOLS[i].name);
     yyjson_mut_val *annotations = yyjson_mut_obj(doc);
