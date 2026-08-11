@@ -129,15 +129,24 @@ jobs:
           merge-multiple: true
 
       - name: List artifacts
-        run: ls -la *.tar.gz *.zip
+        run: ls -la *.tar.gz *.zip *.mcpb
 
       - name: Generate checksums
-        run: sha256sum *.tar.gz *.zip > checksums.txt
+        run: sha256sum *.tar.gz *.zip *.mcpb > checksums.txt
 
       - name: Attest checksum provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-path: checksums.txt
+
+      # publish-mcp-registry reads the *.mcpb sha256 lines from here — a
+      # same-run workflow artifact, not a draft-release download, so that
+      # job keeps contents: read and no gh dependency.
+      - name: Preserve checksums for the registry job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-checksums
+          path: checksums.txt
 
       # SBOM content lives in the canonical scripts/ci entry, not inline YAML
       # (venue-parity contract): vendored versions are reviewable there.
@@ -155,7 +164,7 @@ jobs:
 
       - name: Sign artifacts
         run: |
-          for f in *.tar.gz *.zip checksums.txt; do
+          for f in *.tar.gz *.zip *.mcpb checksums.txt; do
             cosign sign-blob --yes --bundle "${f}.bundle" "$f"
           done
 
@@ -187,6 +196,7 @@ jobs:
           files: |
             *.tar.gz
             *.zip
+            *.mcpb
             checksums.txt
             sbom.json
             *.bundle
@@ -214,11 +224,14 @@ jobs:
         run: |
           ARCHIVE_DIR="$RUNNER_TEMP/release-archives"
           mkdir -p "$ARCHIVE_DIR" binaries
-          gh release download "$VERSION" --dir "$ARCHIVE_DIR" --repo "$GITHUB_REPOSITORY" --pattern '*.tar.gz' --pattern '*.zip'
+          gh release download "$VERSION" --dir "$ARCHIVE_DIR" --repo "$GITHUB_REPOSITORY" --pattern '*.tar.gz' --pattern '*.zip' --pattern '*.mcpb'
+          # 14 = 8 archives + 6 MCPB bundles; runtime 42 = 8×3 archive
+          # sidecars + 6×3 bundle members (manifest.json, LICENSE, notices).
+          # The bundle binaries dedupe to the archive objects byte-for-byte.
           scripts/ci/extract-release-archives.sh "$ARCHIVE_DIR" binaries \
-            --expect-archives=8 \
-            --expect-binaries=8 \
-            --expect-runtime-files=24
+            --expect-archives=14 \
+            --expect-binaries=14 \
+            --expect-runtime-files=42
 
       - name: Security audits on all unique extracted release objects
         run: |
@@ -418,6 +431,20 @@ jobs:
           jq --arg v "$VERSION" '.version = $v | (.packages[].version) = $v' \
             server.json > server.tmp && mv server.tmp server.json
           echo "server.json pinned to $VERSION"
+
+      # The MCPB entries need each bundle's sha256; checksums.txt comes from
+      # the release-draft job as a same-run artifact (not a draft-release
+      # download — that would need contents beyond read plus gh).
+      - name: Fetch release checksums
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-checksums
+
+      - name: Append MCPB package entries to server.json
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          scripts/ci/gen-mcpb-registry-entries.sh server.json checksums.txt "$RELEASE_VERSION"
           cat server.json
 
       - name: Install mcp-publisher
