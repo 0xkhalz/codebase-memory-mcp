@@ -11482,16 +11482,30 @@ int cbm_cmd_update(int argc, char **argv) {
 
     bool dry_run = false;
     bool force = false;
+    bool legacy_variant_flag = false;
     for (int i = 0; i < argc; i++) {
         if (strcmp(argv[i], "--dry-run") == 0) {
             dry_run = true;
         } else if (strcmp(argv[i], "--force") == 0) {
             force = true;
+        } else if (strcmp(argv[i], "--ui") == 0 || strcmp(argv[i], "--standard") == 0) {
+            /* v0.10.2 deleted the ui/standard chooser and, with it, these flags —
+             * which turned `update --ui` from a working command into a hard
+             * error for everyone who had it in a script, an alias, or muscle
+             * memory (#1544). Removing a CHOICE is fine; removing the WORDS
+             * people type is a break we owe them nothing for. Accept both,
+             * ignore them, and say once why they no longer mean anything. */
+            legacy_variant_flag = true;
         } else if (strcmp(argv[i], "-y") != 0 && strcmp(argv[i], "--yes") != 0 &&
                    strcmp(argv[i], "-n") != 0 && strcmp(argv[i], "--no") != 0) {
             (void)fprintf(stderr, "error: unknown update option: %s\n", argv[i]);
             return CLI_TRUE;
         }
+    }
+    if (legacy_variant_flag) {
+        (void)fprintf(stderr, "note: --ui/--standard are accepted but no longer do anything; since "
+                              "v0.10.0 there is one build per platform and it always includes the "
+                              "graph UI.\n");
     }
 
     /* Updates run from the install script, not from this process — on every

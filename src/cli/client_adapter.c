@@ -155,8 +155,15 @@ char *cbm_client_adapter_pi(const char *binary_path) {
              "}\n\n");
 
     /* Register every tool the registry advertises — never a hand-picked subset,
-     * which is the drift this generator exists to prevent. */
-    sb_append(&sb, "export function register(pi) {\n");
+     * which is the drift this generator exists to prevent.
+     *
+     * DEFAULT export, and it must stay that way: Pi loads an extension by
+     * calling its default export as a factory. A named `register` export made
+     * the file fail to load, and a Pi extension that fails to load takes EVERY
+     * pi command down with it — `pi doctor` included — not just cbm's tools
+     * (#1550). The named binding is kept alongside for anything that imported
+     * it by name. */
+    sb_append(&sb, "export default function (pi) {\n");
     for (int i = 0; i < count; i++) {
         const char *name = cbm_mcp_tool_name(i);
         if (!name || !name[0]) {

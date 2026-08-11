@@ -12061,6 +12061,24 @@ TEST(cli_sha256_file_matches_known_vector) {
     PASS();
 }
 
+/* #1544: v0.10.2 deleted the ui/standard chooser AND the flags that drove it,
+ * so `update --ui` — a command people had in scripts and aliases — started
+ * failing with "unknown update option". Retiring a choice is fine; breaking the
+ * words people already type is not. Both flags must be accepted, do nothing,
+ * and say so once. A genuinely unknown flag must still be rejected, or this
+ * degenerates into ignoring typos. */
+TEST(cli_update_accepts_retired_variant_flags_issue1544) {
+    char *ui_argv[] = {"--dry-run", "--ui", "--yes"};
+    char *standard_argv[] = {"--dry-run", "--standard", "--yes"};
+    char *bogus_argv[] = {"--dry-run", "--not-a-flag", "--yes"};
+
+    ASSERT_EQ(cbm_cmd_update(3, ui_argv), 0);
+    ASSERT_EQ(cbm_cmd_update(3, standard_argv), 0);
+    /* Unknown flags stay an error — the point is compatibility, not silence. */
+    ASSERT_TRUE(cbm_cmd_update(3, bogus_argv) != 0);
+    PASS();
+}
+
 #ifdef _WIN32
 /* The Windows update contract, asserted with the activation seam OFF so this
  * takes the exact dispatch a release binary ships: `update` never replaces the
@@ -12136,6 +12154,7 @@ SUITE(cli) {
     RUN_TEST(cli_install_config_failure_keeps_published_binary);
     RUN_TEST(cli_update_download_failure_does_not_quiesce_sessions);
     RUN_TEST(cli_update_already_current_does_not_quiesce_sessions);
+    RUN_TEST(cli_update_accepts_retired_variant_flags_issue1544);
     RUN_TEST(cli_update_agent_configs_finish_before_guard_release);
     RUN_TEST(cli_uninstall_quiesces_active_cohort_before_removing_binary_and_index);
     RUN_TEST(cli_uninstall_preserves_binary_and_index_when_cohort_does_not_drain);
