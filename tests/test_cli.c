@@ -12101,6 +12101,59 @@ TEST(cli_sha256_file_matches_known_vector) {
  * words people already type is not. Both flags must be accepted, do nothing,
  * and say so once. A genuinely unknown flag must still be rejected, or this
  * degenerates into ignoring typos. */
+/* #1554: the skill's `description` contained "Triggers on: " — a colon-space,
+ * which YAML reads as a nested-mapping indicator inside an UNQUOTED scalar.
+ * Strict readers (js-yaml's load, the frontmatter parser in `npx skills`)
+ * reject the whole document, so the installed skill silently fails to load.
+ *
+ * The rule is checked for EVERY skill, not just the one that broke: any
+ * frontmatter scalar whose value contains ": " must be quoted. Pinning only
+ * the current text would let the next added skill reintroduce it. */
+TEST(cli_skill_frontmatter_scalars_with_colons_are_quoted_issue1554) {
+    const cbm_skill_t *sk = cbm_get_skills();
+    ASSERT_NOT_NULL(sk);
+    for (int i = 0; i < CBM_SKILL_COUNT; i++) {
+        const char *body = sk[i].content;
+        ASSERT_NOT_NULL(body);
+        /* Frontmatter is the block between the first two "---" lines. */
+        ASSERT_TRUE(strncmp(body, "---\n", 4) == 0);
+        const char *end = strstr(body + 4, "\n---\n");
+        ASSERT_NOT_NULL(end);
+
+        const char *line = body + 4;
+        while (line < end) {
+            const char *eol = strchr(line, '\n');
+            if (!eol || eol > end) {
+                break;
+            }
+            const char *sep = NULL;
+            for (const char *c = line; c < eol - 1; c++) {
+                if (c[0] == ':' && c[1] == ' ') {
+                    sep = c;
+                    break;
+                }
+            }
+            if (sep) {
+                const char *value = sep + 2;
+                /* A value that itself contains ": " must be quoted, or a
+                 * strict parser treats it as a nested mapping. */
+                bool has_inner_colon = false;
+                for (const char *c = value; c < eol - 1; c++) {
+                    if (c[0] == ':' && c[1] == ' ') {
+                        has_inner_colon = true;
+                        break;
+                    }
+                }
+                if (has_inner_colon) {
+                    ASSERT_TRUE(value[0] == '"' || value[0] == '\'');
+                }
+            }
+            line = eol + 1;
+        }
+    }
+    PASS();
+}
+
 TEST(cli_update_accepts_retired_variant_flags_issue1544) {
     char *ui_argv[] = {"--dry-run", "--ui", "--yes"};
     char *standard_argv[] = {"--dry-run", "--standard", "--yes"};
@@ -12189,6 +12242,7 @@ SUITE(cli) {
     RUN_TEST(cli_install_config_failure_keeps_published_binary);
     RUN_TEST(cli_update_download_failure_does_not_quiesce_sessions);
     RUN_TEST(cli_update_already_current_does_not_quiesce_sessions);
+    RUN_TEST(cli_skill_frontmatter_scalars_with_colons_are_quoted_issue1554);
     RUN_TEST(cli_update_accepts_retired_variant_flags_issue1544);
     RUN_TEST(cli_update_agent_configs_finish_before_guard_release);
     RUN_TEST(cli_uninstall_quiesces_active_cohort_before_removing_binary_and_index);

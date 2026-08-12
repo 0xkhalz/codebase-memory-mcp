@@ -1255,12 +1255,17 @@ int cbm_replace_binary(const char *path, const unsigned char *data, int len, int
 static const char skill_content[] =
     "---\n"
     "name: codebase-memory\n"
-    "description: Use the codebase knowledge graph for structural code queries. "
+    /* #1554: the value contains "Triggers on: " — a colon-space, which YAML
+     * reads as a nested-mapping indicator inside an unquoted scalar. Strict
+     * parsers (js-yaml's load, the frontmatter reader in `npx skills`) reject
+     * the whole file, so the skill silently fails to load rather than loading
+     * wrongly. Quoting the scalar is the fix; the text itself is unchanged. */
+    "description: \"Use the codebase knowledge graph for structural code queries. "
     "Triggers on: explore the codebase, understand the architecture, what functions exist, "
     "show me the structure, who calls this function, what does X call, trace the call chain, "
     "find callers of, show dependencies, impact analysis, dead code, unused functions, "
     "high fan-out, refactor candidates, code quality audit, graph query syntax, "
-    "Cypher query examples, edge types, how to use search_graph.\n"
+    "Cypher query examples, edge types, how to use search_graph.\"\n"
     "---\n"
     "\n"
     "# Codebase Memory — Knowledge Graph Tools\n"
