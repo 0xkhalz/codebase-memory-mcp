@@ -882,6 +882,26 @@ static cbm_proc_poll_t cbm_subprocess_poll_win(cbm_subprocess_t *process, cbm_pr
 
 #else /* POSIX */
 
+/* Transient spawn-failure retry (see the EAGAIN note in cbm_posix_spawn_apple).
+ * Three attempts over ~30ms total: long enough to ride out a burst of process
+ * creation, short enough that a genuinely exhausted system still fails fast. */
+enum { CBM_SPAWN_RETRY = 2, CBM_SPAWN_RETRY_ATTEMPTS = 3 };
+static const struct timespec CBM_SPAWN_RETRY_DELAY = {0, 10L * 1000L * 1000L};
+#define CBM_SPAWN_RETRY_DELAY_NS (&CBM_SPAWN_RETRY_DELAY)
+
+/* fork() fails with EAGAIN under the same pressure posix_spawn does, and the
+ * fallback path must not be less robust than the primary one. */
+static pid_t cbm_fork_with_retry(void) {
+    for (int attempt = 0; attempt < CBM_SPAWN_RETRY_ATTEMPTS; attempt++) {
+        pid_t pid = fork();
+        if (pid >= 0 || (errno != EAGAIN && errno != ENOMEM)) {
+            return pid;
+        }
+        (void)cbm_nanosleep(CBM_SPAWN_RETRY_DELAY_NS, NULL);
+    }
+    return fork();
+}
+
 /* Used by the fork+exec child. posix_spawn performs the same reset
  * declaratively via SETSIGDEF + SETSIGMASK, but Apple still forks for the
  * exec-failure fallback below, so this stays compiled everywhere. */
@@ -1010,6 +1030,14 @@ static int cbm_posix_spawn_apple(cbm_subprocess_t *process, int input, int outpu
                        rc == ELOOP || rc == ENAMETOOLONG || rc == ENOTDIR)) {
         return 1;
     }
+    /* EAGAIN/ENOMEM are the kernel saying "not right now", not "never": the
+     * process table or a per-user limit is momentarily full. Reporting
+     * spawn_failed for that turns transient load into a user-visible error —
+     * a git or LSP probe failing on a busy laptop for no reason the user can
+     * see or act on. Retry briefly. Everything else stays a hard failure. */
+    if (configured && (rc == EAGAIN || rc == ENOMEM)) {
+        return CBM_SPAWN_RETRY;
+    }
     return -1;
 }
 #endif
@@ -1059,13 +1087,21 @@ static int cbm_subprocess_spawn_posix(cbm_subprocess_t *process) {
     pid_t pid = -1;
 #ifdef __APPLE__
     int spawn_rc = cbm_posix_spawn_apple(process, input, output, &pid);
+    for (int attempt = 0; spawn_rc == CBM_SPAWN_RETRY && attempt < CBM_SPAWN_RETRY_ATTEMPTS;
+         attempt++) {
+        (void)cbm_nanosleep(CBM_SPAWN_RETRY_DELAY_NS, NULL);
+        spawn_rc = cbm_posix_spawn_apple(process, input, output, &pid);
+    }
+    if (spawn_rc == CBM_SPAWN_RETRY) {
+        spawn_rc = -1; /* still exhausted after backoff: a real failure */
+    }
     if (spawn_rc < 0) {
         (void)close(input);
         (void)close(output);
         return -1;
     }
     if (spawn_rc > 0) { /* exec-class failure: reproduce the fork+exec 127 */
-        pid = fork();
+        pid = cbm_fork_with_retry();
         if (pid < 0) {
             (void)close(input);
             (void)close(output);
@@ -1076,7 +1112,7 @@ static int cbm_subprocess_spawn_posix(cbm_subprocess_t *process) {
         }
     }
 #else
-    pid = fork();
+    pid = cbm_fork_with_retry();
     if (pid < 0) {
         (void)close(input);
         (void)close(output);
