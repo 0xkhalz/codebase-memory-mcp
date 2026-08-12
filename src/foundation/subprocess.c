@@ -885,21 +885,75 @@ static cbm_proc_poll_t cbm_subprocess_poll_win(cbm_subprocess_t *process, cbm_pr
 /* Transient spawn-failure retry (see the EAGAIN note in cbm_posix_spawn_apple).
  * Three attempts over ~30ms total: long enough to ride out a burst of process
  * creation, short enough that a genuinely exhausted system still fails fast. */
-enum { CBM_SPAWN_RETRY = 2, CBM_SPAWN_RETRY_ATTEMPTS = 3 };
-static const struct timespec CBM_SPAWN_RETRY_DELAY = {0, 10L * 1000L * 1000L};
-#define CBM_SPAWN_RETRY_DELAY_NS (&CBM_SPAWN_RETRY_DELAY)
+enum { CBM_SPAWN_RETRY = 2, CBM_SPAWN_RETRY_ATTEMPTS = 6 };
+
+/* Exponential backoff: 10, 20, 40, 80, 160, 320ms — ~630ms of total patience.
+ *
+ * The first version waited a flat 3 x 10ms, which was enough for a momentary
+ * dip and NOT enough for the real thing: a CI runner building and testing in
+ * parallel stays process-starved for hundreds of milliseconds at a stretch, and
+ * `subprocess_run_spawn_failure` kept failing with the retry shipped (macos-15-
+ * intel on a release matrix, macos-14 under ThreadSanitizer, which is itself
+ * slow enough to create the pressure). A fixed short delay samples the same
+ * congested instant repeatedly; doubling walks out of it.
+ *
+ * The ceiling is deliberate. ~0.6s is invisible next to spawning a process that
+ * does real work, and a machine still refusing after that is genuinely out of
+ * capacity — at which point failing IS the correct answer, and failing fast
+ * beats hanging. */
+#ifdef CBM_ENABLE_TEST_SEAMS
+/* Deterministic EAGAIN injection: see the header. Counts DOWN, so a test asks
+ * for N simulated refusals and the (N+1)th attempt proceeds for real. */
+static int g_force_spawn_eagain = 0;
+void cbm_subprocess_force_spawn_eagain_for_testing(int attempts) {
+    g_force_spawn_eagain = attempts > 0 ? attempts : 0;
+}
+int cbm_subprocess_pending_spawn_eagain_for_testing(void) {
+    return g_force_spawn_eagain;
+}
+static bool cbm_spawn_eagain_injected(void) {
+    if (g_force_spawn_eagain > 0) {
+        g_force_spawn_eagain--;
+        return true;
+    }
+    return false;
+}
+#endif
+
+static void cbm_spawn_backoff(int attempt) {
+    long ms = 10L << (attempt < 6 ? attempt : 6);
+    struct timespec delay = {ms / 1000L, (ms % 1000L) * 1000L * 1000L};
+    (void)cbm_nanosleep(&delay, NULL);
+}
 
 /* fork() fails with EAGAIN under the same pressure posix_spawn does, and the
  * fallback path must not be less robust than the primary one. */
 static pid_t cbm_fork_with_retry(void) {
-    for (int attempt = 0; attempt < CBM_SPAWN_RETRY_ATTEMPTS; attempt++) {
+    /* CBM_SPAWN_RETRY_ATTEMPTS backoffs means ATTEMPTS+1 tries. Every try goes
+     * through the same branch — including the last — so the injection seam
+     * models production exactly rather than leaving a final unguarded fork() the
+     * tests could never reach. */
+    for (int attempt = 0;; attempt++) {
+#ifdef CBM_ENABLE_TEST_SEAMS
+        if (cbm_spawn_eagain_injected()) {
+            if (attempt >= CBM_SPAWN_RETRY_ATTEMPTS) {
+                errno = EAGAIN;
+                return -1;
+            }
+            cbm_spawn_backoff(attempt);
+            continue;
+        }
+#endif
         pid_t pid = fork();
         if (pid >= 0 || (errno != EAGAIN && errno != ENOMEM)) {
             return pid;
         }
-        (void)cbm_nanosleep(CBM_SPAWN_RETRY_DELAY_NS, NULL);
+        if (attempt >= CBM_SPAWN_RETRY_ATTEMPTS) {
+            errno = EAGAIN;
+            return -1;
+        }
+        cbm_spawn_backoff(attempt);
     }
-    return fork();
 }
 
 /* Used by the fork+exec child. posix_spawn performs the same reset
@@ -989,6 +1043,14 @@ static int cbm_posix_fd_at_least_three(int fd) {
  *     because dup2 clears close-on-exec.
  * posix_spawnp keeps execvp's PATH semantics for a bare tool name. */
 static int cbm_posix_spawn_apple(cbm_subprocess_t *process, int input, int output, pid_t *pid_out) {
+    /* posix_spawn is the PRIMARY path on macOS; fork+exec is only the
+     * exec-class fallback. Injection therefore has to live here too, or a test
+     * on macOS exercises nothing. */
+#ifdef CBM_ENABLE_TEST_SEAMS
+    if (cbm_spawn_eagain_injected()) {
+        return CBM_SPAWN_RETRY;
+    }
+#endif
     posix_spawn_file_actions_t actions;
     posix_spawnattr_t attr;
     if (posix_spawn_file_actions_init(&actions) != 0) {
@@ -1089,7 +1151,7 @@ static int cbm_subprocess_spawn_posix(cbm_subprocess_t *process) {
     int spawn_rc = cbm_posix_spawn_apple(process, input, output, &pid);
     for (int attempt = 0; spawn_rc == CBM_SPAWN_RETRY && attempt < CBM_SPAWN_RETRY_ATTEMPTS;
          attempt++) {
-        (void)cbm_nanosleep(CBM_SPAWN_RETRY_DELAY_NS, NULL);
+        cbm_spawn_backoff(attempt);
         spawn_rc = cbm_posix_spawn_apple(process, input, output, &pid);
     }
     if (spawn_rc == CBM_SPAWN_RETRY) {
