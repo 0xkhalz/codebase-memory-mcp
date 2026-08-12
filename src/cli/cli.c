@@ -3278,8 +3278,22 @@ int cbm_upsert_codex_mcp(const char *binary_path, const char *config_path) {
         return CLI_ERR;
     }
     char block[CLI_BUF_8K];
+    /* #1562: Codex sanitizes the environment of stdio MCP subprocesses, passing
+     * through only the names listed in env_vars. Without CBM_CACHE_DIR the
+     * Codex-spawned server silently falls back to the DEFAULT cache while the
+     * account daemon uses the configured one; the two disagree and the
+     * handshake closes during initialization, so Codex exposes no cbm tools at
+     * all.
+     *
+     * The name is listed unconditionally rather than only when the variable is
+     * set at install time: env_vars names variables to FORWARD IF PRESENT, so
+     * listing it costs nothing when unset and keeps working for someone who
+     * sets it after installing — which install-time detection would silently
+     * fail to cover. */
     int written = snprintf(block, sizeof(block),
-                           CODEX_CMM_SECTION "\ncommand = \"%s\"\nargs = []\n", escaped);
+                           CODEX_CMM_SECTION "\ncommand = \"%s\"\nargs = []\n"
+                                             "env_vars = [\"CBM_CACHE_DIR\"]\n",
+                           escaped);
     if (written < 0 || (size_t)written >= sizeof(block) ||
         cbm_remove_codex_legacy_mcp(config_path) != 0) {
         return CLI_ERR;
