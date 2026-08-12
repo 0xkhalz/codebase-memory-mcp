@@ -6203,13 +6203,22 @@ static int trace_watermark_index(const cbm_traverse_result_t *tr, int hop, int64
  * output — {cols, groups:[{qn_prefix, rows:[[name,hop,...]]}]}. Optional
  * risk/args columns mirror the flags. */
 static yyjson_mut_val *bfs_to_tree_json(yyjson_mut_doc *doc, cbm_traverse_result_t *tr,
-                                        bool risk_labels, bool include_tests, bool data_flow) {
+                                        bool risk_labels, bool include_tests, bool data_flow,
+                                        bool include_evidence) {
     yyjson_mut_val *leg = yyjson_mut_obj(doc);
     yyjson_mut_val *cols = yyjson_mut_arr(doc);
     yyjson_mut_arr_add_str(doc, cols, "name");
     yyjson_mut_arr_add_str(doc, cols, "hop");
     if (risk_labels) {
         yyjson_mut_arr_add_str(doc, cols, "risk");
+    }
+    /* #1542: include_evidence was implemented on the tree path only, so
+     * format:"json" silently returned cols ["name","hop"] while the schema and
+     * --help promised two more. A structured caller — the one most likely to
+     * ask for json — got no error, just missing fields. */
+    if (include_evidence) {
+        yyjson_mut_arr_add_str(doc, cols, "strategy");
+        yyjson_mut_arr_add_str(doc, cols, "confidence");
     }
     if (data_flow) {
         yyjson_mut_arr_add_str(doc, cols, "args");
@@ -6256,6 +6265,25 @@ static yyjson_mut_val *bfs_to_tree_json(yyjson_mut_doc *doc, cbm_traverse_result
                 }
             } else {
                 yyjson_mut_arr_add_str(doc, row, "");
+            }
+        }
+        if (include_evidence) {
+            const char *ev_class = NULL;
+            double ev_conf = -1.0;
+            if (bfs_edge_evidence_for_hop(tr, tr->visited[i].node.id, &ev_class, &ev_conf)) {
+                yyjson_mut_arr_add_strcpy(doc, row, ev_class ? ev_class : "");
+                if (ev_conf >= 0.0) {
+                    yyjson_mut_arr_add_real(doc, row, ev_conf);
+                } else {
+                    yyjson_mut_arr_add_null(doc, row);
+                }
+            } else {
+                /* The root hop has no inbound edge and non-CALLS edges record
+                 * no strategy. The tree path emits "-" placeholders to keep the
+                 * column count fixed; json says null, which is the same promise
+                 * in a form a structured caller can test. */
+                yyjson_mut_arr_add_null(doc, row);
+                yyjson_mut_arr_add_null(doc, row);
             }
         }
         yyjson_mut_arr_add_val(cur_rows, row);
@@ -6710,15 +6738,15 @@ static char *handle_trace_call_path(cbm_mcp_server_t *srv, const char *args) {
         }
         if (do_outbound) {
             yyjson_mut_obj_add_int(doc, root, "callees_total", out_total);
-            yyjson_mut_obj_add_val(
-                doc, root, "callees",
-                bfs_to_tree_json(doc, &view_out, risk_labels, include_tests, data_flow));
+            yyjson_mut_obj_add_val(doc, root, "callees",
+                                   bfs_to_tree_json(doc, &view_out, risk_labels, include_tests,
+                                                    data_flow, include_evidence));
         }
         if (do_inbound) {
             yyjson_mut_obj_add_int(doc, root, "callers_total", in_total);
-            yyjson_mut_obj_add_val(
-                doc, root, "callers",
-                bfs_to_tree_json(doc, &view_in, risk_labels, include_tests, data_flow));
+            yyjson_mut_obj_add_val(doc, root, "callers",
+                                   bfs_to_tree_json(doc, &view_in, risk_labels, include_tests,
+                                                    data_flow, include_evidence));
         }
         if (more_rows) {
             yyjson_mut_obj_add_bool(doc, root, "truncated", true);
