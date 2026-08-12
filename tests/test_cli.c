@@ -682,6 +682,40 @@ TEST(cli_activation_refusal_note_reaches_diagnostic_issue1416) {
     PASS();
 }
 
+/* #1537: a reservation that FAILED (lock I/O, leftover coordination state,
+ * permissions) is not a reservation that was BUSY. Reporting both as "active
+ * CBM sessions could not be stopped" sent a reporter hunting processes that a
+ * reboot proved did not exist — and the remedy we printed told them to run a
+ * cbm binary they had just uninstalled. Each condition now names itself. */
+TEST(cli_activation_distinguishes_busy_from_reservation_failure_issue1537) {
+    cbm_activation_transaction_note_refusal_for_testing(NULL, 0UL);
+
+    /* BUSY (0): real sessions hold the cohort — closing something is the fix. */
+    cli_activation_fake_t busy = {
+        .participants_active = true,
+        .mutation_reserve_result = 0,
+    };
+    cbm_cli_activation_ops_t ops = {
+        .context = &busy,
+        .reserve_for_mutation = cli_activation_fake_reserve_mutation,
+        .mutation_lease_release = cli_activation_fake_release_mutation,
+        .visible_diagnostic = cli_activation_fake_diagnostic,
+    };
+    ASSERT_EQ(cbm_cli_activation_guard_with_ops(&ops, cli_activation_fake_mutation, &busy), 1);
+    ASSERT_NOT_NULL(strstr(busy.diagnostic, "could not be stopped safely"));
+
+    /* FAILURE (-1): nothing is running, so the reader must not be told to close
+     * sessions — and must not be handed a command that may not be installed. */
+    cli_activation_fake_t failed = {
+        .mutation_reserve_result = -1,
+    };
+    ops.context = &failed;
+    ASSERT_EQ(cbm_cli_activation_guard_with_ops(&ops, cli_activation_fake_mutation, &failed), 1);
+    ASSERT_NOT_NULL(strstr(failed.diagnostic, "NOT a running-session problem"));
+    ASSERT_NULL(strstr(failed.diagnostic, "could not be stopped safely"));
+    PASS();
+}
+
 TEST(cli_activation_refuses_unsafe_cohort_reservation) {
     cli_activation_fake_t fake = {
         .mutation_reserve_result = -1,
@@ -12138,6 +12172,7 @@ SUITE(cli) {
     RUN_TEST(cli_activation_quiesces_active_cohort_before_mutation);
     RUN_TEST(cli_activation_refuses_when_cohort_does_not_drain);
     RUN_TEST(cli_activation_refusal_note_reaches_diagnostic_issue1416);
+    RUN_TEST(cli_activation_distinguishes_busy_from_reservation_failure_issue1537);
     RUN_TEST(cli_activation_refuses_unsafe_cohort_reservation);
     RUN_TEST(cli_activation_releases_maintenance_lease_after_success);
     RUN_TEST(cli_activation_releases_maintenance_lease_when_mutation_fails);
