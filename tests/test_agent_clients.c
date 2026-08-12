@@ -1106,7 +1106,7 @@ TEST(client_adapter_pi_registers_every_registry_tool) {
 TEST(client_adapter_pi_default_exports_its_factory_issue1550) {
     char *js = cbm_client_adapter_pi("/usr/local/bin/codebase-memory-mcp");
     ASSERT_NOT_NULL(js);
-    ASSERT_NOT_NULL(strstr(js, "export default function"));
+    ASSERT_NOT_NULL(strstr(js, "export default function (pi)"));
     /* The old shape must be gone: a bare `export function register(pi)` is the
      * exact form Pi rejects. */
     ASSERT_NULL(strstr(js, "export function register(pi)"));
