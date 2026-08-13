@@ -42,6 +42,13 @@ static void ipc_validation_detail_set(const char *format, ...) {
     va_end(arguments);
 }
 
+#ifdef CBM_ENABLE_TEST_SEAMS
+void cbm_daemon_ipc_set_validation_detail_for_testing(const char *detail) {
+    (void)snprintf(ipc_validation_detail_buffer, sizeof(ipc_validation_detail_buffer), "%s",
+                   detail ? detail : "");
+}
+#endif
+
 const char *cbm_daemon_ipc_validation_detail(void) {
     return ipc_validation_detail_buffer;
 }
