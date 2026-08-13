@@ -882,10 +882,12 @@ static cbm_proc_poll_t cbm_subprocess_poll_win(cbm_subprocess_t *process, cbm_pr
 
 #else /* POSIX */
 
-/* Transient spawn-failure retry (see the EAGAIN note in cbm_posix_spawn_apple).
- * Three attempts over ~30ms total: long enough to ride out a burst of process
- * creation, short enough that a genuinely exhausted system still fails fast. */
-/* A sanitized build needs a wider window than an ordinary one, and only a
+/* Transient spawn-failure retry (see the EAGAIN note in cbm_posix_spawn_apple):
+ * long enough to ride out a burst of process creation, short enough that a
+ * genuinely exhausted system still fails fast. The budget below is the single
+ * source of truth for both — see cbm_spawn_backoff for the resulting waits.
+ *
+ * A sanitized build needs a wider window than an ordinary one, and only a
  * sanitized one does.
  *
  * The exponential backoff (10/20/40/80/160/320ms, ~0.6s) fixed the ordinary
@@ -907,7 +909,11 @@ enum { CBM_SPAWN_RETRY = 2, CBM_SPAWN_RETRY_ATTEMPTS = 9 };
 enum { CBM_SPAWN_RETRY = 2, CBM_SPAWN_RETRY_ATTEMPTS = 6 };
 #endif
 
-/* Exponential backoff: 10, 20, 40, 80, 160, 320ms — ~630ms of total patience.
+/* Exponential backoff, doubling from 10ms: 10, 20, 40, 80, 160, 320 — ~630ms of
+ * total patience on an ordinary build, and three further doublings (640, 1280,
+ * 2560) to roughly 5s on a sanitized one. The waits follow from
+ * CBM_SPAWN_RETRY_ATTEMPTS above rather than being listed separately here, so
+ * changing the budget cannot leave this description behind.
  *
  * The first version waited a flat 3 x 10ms, which was enough for a momentary
  * dip and NOT enough for the real thing: a CI runner building and testing in
@@ -920,7 +926,9 @@ enum { CBM_SPAWN_RETRY = 2, CBM_SPAWN_RETRY_ATTEMPTS = 6 };
  * The ceiling is deliberate. ~0.6s is invisible next to spawning a process that
  * does real work, and a machine still refusing after that is genuinely out of
  * capacity — at which point failing IS the correct answer, and failing fast
- * beats hanging. */
+ * beats hanging. The sanitized ceiling is ~5s for the same reason in reverse:
+ * under instrumentation the starved window really does last that long, and only
+ * a build that already accepts a large slowdown pays for the extra wait. */
 #ifdef CBM_ENABLE_TEST_SEAMS
 /* Deterministic EAGAIN injection: see the header. Counts DOWN, so a test asks
  * for N simulated refusals and the (N+1)th attempt proceeds for real. */
