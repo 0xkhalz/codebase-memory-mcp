@@ -290,10 +290,13 @@ grep -Fq 'upload-alias' "$RESULTS" || \
   fail "results must retain the action's submitted analysis ID"
 grep -q $'undetected\t\tclean\t' "$RESULTS" || \
   fail "clean result must carry an explicit clean policy classification"
-[ "$(run_gate "binaries/objects/probe=$(url_for mismatched-response-id)")" != "0" ] || \
-  fail "a response for a different analysis ID must block even when hash/size match"
-grep -q 'response analysis id does not match' "$FIX/last.log" || \
-  fail "analysis-ID mismatch failure is not explicit"
+# A differing analysis ID is NOT a failure: VirusTotal is content-addressed and
+# may answer for already-known bytes with its own canonical analysis. The
+# verdict is bound to the object by hash and size (wrong-hash / wrong-size
+# below), which is what actually keeps a tuple's stripped and unstripped
+# candidates apart — they differ in hash by construction.
+[ "$(run_gate "binaries/objects/probe=$(url_for mismatched-response-id)")" = "0" ] || \
+  fail "a content-bound response must pass even when VirusTotal returns its own analysis ID: $(cat "$FIX/last.log")"
 
 for id in one-malicious one-suspicious; do
   [ "$(run_gate "binaries/objects/probe=$(url_for "$id")")" != "0" ] || \
