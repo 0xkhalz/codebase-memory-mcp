@@ -459,9 +459,22 @@ jobs:
           scripts/ci/gen-mcpb-registry-entries.sh server.json checksums.txt "$RELEASE_VERSION"
           cat server.json
 
+      # Pinned by version AND content hash: `latest` would let an upstream
+      # release (or a compromised one) change what runs in the job that holds
+      # the registry publish credential, and piping curl straight into tar
+      # executes the payload before anything can verify it. The job is
+      # ubuntu-latest, so the linux/amd64 asset is the only one needed.
+      # Checksum from registry_1.8.1_checksums.txt of the same release.
       - name: Install mcp-publisher
+        env:
+          MCP_PUBLISHER_VERSION: v1.8.1
+          MCP_PUBLISHER_SHA256: a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
         run: |
-          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+          asset="mcp-publisher_linux_amd64.tar.gz"
+          curl -fsSLo "$asset" \
+            "https://github.com/modelcontextprotocol/registry/releases/download/$MCP_PUBLISHER_VERSION/$asset"
+          echo "$MCP_PUBLISHER_SHA256  $asset" | sha256sum -c -
+          tar xzf "$asset" mcp-publisher
 
       - name: Authenticate to MCP Registry (GitHub OIDC)
         run: ./mcp-publisher login github-oidc
