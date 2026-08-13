@@ -9033,9 +9033,19 @@ static void install_additional_agent_configs(const cbm_detected_agents_t *agents
     }
 }
 
+/* #1558: set by `install --clients=...` after validation, consumed at the one
+ * place detection happens. Validation runs in cbm_cmd_install so an unknown
+ * token fails before anything is written, not midway through configuring. */
+static const char *g_client_selection = NULL;
+static bool cli_clients_apply_selection(const char *spec, cbm_detected_agents_t *detected);
+static void cli_clients_print_list(FILE *out);
+
 int cbm_install_agent_configs(const char *home, const char *binary_path, bool force, bool dry_run) {
     g_agent_install_errors = 0;
     cbm_detected_agents_t agents = cbm_detect_agents(home);
+    if (g_client_selection && !cli_clients_apply_selection(g_client_selection, &agents)) {
+        return CLI_ERR;
+    }
     if (!g_install_plan) {
         print_detected_agents(&agents, home);
     }
@@ -9150,6 +9160,121 @@ int cbm_install_handle_existing_indexes(const char *home, bool reset, bool dry_r
     }
     return prepare_result;
 }
+
+/* ── Client selection (#1558) ──────────────────────────────────
+ *
+ * `install` configured EVERY detected client. A user who wanted Claude and
+ * Codex had to revert the OpenCode and Cursor integrations by hand, and the
+ * next install silently recreated them. `--clients=claude,codex` restricts it.
+ *
+ * The table is the flag's vocabulary AND its documentation: 26 clients ship
+ * here, with tokens nobody would guess (factory-droid, mistral-vibe,
+ * copilot-cli), so `--clients=help` prints every token. A selector whose
+ * accepted values can only be learned from the source is not a usable
+ * selector, and an unrecognised token fails loudly with the list rather than
+ * silently configuring nothing. */
+typedef struct {
+    const char *token;
+    size_t offset;
+    const char *display;
+} cli_client_def_t;
+
+#define CLI_CLIENT(field, token, display) \
+    { token, offsetof(cbm_detected_agents_t, field), display }
+
+static const cli_client_def_t CLI_CLIENTS[] = {
+    CLI_CLIENT(claude_code, "claude", "Claude Code"),
+    CLI_CLIENT(codex, "codex", "Codex"),
+    CLI_CLIENT(gemini, "gemini", "Gemini"),
+    CLI_CLIENT(zed, "zed", "Zed"),
+    CLI_CLIENT(opencode, "opencode", "OpenCode"),
+    CLI_CLIENT(antigravity, "antigravity", "Antigravity"),
+    CLI_CLIENT(aider, "aider", "Aider"),
+    CLI_CLIENT(kilocode, "kilocode", "Kilo Code"),
+    CLI_CLIENT(vscode, "vscode", "VS Code"),
+    CLI_CLIENT(cursor, "cursor", "Cursor"),
+    CLI_CLIENT(windsurf, "windsurf", "Windsurf"),
+    CLI_CLIENT(augment, "augment", "Augment"),
+    CLI_CLIENT(openclaw, "openclaw", "OpenClaw"),
+    CLI_CLIENT(kiro, "kiro", "Kiro"),
+    CLI_CLIENT(junie, "junie", "Junie"),
+    CLI_CLIENT(hermes, "hermes", "Hermes"),
+    CLI_CLIENT(openhands, "openhands", "OpenHands"),
+    CLI_CLIENT(cline, "cline", "Cline"),
+    CLI_CLIENT(warp, "warp", "Warp"),
+    CLI_CLIENT(qwen, "qwen", "Qwen"),
+    CLI_CLIENT(copilot_cli, "copilot-cli", "Copilot CLI"),
+    CLI_CLIENT(factory_droid, "factory-droid", "Factory Droid"),
+    CLI_CLIENT(crush, "crush", "Crush"),
+    CLI_CLIENT(goose, "goose", "Goose"),
+    CLI_CLIENT(mistral_vibe, "mistral-vibe", "Mistral Vibe"),
+};
+
+enum { CLI_CLIENT_COUNT = sizeof(CLI_CLIENTS) / sizeof(CLI_CLIENTS[0]) };
+
+static void cli_clients_print_list(FILE *out) {
+    (void)fprintf(out, "Available --clients tokens:\n");
+    for (size_t i = 0; i < CLI_CLIENT_COUNT; i++) {
+        (void)fprintf(out, "  %-16s %s\n", CLI_CLIENTS[i].token, CLI_CLIENTS[i].display);
+    }
+    (void)fprintf(out, "\nExample: --clients=claude,codex\n"
+                       "Omit --clients to configure every detected client.\n");
+}
+
+/* Restrict `detected` to the comma-separated token list. Returns false (after
+ * printing the vocabulary) when a token is unknown, so a typo can never be
+ * mistaken for "that client was not installed". */
+static bool cli_clients_apply_selection(const char *spec, cbm_detected_agents_t *detected) {
+    bool wanted[CLI_CLIENT_COUNT];
+    memset(wanted, 0, sizeof(wanted));
+    char buf[CLI_BUF_1K];
+    snprintf(buf, sizeof(buf), "%s", spec ? spec : "");
+    char *save = NULL;
+    for (char *tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+        while (*tok == ' ') {
+            tok++;
+        }
+        size_t len = strlen(tok);
+        while (len > 0 && tok[len - 1] == ' ') {
+            tok[--len] = '\0';
+        }
+        if (!tok[0]) {
+            continue;
+        }
+        bool matched = false;
+        for (size_t i = 0; i < CLI_CLIENT_COUNT; i++) {
+            if (strcmp(tok, CLI_CLIENTS[i].token) == 0) {
+                wanted[i] = true;
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) {
+            (void)fprintf(stderr, "error: unknown client: %s\n\n", tok);
+            cli_clients_print_list(stderr);
+            return false;
+        }
+    }
+    for (size_t i = 0; i < CLI_CLIENT_COUNT; i++) {
+        if (!wanted[i]) {
+            *(bool *)((char *)detected + CLI_CLIENTS[i].offset) = false;
+        }
+    }
+    return true;
+}
+
+#ifdef CBM_CLI_ENABLE_TEST_API
+bool cbm_cli_clients_apply_selection_for_testing(const char *spec,
+                                                 cbm_detected_agents_t *detected) {
+    return cli_clients_apply_selection(spec, detected);
+}
+size_t cbm_cli_clients_count_for_testing(void) {
+    return CLI_CLIENT_COUNT;
+}
+const char *cbm_cli_clients_token_for_testing(size_t index) {
+    return index < CLI_CLIENT_COUNT ? CLI_CLIENTS[index].token : NULL;
+}
+#endif
 
 /* ── Subcommand: install ──────────────────────────────────────── */
 
@@ -9539,6 +9664,7 @@ int cbm_cmd_install(int argc, char **argv) {
     bool skip_config = false;
     bool skip_binary = false;
     bool force_binary = false;
+    const char *requested_clients = NULL;
     const char *requested_bin_dir = NULL;
     for (int i = 0; i < argc; i++) {
         if (strcmp(argv[i], "--dry-run") == 0) {
@@ -9551,6 +9677,18 @@ int cbm_cmd_install(int argc, char **argv) {
             reset_indexes = true;
         } else if (strcmp(argv[i], "--skip-config") == 0) {
             skip_config = true;
+        } else if (strncmp(argv[i], "--clients=", SLEN("--clients=")) == 0) {
+            requested_clients = argv[i] + SLEN("--clients=");
+            if (!requested_clients[0]) {
+                (void)fprintf(stderr, "error: --clients requires a value\n\n");
+                cli_clients_print_list(stderr);
+                return CLI_TRUE;
+            }
+        } else if (strcmp(argv[i], "--clients") == 0) {
+            /* Bare `--clients` (and `--clients=help`/`list`) print the
+             * vocabulary. 26 clients ship with tokens nobody would guess. */
+            cli_clients_print_list(stdout);
+            return 0;
         } else if (strcmp(argv[i], "--skip-binary") == 0) {
             /* #1566: the mirror of --skip-config. Configure the agents, leave
              * the binary and PATH alone. */
@@ -9615,6 +9753,16 @@ int cbm_cmd_install(int argc, char **argv) {
         printf("%s\n", json);
         free(json);
         return 0;
+    }
+
+    /* #1558: validate the client tokens BEFORE anything is written, so a typo
+     * fails immediately instead of part-way through configuring. */
+    if (requested_clients) {
+        cbm_detected_agents_t probe = cbm_detect_agents(home);
+        if (!cli_clients_apply_selection(requested_clients, &probe)) {
+            return CLI_TRUE;
+        }
+        g_client_selection = requested_clients;
     }
 
     printf("codebase-memory-mcp install %s\n\n", CBM_VERSION);

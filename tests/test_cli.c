@@ -12306,6 +12306,50 @@ TEST(cli_external_manager_detection_needs_positive_evidence_issue1566) {
     PASS();
 }
 
+/* #1558: `install` configured EVERY detected client, so a user who wanted
+ * Claude and Codex had to revert OpenCode and Cursor by hand — and the next
+ * install silently recreated them. The selector restricts it.
+ *
+ * The vocabulary is the part that makes it usable: 26 clients ship, with tokens
+ * nobody would guess (factory-droid, mistral-vibe, copilot-cli). A selector
+ * whose accepted values can only be learned by reading our source is not a
+ * usable selector, so this pins that every client is listed and that an unknown
+ * token is REJECTED rather than silently matching nothing. */
+TEST(cli_clients_selector_vocabulary_is_complete_and_strict_issue1558) {
+    cbm_detected_agents_t all;
+    memset(&all, 1, sizeof(all)); /* every client "detected" */
+
+    /* A known token keeps its client and drops the rest. */
+    cbm_detected_agents_t sel = all;
+    ASSERT_TRUE(cbm_cli_clients_apply_selection_for_testing("claude,codex", &sel));
+    ASSERT_TRUE(sel.claude_code);
+    ASSERT_TRUE(sel.codex);
+    ASSERT_FALSE(sel.cursor);
+    ASSERT_FALSE(sel.opencode);
+
+    /* Whitespace around tokens is tolerated — people type it. */
+    cbm_detected_agents_t spaced = all;
+    ASSERT_TRUE(cbm_cli_clients_apply_selection_for_testing(" claude , zed ", &spaced));
+    ASSERT_TRUE(spaced.claude_code);
+    ASSERT_TRUE(spaced.zed);
+    ASSERT_FALSE(spaced.codex);
+
+    /* An unknown token must FAIL. Silently treating a typo as "no such client"
+     * would configure nothing and report success. */
+    cbm_detected_agents_t typo = all;
+    ASSERT_FALSE(cbm_cli_clients_apply_selection_for_testing("claude,codx", &typo));
+
+    /* Every token in the table must resolve — a client added to detection but
+     * forgotten here is invisible to the selector. */
+    for (size_t i = 0; i < cbm_cli_clients_count_for_testing(); i++) {
+        const char *token = cbm_cli_clients_token_for_testing(i);
+        ASSERT_NOT_NULL(token);
+        cbm_detected_agents_t one = all;
+        ASSERT_TRUE(cbm_cli_clients_apply_selection_for_testing(token, &one));
+    }
+    PASS();
+}
+
 TEST(cli_update_accepts_retired_variant_flags_issue1544) {
     char *ui_argv[] = {"--dry-run", "--ui", "--yes"};
     char *standard_argv[] = {"--dry-run", "--standard", "--yes"};
@@ -12396,6 +12440,7 @@ SUITE(cli) {
     RUN_TEST(cli_update_already_current_does_not_quiesce_sessions);
     RUN_TEST(cli_skill_frontmatter_scalars_with_colons_are_quoted_issue1554);
     RUN_TEST(cli_external_manager_detection_needs_positive_evidence_issue1566);
+    RUN_TEST(cli_clients_selector_vocabulary_is_complete_and_strict_issue1558);
     RUN_TEST(cli_update_accepts_retired_variant_flags_issue1544);
     RUN_TEST(cli_update_agent_configs_finish_before_guard_release);
     RUN_TEST(cli_uninstall_quiesces_active_cohort_before_removing_binary_and_index);
