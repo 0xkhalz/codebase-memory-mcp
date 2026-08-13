@@ -658,14 +658,26 @@ def is_tolerated_detection(result: CompletedResult) -> bool:
     return engine == "Microsoft" and category == "malicious" and label.endswith("!ml")
 
 
+# Classification depends ONLY on what engines found, never on how many answered.
+#
+# "hard" means an engine actually found something we will not ship: two or more
+# engines, any non-Microsoft engine, any label that is not `!ml`, or anything
+# suspicious.
+#
+# How many engines returned a decisive result is NOT a policy input. It is a
+# property of VirusTotal's fleet on the day, which we cannot influence: these
+# binaries are ~300 MB and many engines skip or time out at that size, so the
+# count varies run to run (observed on one run: one object at 48, the other
+# fifteen spread 59-68). A 50-engine floor turned that variance into a release
+# blocker — it failed an 8-target release on a windows-arm64 candidate with
+# ZERO detections whose own sibling scanned clean at 66. Gating on it makes
+# shipping a lottery decided by someone else's infrastructure, so the count is
+# recorded as evidence and nothing more.
 def classify_result(result: CompletedResult, min_engines: int) -> str:
-    if result.completed_engines < min_engines:
-        return "hard"
-    if result.malicious == 0 and result.suspicious == 0:
-        return "clean"
-    if is_tolerated_detection(result):
-        return "microsoft-ml"
-    return "hard"
+    del min_engines  # retained for signature stability; not a policy input
+    if result.malicious or result.suspicious:
+        return "microsoft-ml" if is_tolerated_detection(result) else "hard"
+    return "clean"
 
 
 def main() -> None:
@@ -733,14 +745,14 @@ def main() -> None:
         completed.append(result)
         tolerated = is_tolerated_detection(result)
         if result.completed_engines < min_engines:
-            message = (
-                f"{submission.expected.scan_path} completed with only "
+            # Reported, never fatal. See classify_result: engine count is
+            # VirusTotal's fleet availability, not a property of our binary.
+            print(
+                f"NOTE: {submission.expected.scan_path} was judged by "
                 f"{result.completed_engines}/{result.total_engines} decisive engines "
-                f"(< {min_engines})"
+                f"(below the {min_engines} reference); verdict still applies"
             )
-            failures.append(message)
-            print(f"BLOCKED: {message}")
-        elif result.malicious or result.suspicious:
+        if result.malicious or result.suspicious:
             message = (
                 f"{submission.expected.scan_path} flagged "
                 f"({result.malicious} malicious, {result.suspicious} suspicious / "

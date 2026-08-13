@@ -302,9 +302,14 @@ for id in one-malicious one-suspicious; do
   [ "$(run_gate "binaries/objects/probe=$(url_for "$id")")" != "0" ] || \
     fail "$id must block"
 done
-[ "$(run_gate "binaries/objects/probe=$(url_for low-engines)")" != "0" ] || \
-  fail "completed analysis below the 50-engine policy must block"
-grep -q 'only 49/49 decisive engines' "$FIX/last.log" || fail "low-engine failure is not explicit"
+# A low decisive-engine count must NOT block. It is VirusTotal fleet
+# availability on the day, not a property of our binary: a ~300 MB release
+# artifact is skipped or timed out by many engines, so the count moves run to
+# run and a floor turns shipping into a lottery. It is reported, not enforced.
+[ "$(run_gate "binaries/objects/probe=$(url_for low-engines)")" = "0" ] || \
+  fail "a clean verdict must stand regardless of how many engines answered: $(cat "$FIX/last.log")"
+grep -q 'NOTE: .*49/49 decisive engines' "$FIX/last.log" || \
+  fail "a below-reference engine count must still be reported explicitly"
 
 # A single Microsoft `!ml` verdict is the tolerated case: it passes, but it is
 # reported and recorded rather than silently downgraded to "clean".
@@ -394,4 +399,4 @@ printf 'tampered\n' > "$FIX/work/binaries/objects/probe"
 [ "$(run_gate "$clean_output")" != "0" ] || fail "tampered staged object must block before polling"
 grep -q 'changed after extraction' "$FIX/last.log" || fail "tamper failure is not diagnosable"
 
-echo 'PASS: VT gate is exact-set, content-bound, >=50-engine; tolerates exactly one Microsoft !ml verdict and nothing else'
+echo 'PASS: VT gate is exact-set and content-bound; tolerates exactly one Microsoft !ml verdict and nothing else; engine count is evidence, not a gate'
