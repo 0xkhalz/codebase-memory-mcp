@@ -207,6 +207,10 @@ const char *cbm_cli_clients_token_for_testing(size_t index);
  * not recognisably foreign. Detection must be positive evidence — see the
  * implementation comment. */
 const char *cbm_cli_external_manager_name_for_testing(const char *self_path);
+/* #1558: expose the config-key table so a test can prove a key is discoverable
+ * (`config list`/`set` both walk it). */
+size_t cbm_cli_config_key_count_for_testing(void);
+const char *cbm_cli_config_key_at_for_testing(size_t index);
 #endif
 
 #ifdef CBM_CLI_ENABLE_TEST_API
@@ -410,6 +414,10 @@ int cbm_config_delete(cbm_config_t *cfg, const char *key);
 #define CBM_CONFIG_AUTO_INDEX_LIMIT "auto_index_limit"
 #define CBM_CONFIG_AUTO_WATCH "auto_watch"
 #define CBM_CONFIG_UI_LANG "ui-lang"
+/* #1558: the graph UI's loopback listener. Stored in the UI config file rather
+ * than the key-value store, but surfaced through `config` so it is findable. */
+#define CBM_CONFIG_UI_ENABLED "ui_enabled"
+#define CBM_CONFIG_UI_PORT "ui_port"
 
 /* ── Binary activation safety ─────────────────────────────────── */
 

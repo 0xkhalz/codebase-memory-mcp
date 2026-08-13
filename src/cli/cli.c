@@ -11,6 +11,7 @@
 #include "cli/config_json_like.h"
 #include "cli/config_text_edit.h"
 #include "cli/config_toml_edit.h"
+#include "ui/config.h"
 #include "cli/config_yaml_edit.h"
 #include "daemon/bootstrap.h"
 #include "daemon/ipc.h"
@@ -6589,7 +6590,67 @@ static const config_key_def_t CONFIG_KEYS[] = {
     {CBM_CONFIG_AUTO_INDEX_LIMIT, "50000", "Max files for auto-indexing new projects"},
     {CBM_CONFIG_AUTO_WATCH, "true", "Register background git watcher on session connect"},
     {CBM_CONFIG_UI_LANG, "auto", "Pin graph UI language: en, zh, or auto"},
+    {CBM_CONFIG_UI_ENABLED, "false", "Serve the graph UI on a loopback HTTP port"},
+    {CBM_CONFIG_UI_PORT, "9749", "Port for the graph UI listener when enabled"},
 };
+
+/* #1558: ui_enabled and ui_port were reachable ONLY by hand-editing
+ * ~/.cache/codebase-memory-mcp/config.json. They were absent from CONFIG_KEYS,
+ * so `config list` could not show them and `config set` rejected them — while
+ * ui_enabled governs a loopback HTTP listener. A user who wants that surface
+ * off should not have to read our source to find the switch, and a reporter
+ * spent two debugging sessions doing exactly that.
+ *
+ * They live in a separate file (cbm_ui_config_load/save), not the key-value
+ * store the other keys use, so exposing them means routing rather than just
+ * listing them. */
+#ifdef CBM_CLI_ENABLE_TEST_API
+size_t cbm_cli_config_key_count_for_testing(void) {
+    return sizeof(CONFIG_KEYS) / sizeof(CONFIG_KEYS[0]);
+}
+const char *cbm_cli_config_key_at_for_testing(size_t index) {
+    return index < sizeof(CONFIG_KEYS) / sizeof(CONFIG_KEYS[0]) ? CONFIG_KEYS[index].key : NULL;
+}
+#endif
+
+static bool config_key_is_ui(const char *key) {
+    return key && (strcmp(key, CBM_CONFIG_UI_ENABLED) == 0 || strcmp(key, CBM_CONFIG_UI_PORT) == 0);
+}
+
+static void config_ui_read(const char *key, char *out, size_t out_sz) {
+    cbm_ui_config_t ui;
+    cbm_ui_config_load(&ui);
+    if (strcmp(key, CBM_CONFIG_UI_ENABLED) == 0) {
+        snprintf(out, out_sz, "%s", ui.ui_enabled ? "true" : "false");
+    } else {
+        snprintf(out, out_sz, "%d", ui.ui_port);
+    }
+}
+
+static int config_ui_write(const char *key, const char *value) {
+    cbm_ui_config_t ui;
+    cbm_ui_config_load(&ui);
+    if (strcmp(key, CBM_CONFIG_UI_ENABLED) == 0) {
+        if (strcmp(value, "true") != 0 && strcmp(value, "false") != 0) {
+            (void)fprintf(stderr, "error: %s must be true or false\n", key);
+            return CLI_ERR;
+        }
+        ui.ui_enabled = strcmp(value, "true") == 0;
+    } else {
+        char *end = NULL;
+        long port = strtol(value, &end, 10);
+        if (!end || *end || port < 1 || port > 65535) {
+            (void)fprintf(stderr, "error: %s must be a port between 1 and 65535\n", key);
+            return CLI_ERR;
+        }
+        ui.ui_port = (int)port;
+    }
+    if (!cbm_ui_config_save(&ui)) {
+        (void)fprintf(stderr, "error: could not write the UI configuration file\n");
+        return CLI_ERR;
+    }
+    return CLI_OK;
+}
 
 static const config_key_def_t *config_key_lookup(const char *key) {
     for (size_t i = 0; key && i < sizeof(CONFIG_KEYS) / sizeof(CONFIG_KEYS[0]); i++) {
@@ -6646,8 +6707,15 @@ int cbm_cmd_config(int argc, char **argv) {
     if (strcmp(argv[0], "list") == 0 || strcmp(argv[0], "ls") == 0) {
         printf("Configuration:\n");
         for (size_t i = 0; i < sizeof(CONFIG_KEYS) / sizeof(CONFIG_KEYS[0]); i++) {
-            printf("  %-25s = %-10s\n", CONFIG_KEYS[i].key,
-                   cbm_config_get(cfg, CONFIG_KEYS[i].key, CONFIG_KEYS[i].default_value));
+            char ui_value[CLI_BUF_1K];
+            const char *shown;
+            if (config_key_is_ui(CONFIG_KEYS[i].key)) {
+                config_ui_read(CONFIG_KEYS[i].key, ui_value, sizeof(ui_value));
+                shown = ui_value;
+            } else {
+                shown = cbm_config_get(cfg, CONFIG_KEYS[i].key, CONFIG_KEYS[i].default_value);
+            }
+            printf("  %-25s = %-10s\n", CONFIG_KEYS[i].key, shown);
         }
     } else if (strcmp(argv[0], "get") == 0) {
         if (argc < MIN_ARGC_GET) {
@@ -6662,7 +6730,13 @@ int cbm_cmd_config(int argc, char **argv) {
                 /* Stored value or the key's real default — the same fallback
                  * the runtime readers use. `""` here was #1522's bug 2: every
                  * unset key read as empty with exit 0. */
-                printf("%s\n", cbm_config_get(cfg, def->key, def->default_value));
+                if (config_key_is_ui(def->key)) {
+                    char ui_value[CLI_BUF_1K];
+                    config_ui_read(def->key, ui_value, sizeof(ui_value));
+                    printf("%s\n", ui_value);
+                } else {
+                    printf("%s\n", cbm_config_get(cfg, def->key, def->default_value));
+                }
             }
         }
     } else if (strcmp(argv[0], "set") == 0) {
@@ -6672,6 +6746,13 @@ int cbm_cmd_config(int argc, char **argv) {
         } else if (!config_key_lookup(argv[CLI_SKIP_ONE])) {
             config_print_unknown_key(argv[CLI_SKIP_ONE]);
             rc = CLI_TRUE;
+        } else if (config_key_is_ui(argv[CLI_SKIP_ONE])) {
+            if (config_ui_write(argv[CLI_SKIP_ONE], argv[CLI_PAIR_LEN]) == CLI_OK) {
+                printf("%s = %s\n", argv[CLI_SKIP_ONE], argv[CLI_PAIR_LEN]);
+                printf("  (restart the daemon for this to take effect)\n");
+            } else {
+                rc = CLI_TRUE;
+            }
         } else {
             if (cbm_config_set(cfg, argv[CLI_SKIP_ONE], argv[CLI_PAIR_LEN]) == 0) {
                 printf("%s = %s\n", argv[CLI_SKIP_ONE], argv[CLI_PAIR_LEN]);
@@ -6687,6 +6768,13 @@ int cbm_cmd_config(int argc, char **argv) {
         } else if (!config_key_lookup(argv[CLI_SKIP_ONE])) {
             config_print_unknown_key(argv[CLI_SKIP_ONE]);
             rc = CLI_TRUE;
+        } else if (config_key_is_ui(argv[CLI_SKIP_ONE])) {
+            const config_key_def_t *def = config_key_lookup(argv[CLI_SKIP_ONE]);
+            if (config_ui_write(argv[CLI_SKIP_ONE], def->default_value) == CLI_OK) {
+                printf("%s reset to default\n", argv[CLI_SKIP_ONE]);
+            } else {
+                rc = CLI_TRUE;
+            }
         } else {
             cbm_config_delete(cfg, argv[CLI_SKIP_ONE]);
             printf("%s reset to default\n", argv[CLI_SKIP_ONE]);

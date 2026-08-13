@@ -12266,6 +12266,31 @@ TEST(cli_sha256_file_matches_known_vector) {
  * The rule is checked for EVERY skill, not just the one that broke: any
  * frontmatter scalar whose value contains ": " must be quoted. Pinning only
  * the current text would let the next added skill reintroduce it. */
+/* #1558: ui_enabled governs a loopback HTTP listener, and the ONLY way to turn
+ * it off was hand-editing ~/.cache/codebase-memory-mcp/config.json — it was
+ * absent from CONFIG_KEYS, so `config list` could not show it and `config set`
+ * rejected it. A reporter spent two debugging sessions finding the switch. A
+ * network surface a user cannot discover how to disable is not an acceptable
+ * default, whatever its value. */
+TEST(cli_ui_config_keys_are_discoverable_and_settable_issue1558) {
+    bool enabled_listed = false;
+    bool port_listed = false;
+    for (size_t i = 0; i < cbm_cli_config_key_count_for_testing(); i++) {
+        const char *key = cbm_cli_config_key_at_for_testing(i);
+        if (key && strcmp(key, CBM_CONFIG_UI_ENABLED) == 0) {
+            enabled_listed = true;
+        }
+        if (key && strcmp(key, CBM_CONFIG_UI_PORT) == 0) {
+            port_listed = true;
+        }
+    }
+    /* Discoverable: `config list` and `config set` both walk this table, so a
+     * key missing here is a key the user cannot find OR change. */
+    ASSERT_TRUE(enabled_listed);
+    ASSERT_TRUE(port_listed);
+    PASS();
+}
+
 TEST(cli_skill_frontmatter_scalars_with_colons_are_quoted_issue1554) {
     const cbm_skill_t *sk = cbm_get_skills();
     ASSERT_NOT_NULL(sk);
@@ -12471,6 +12496,7 @@ SUITE(cli) {
     RUN_TEST(cli_install_config_failure_keeps_published_binary);
     RUN_TEST(cli_update_download_failure_does_not_quiesce_sessions);
     RUN_TEST(cli_update_already_current_does_not_quiesce_sessions);
+    RUN_TEST(cli_ui_config_keys_are_discoverable_and_settable_issue1558);
     RUN_TEST(cli_skill_frontmatter_scalars_with_colons_are_quoted_issue1554);
     RUN_TEST(cli_external_manager_detection_needs_positive_evidence_issue1566);
     RUN_TEST(cli_clients_selector_vocabulary_is_complete_and_strict_issue1558);
