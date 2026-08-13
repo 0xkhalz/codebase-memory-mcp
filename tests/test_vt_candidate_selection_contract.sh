@@ -41,7 +41,8 @@ TARGETS = (
     "linux-arm64-portable", "darwin-amd64", "darwin-arm64",
     "windows-amd64", "windows-arm64",
 )
-VARIANTS = ("unstripped", "stripped")
+VARIANTS = ("unstripped", "debug-stripped", "stripped")
+ORDER = ("stripped", "debug-stripped", "unstripped")
 FIELDS = (
     "target", "variant", "relative_path", "source_sha256", "pre_sign_sha256",
     "sha256", "size", "format", "architecture", "linkage", "transform",
@@ -106,7 +107,11 @@ def write_tsv(path: pathlib.Path, marker: str, metadata: dict[str, object],
 
 def candidate_bytes(target: str, variant: str) -> bytes:
     linked = f"codebase-memory-mcp:{target}:same-linker-output\n".encode()
-    suffix = b"debug-and-local-symbols\n" if variant == "unstripped" else b"stripped\n"
+    suffix = {
+        "unstripped": b"debug-and-local-symbols\n",
+        "debug-stripped": b"local-symbols-only\n",
+        "stripped": b"stripped\n",
+    }[variant]
     return linked + suffix
 
 
@@ -137,7 +142,7 @@ def make_artifacts(directory: pathlib.Path, *, reverse: bool = False) -> dict[tu
                 "format": "pe" if target.startswith("windows-") else "macho" if target.startswith("darwin-") else "elf",
                 "architecture": target.split("-")[1],
                 "linkage": "portable" if target.endswith("-portable") else "dynamic" if target.startswith("linux-") else "native",
-                "transform": "copy" if variant == "unstripped" else "strip",
+                "transform": {"unstripped": "copy", "debug-stripped": "strip-debug", "stripped": "strip"}[variant],
                 "signature": "adhoc-verified" if target.startswith("darwin-") else "not-applicable",
                 "strip_tool": "contract-strip",
                 "strip_version": "1.0",
@@ -152,7 +157,7 @@ def make_artifacts(directory: pathlib.Path, *, reverse: bool = False) -> dict[tu
 
 
 def invoke_stage(source: pathlib.Path, output: pathlib.Path) -> subprocess.CompletedProcess[str]:
-    return run(stage_tool, source, output, "--expect-targets", 8, "--expect-candidates", 16)
+    return run(stage_tool, source, output, "--expect-targets", 8, "--expect-candidates", 24)
 
 
 artifacts = fix / "artifacts"
@@ -166,7 +171,7 @@ require(sorted(path.name for path in staged.iterdir()) ==
 
 cmeta, candidates = manifest(staged / "candidates.tsv")
 require(cmeta["marker"] == "# cbm-release-candidates-v1", "candidate marker changed")
-require(cmeta.get("targets") == "8" and cmeta.get("candidates") == "16", "candidate counts not bound")
+require(cmeta.get("targets") == "8" and cmeta.get("candidates") == "24", "candidate counts not bound")
 require([(row["target"], row["variant"]) for row in candidates] ==
         [(target, variant) for target in TARGETS for variant in VARIANTS],
         "candidate rows are not in canonical target/variant order")
@@ -254,19 +259,33 @@ def result_rows(classifications: dict[tuple[str, str], str], *, shuffle: bool = 
 
 def write_results(path: pathlib.Path, rows: list[dict[str, object]]) -> None:
     write_tsv(path, "cbm-virustotal-results-v2", {
-        "scan_objects": 16, "associations": 16, "min_engines_policy": 50,
+        "scan_objects": 24, "associations": 24, "min_engines_policy": 50,
         "min_completed_engines": 71, "max_completed_engines": 71,
     }, RESULT_FIELDS, rows)
 
 
-# Keys are (stripped, unstripped), matching the policy's preferred-candidate
-# order and making the asymmetric fallback case unambiguous.
-TRUTH = {
-    ("clean", "clean"): "stripped",
-    ("clean", "microsoft-ml"): "stripped",
-    ("microsoft-ml", "clean"): "unstripped",
-    ("microsoft-ml", "microsoft-ml"): "stripped",
-}
+# Keys are (stripped, debug-stripped, unstripped) in the policy's preferred
+# order. Three variants x two tolerated classifications is exactly eight
+# combinations, so the eight targets below cover the table EXHAUSTIVELY.
+TRUTH_KEYS = [
+    (a, b, c)
+    for a in ("clean", "microsoft-ml")
+    for b in ("clean", "microsoft-ml")
+    for c in ("clean", "microsoft-ml")
+]
+
+
+def expected_choice(key: tuple[str, str, str]) -> tuple[str, str]:
+    """Return (selected_variant, decision) for a (stripped, debug, unstripped) key."""
+    by_variant = dict(zip(ORDER, key))
+    clean = [v for v in ORDER if by_variant[v] == "clean"]
+    if not clean:
+        return "stripped", "stripped-all-candidates-microsoft-ml"
+    chosen = clean[0]
+    if chosen == "stripped":
+        return "stripped", "stripped-preferred"
+    others = "-".join(f"{v}:{by_variant[v]}" for v in ORDER if v != chosen)
+    return chosen, f"{chosen}-clean-after-{others}"
 
 
 def selection_rows(directory: pathlib.Path) -> tuple[dict[str, str], list[dict[str, str]]]:
@@ -277,11 +296,13 @@ def selection_rows(directory: pathlib.Path) -> tuple[dict[str, str], list[dict[s
 # repeat once, proving exact decision behavior and both result bindings.
 classes: dict[tuple[str, str], str] = {}
 expected: dict[str, str] = {}
-truth_keys = list(TRUTH)
+expected_decisions: dict[str, str] = {}
+require(len(TRUTH_KEYS) == len(TARGETS), "truth table must map one combination per target")
 for index, target in enumerate(TARGETS):
-    pair = truth_keys[index % len(truth_keys)]
-    classes[target, "stripped"], classes[target, "unstripped"] = pair
-    expected[target] = TRUTH[pair]
+    key = TRUTH_KEYS[index]
+    for variant, classification in zip(ORDER, key):
+        classes[target, variant] = classification
+    expected[target], expected_decisions[target] = expected_choice(key)
 results_file = fix / "vt-results.tsv"
 write_results(results_file, result_rows(classes, shuffle=True))
 selected = fix / "selected"
@@ -296,14 +317,7 @@ require([row["target"] for row in selections] == list(TARGETS), "selection order
 for row in selections:
     target = row["target"]
     require(row["selected_variant"] == expected[target], f"truth-table decision wrong for {target}")
-    target_pair = (classes[target, "stripped"], classes[target, "unstripped"])
-    expected_decision = (
-        "unstripped-clean-after-stripped-microsoft-ml"
-        if expected[target] == "unstripped"
-        else "stripped-both-microsoft-ml"
-        if target_pair == ("microsoft-ml", "microsoft-ml")
-        else "stripped-preferred"
-    )
+    expected_decision = expected_decisions[target]
     require(row["decision"] == expected_decision,
             f"truth-table decision reason wrong for {target}: {row['decision']!r}")
     chosen = next(c for c in candidates if c["target"] == target and c["variant"] == expected[target])

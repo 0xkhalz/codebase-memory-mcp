@@ -31,7 +31,8 @@ TARGETS = (
     "windows-amd64",
     "windows-arm64",
 )
-VARIANTS = ("unstripped", "stripped")
+VARIANTS = ("unstripped", "debug-stripped", "stripped")
+FIELD_KEY = {variant: variant.replace("-", "_") for variant in VARIANTS}
 SELECTION_FIELDS = (
     "target",
     "selected_variant",
@@ -44,6 +45,11 @@ SELECTION_FIELDS = (
     "unstripped_classification",
     "unstripped_analysis_id",
     "unstripped_virustotal_url",
+    "debug_stripped_sha256",
+    "debug_stripped_scan_path",
+    "debug_stripped_classification",
+    "debug_stripped_analysis_id",
+    "debug_stripped_virustotal_url",
     "stripped_sha256",
     "stripped_scan_path",
     "stripped_classification",
@@ -163,7 +169,7 @@ def load_selection(
         target = row["target"]
         binary = "codebase-memory-mcp.exe" if target.startswith("windows-") else "codebase-memory-mcp"
         classifications = {
-            variant: row[f"{variant}_classification"] for variant in VARIANTS
+            variant: row[f"{FIELD_KEY[variant]}_classification"] for variant in VARIANTS
         }
         if metadata["policy"] == "virustotal-v2":
             if any(
@@ -172,27 +178,33 @@ def load_selection(
             ):
                 raise ContractError(f"release selection contains a hard classification: {target}")
             for variant in VARIANTS:
-                sha256 = row[f"{variant}_sha256"]
-                analysis_id = row[f"{variant}_analysis_id"]
+                sha256 = row[f"{FIELD_KEY[variant]}_sha256"]
+                analysis_id = row[f"{FIELD_KEY[variant]}_analysis_id"]
                 expected_url = f"https://www.virustotal.com/gui/file/{sha256}/detection"
                 if ANALYSIS_ID_RE.fullmatch(analysis_id) is None:
                     raise ContractError(f"release selection lacks VT analysis evidence: {target}")
                 if analysis_id in analysis_ids:
                     raise ContractError("release selection reuses one VT analysis id")
                 analysis_ids.add(analysis_id)
-                if row[f"{variant}_virustotal_url"] != expected_url:
+                if row[f"{FIELD_KEY[variant]}_virustotal_url"] != expected_url:
                     raise ContractError(f"release selection has unbound VT URL: {target}")
-            stripped_class = classifications["stripped"]
-            unstripped_class = classifications["unstripped"]
-            if stripped_class == "clean":
-                expected_variant = "stripped"
-                expected_decision = "stripped-preferred"
-            elif unstripped_class == "clean":
-                expected_variant = "unstripped"
-                expected_decision = "unstripped-clean-after-stripped-microsoft-ml"
+            # Re-derived here independently of the selector: smallest artifact
+            # first, first CLEAN one wins, and only if every candidate drew the
+            # tolerated verdict do we ship the smallest flagged one.
+            order = ("stripped", "debug-stripped", "unstripped")
+            clean = [v for v in order if classifications[v] == "clean"]
+            if clean:
+                expected_variant = clean[0]
+                if expected_variant == "stripped":
+                    expected_decision = "stripped-preferred"
+                else:
+                    others = "-".join(
+                        f"{v}:{classifications[v]}" for v in order if v != expected_variant
+                    )
+                    expected_decision = f"{expected_variant}-clean-after-{others}"
             else:
                 expected_variant = "stripped"
-                expected_decision = "stripped-both-microsoft-ml"
+                expected_decision = "stripped-all-candidates-microsoft-ml"
         else:
             if any(
                 classification != "unscanned-dry-run"
@@ -200,7 +212,7 @@ def load_selection(
             ):
                 raise ContractError(f"dry-run selection disguises unscanned evidence: {target}")
             if any(
-                row[f"{variant}_{suffix}"]
+                row[f"{FIELD_KEY[variant]}_{suffix}"]
                 for variant in VARIANTS
                 for suffix in ("analysis_id", "virustotal_url")
             ):
@@ -217,14 +229,14 @@ def load_selection(
             raise ContractError(f"release selection has unsafe selected path: {target}")
         if (
             SHA256_RE.fullmatch(row["selected_sha256"]) is None
-            or row["selected_sha256"] != row[f"{selected_variant}_sha256"]
+            or row["selected_sha256"] != row[f"{FIELD_KEY[selected_variant]}_sha256"]
             or not row["selected_size"].isdigit()
             or not 0 < int(row["selected_size"]) <= MAX_MEMBER_BYTES
         ):
             raise ContractError(f"release selection has invalid selected content: {target}")
         for variant in VARIANTS:
-            sha256 = row[f"{variant}_sha256"]
-            scan_path = pathlib.PurePosixPath(row[f"{variant}_scan_path"])
+            sha256 = row[f"{FIELD_KEY[variant]}_sha256"]
+            scan_path = pathlib.PurePosixPath(row[f"{FIELD_KEY[variant]}_scan_path"])
             if (
                 SHA256_RE.fullmatch(sha256) is None
                 or scan_path.as_posix() != f"objects/{sha256}"

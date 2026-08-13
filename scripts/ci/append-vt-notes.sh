@@ -38,7 +38,8 @@ TARGETS = (
     "windows-amd64",
     "windows-arm64",
 )
-VARIANTS = ("unstripped", "stripped")
+VARIANTS = ("unstripped", "debug-stripped", "stripped")
+FIELD_KEY = {variant: variant.replace("-", "_") for variant in VARIANTS}
 CANDIDATE_FIELDS = (
     "target", "variant", "relative_path", "source_sha256", "pre_sign_sha256",
     "sha256", "size", "format", "architecture", "linkage", "transform",
@@ -54,7 +55,11 @@ SELECTION_FIELDS = (
     "target", "selected_variant", "selected_path", "selected_sha256",
     "selected_size", "decision", "unstripped_sha256", "unstripped_scan_path",
     "unstripped_classification", "unstripped_analysis_id",
-    "unstripped_virustotal_url", "stripped_sha256", "stripped_scan_path",
+    "unstripped_virustotal_url",
+    "debug_stripped_sha256", "debug_stripped_scan_path",
+    "debug_stripped_classification", "debug_stripped_analysis_id",
+    "debug_stripped_virustotal_url",
+    "stripped_sha256", "stripped_scan_path",
     "stripped_classification", "stripped_analysis_id", "stripped_virustotal_url",
 )
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -110,20 +115,22 @@ selection_meta, selections = read_tsv(
     selection_path, "cbm-release-selection-v1", SELECTION_FIELDS
 )
 expected_pairs = [(target, variant) for target in TARGETS for variant in VARIANTS]
-if candidate_meta != {"targets": "8", "candidates": "16"}:
-    fail("candidate metadata does not bind the 8-target/16-candidate matrix")
+if candidate_meta != {"targets": str(len(TARGETS)), "candidates": str(len(TARGETS) * len(VARIANTS))}:
+    fail("candidate metadata does not bind the canonical target/variant matrix")
 if [(row["target"], row["variant"]) for row in candidates] != expected_pairs:
     fail("candidate rows are not the canonical target/variant matrix")
-if result_meta.get("scan_objects") != "16" or result_meta.get("associations") != "16":
-    fail("VirusTotal results do not cover all 16 candidates")
-if selection_meta != {"policy": "virustotal-v2", "targets": "8", "candidates": "16"}:
+expected_scans = str(len(TARGETS) * len(VARIANTS))
+if result_meta.get("scan_objects") != expected_scans or result_meta.get("associations") != expected_scans:
+    fail("VirusTotal results do not cover every candidate")
+if selection_meta != {"policy": "virustotal-v2", "targets": str(len(TARGETS)), "candidates": str(len(TARGETS) * len(VARIANTS))}:
     fail("selection was not produced by the scanned release policy")
 if [row["target"] for row in selections] != list(TARGETS):
     fail("selection rows are not the canonical target matrix")
 
 candidate_by_pair = {(row["target"], row["variant"]): row for row in candidates}
 candidate_by_path = {row["scan_path"]: row for row in candidates}
-if len(candidate_by_pair) != 16 or len(candidate_by_path) != 16:
+expected_candidates = len(TARGETS) * len(VARIANTS)
+if len(candidate_by_pair) != expected_candidates or len(candidate_by_path) != expected_candidates:
     fail("candidate evidence contains duplicates")
 
 results_by_path: dict[str, dict[str, str]] = {}
@@ -175,9 +182,10 @@ for selection in selections:
     target = selection["target"]
     pair = {variant: candidate_by_pair[target, variant] for variant in VARIANTS}
     pair_results = {variant: results_by_path[pair[variant]["scan_path"]] for variant in VARIANTS}
-    stripped_class = pair_results["stripped"]["policy_classification"]
-    unstripped_class = pair_results["unstripped"]["policy_classification"]
-    expected_variant = "stripped" if stripped_class == "clean" or unstripped_class != "clean" else "unstripped"
+    classes = {v: pair_results[v]["policy_classification"] for v in VARIANTS}
+    order = ("stripped", "debug-stripped", "unstripped")
+    clean = [v for v in order if classes[v] == "clean"]
+    expected_variant = clean[0] if clean else "stripped"
     selected = pair[expected_variant]
     if (
         selection["selected_variant"] != expected_variant
@@ -188,11 +196,11 @@ for selection in selections:
     for variant in VARIANTS:
         result = pair_results[variant]
         if (
-            selection[f"{variant}_sha256"] != pair[variant]["sha256"]
-            or selection[f"{variant}_scan_path"] != pair[variant]["scan_path"]
-            or selection[f"{variant}_classification"] != result["policy_classification"]
-            or selection[f"{variant}_analysis_id"] != result["analysis_id"]
-            or selection[f"{variant}_virustotal_url"] != result["virustotal_url"]
+            selection[f"{FIELD_KEY[variant]}_sha256"] != pair[variant]["sha256"]
+            or selection[f"{FIELD_KEY[variant]}_scan_path"] != pair[variant]["scan_path"]
+            or selection[f"{FIELD_KEY[variant]}_classification"] != result["policy_classification"]
+            or selection[f"{FIELD_KEY[variant]}_analysis_id"] != result["analysis_id"]
+            or selection[f"{FIELD_KEY[variant]}_virustotal_url"] != result["virustotal_url"]
         ):
             fail(f"selection evidence is not bound to both candidate verdicts: {target}")
     selection_by_target[target] = selection
@@ -219,7 +227,7 @@ section = [
     "## Security Verification",
     "",
     (
-        "Before smoke and soak testing, VirusTotal completed **16 executable scans**: "
+        f"Before smoke and soak testing, VirusTotal completed **{len(TARGETS) * len(VARIANTS)} executable scans**: "
         "stripped and unstripped candidates for each of the **8 release products**. "
         f"Every scan had at least 50 decisive engines (observed range: {engine_range})."
     ),

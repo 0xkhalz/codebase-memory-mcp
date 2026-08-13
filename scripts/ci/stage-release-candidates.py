@@ -194,7 +194,11 @@ def validate_row_shape(row: dict[str, str], *, target: str, variant: str) -> pat
         "format": file_format,
         "architecture": architecture,
         "linkage": linkage,
-        "transform": "copy" if variant == "unstripped" else "strip",
+        "transform": {
+            "unstripped": "copy",
+            "debug-stripped": "strip-debug",
+            "stripped": "strip",
+        }[variant],
         "signature": "adhoc-verified" if target.startswith("darwin-") else "not-applicable",
         "pair_verification": "same-linker-output-v1",
     }

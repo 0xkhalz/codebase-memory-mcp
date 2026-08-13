@@ -291,11 +291,21 @@ for token in ("--pattern 'release-selection.tsv'",
         failures.append(
             f"release verify: final draft-byte selection binding is missing token: {token}")
 
-for forbidden in ("crazy-max/ghaction-virustotal", "scripts/ci/check-virustotal.sh",
-                  "scripts/ci/publish-vt-evidence.sh"):
-    if forbidden in verify_body:
+# The post-package scan is REQUIRED, not forbidden. It is not a duplicate of the
+# candidate scan: that one covers executables only, while this one covers every
+# distinct object extracted from the 14 shipped containers - install.sh,
+# install.ps1, LICENSE, THIRD_PARTY_NOTICES.md, the MCPB manifest.json and the
+# unpacked UI assets. Those are the bytes users pipe into a shell, and dropping
+# them would narrow the promise made in README.md and SECURITY.md.
+#
+# Re-submitting the selected executables alongside them is close to free:
+# VirusTotal is content-addressed and returns the analysis it already holds for
+# identical bytes.
+for token in ("crazy-max/ghaction-virustotal", "scripts/ci/check-virustotal.sh",
+              "scripts/ci/publish-vt-evidence.sh", "files: binaries/objects/*"):
+    if token not in verify_body:
         failures.append(
-            f"release verify: duplicate post-package VirusTotal path remains: {forbidden}")
+            f"release verify: full-surface VirusTotal pass is missing: {token}")
 for token in ("release-candidates.tsv", "virustotal-candidate-results.tsv",
               "release-selection.tsv", "scripts/ci/append-vt-notes.sh"):
     if token not in verify_body:

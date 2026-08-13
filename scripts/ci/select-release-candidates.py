@@ -253,7 +253,7 @@ def load_candidates(
         marker="cbm-release-candidates-v1",
         fields=CANDIDATE_FIELDS,
     )
-    if metadata != {"targets": str(len(TARGETS)), "candidates": str(len(TARGETS) * 2)}:
+    if metadata != {"targets": str(len(TARGETS)), "candidates": str(len(TARGETS) * len(VARIANTS))}:
         raise ContractError("candidate metadata does not bind the exact canonical matrix")
     expected_pairs = [(target, variant) for target in TARGETS for variant in VARIANTS]
     if [(row["target"], row["variant"]) for row in rows] != expected_pairs:

@@ -21,7 +21,8 @@ targets = (
     "linux-arm64-portable", "darwin-amd64", "darwin-arm64",
     "windows-amd64", "windows-arm64",
 )
-variants = ("unstripped", "stripped")
+variants = ("unstripped", "debug-stripped", "stripped")
+field_key = {v: v.replace("-", "_") for v in variants}
 candidate_fields = (
     "target", "variant", "relative_path", "source_sha256", "pre_sign_sha256",
     "sha256", "size", "format", "architecture", "linkage", "transform",
@@ -37,7 +38,11 @@ selection_fields = (
     "target", "selected_variant", "selected_path", "selected_sha256",
     "selected_size", "decision", "unstripped_sha256", "unstripped_scan_path",
     "unstripped_classification", "unstripped_analysis_id",
-    "unstripped_virustotal_url", "stripped_sha256", "stripped_scan_path",
+    "unstripped_virustotal_url",
+    "debug_stripped_sha256", "debug_stripped_scan_path",
+    "debug_stripped_classification", "debug_stripped_analysis_id",
+    "debug_stripped_virustotal_url",
+    "stripped_sha256", "stripped_scan_path",
     "stripped_classification", "stripped_analysis_id", "stripped_virustotal_url",
 )
 
@@ -74,7 +79,7 @@ for target in targets:
             "size": "1234", "format": "pe" if target.startswith("windows-") else "macho" if target.startswith("darwin-") else "elf",
             "architecture": target.split("-")[1],
             "linkage": "portable" if target.endswith("-portable") else "dynamic" if target.startswith("linux-") else "native",
-            "transform": "copy" if variant == "unstripped" else "strip",
+            "transform": {"unstripped": "copy", "debug-stripped": "strip-debug", "stripped": "strip"}[variant],
             "signature": "adhoc-verified" if target.startswith("darwin-") else "not-applicable",
             "strip_tool": "strip", "strip_version": "contract",
             "pair_verification": "same-linker-output-v1", "scan_path": f"objects/{sha}",
@@ -98,15 +103,17 @@ for target in targets:
 result_by_pair = {(row["target"], row["variant"]): result for row, result in zip(candidates, results)}
 selections = []
 for target in targets:
-    stripped_class = classes[target, "stripped"]
-    unstripped_class = classes[target, "unstripped"]
-    chosen = "stripped" if stripped_class == "clean" or unstripped_class != "clean" else "unstripped"
+    order = ("stripped", "debug-stripped", "unstripped")
+    clean = [v for v in order if classes[target, v] == "clean"]
+    chosen = clean[0] if clean else "stripped"
     selected = by_pair[target, chosen]
-    decision = (
-        "unstripped-clean-after-stripped-microsoft-ml" if chosen == "unstripped"
-        else "stripped-both-microsoft-ml" if stripped_class == unstripped_class == "microsoft-ml"
-        else "stripped-preferred"
-    )
+    if not clean:
+        decision = "stripped-all-candidates-microsoft-ml"
+    elif chosen == "stripped":
+        decision = "stripped-preferred"
+    else:
+        others = "-".join(f"{v}:{classes[target, v]}" for v in order if v != chosen)
+        decision = f"{chosen}-clean-after-{others}"
     row = {
         "target": target, "selected_variant": chosen,
         "selected_path": f"selected/{target}/" + ("codebase-memory-mcp.exe" if target.startswith("windows-") else "codebase-memory-mcp"),
@@ -117,21 +124,21 @@ for target in targets:
         candidate = by_pair[target, variant]
         result = result_by_pair[target, variant]
         row.update({
-            f"{variant}_sha256": candidate["sha256"],
-            f"{variant}_scan_path": candidate["scan_path"],
-            f"{variant}_classification": result["policy_classification"],
-            f"{variant}_analysis_id": result["analysis_id"],
-            f"{variant}_virustotal_url": result["virustotal_url"],
+            f"{field_key[variant]}_sha256": candidate["sha256"],
+            f"{field_key[variant]}_scan_path": candidate["scan_path"],
+            f"{field_key[variant]}_classification": result["policy_classification"],
+            f"{field_key[variant]}_analysis_id": result["analysis_id"],
+            f"{field_key[variant]}_virustotal_url": result["virustotal_url"],
         })
     selections.append(row)
 
 write(root / "release-candidates.tsv", "cbm-release-candidates-v1",
-      {"targets": 8, "candidates": 16}, candidate_fields, candidates)
+      {"targets": 8, "candidates": 24}, candidate_fields, candidates)
 write(root / "virustotal-candidate-results.tsv", "cbm-virustotal-results-v2",
-      {"scan_objects": 16, "associations": 16, "min_engines_policy": 50,
+      {"scan_objects": 24, "associations": 24, "min_engines_policy": 50,
        "min_completed_engines": 61, "max_completed_engines": 61}, result_fields, results)
 write(root / "release-selection.tsv", "cbm-release-selection-v1",
-      {"policy": "virustotal-v2", "targets": 8, "candidates": 16},
+      {"policy": "virustotal-v2", "targets": 8, "candidates": 24},
       selection_fields, selections)
 PY
 
@@ -183,7 +190,7 @@ run_notes "$FIX/current.md" "$FIX/first.md"
 grep -q 'Intro text.' "$FIX/first.md" || fail "content before section was lost"
 grep -q 'Outro text.' "$FIX/first.md" || fail "content after section was lost"
 ! grep -q 'stale data' "$FIX/first.md" || fail "stale section was appended"
-grep -q '16 executable scans' "$FIX/first.md" || fail "candidate scan scope missing"
+grep -q '24 executable scans' "$FIX/first.md" || fail "candidate scan scope missing"
 grep -q '8 release products' "$FIX/first.md" || fail "product scope missing"
 grep -q '3 candidate(s).*Microsoft' "$FIX/first.md" || fail "tolerated findings not disclosed"
 grep -q 'no other decisive engine reported malicious or suspicious' "$FIX/first.md" || fail "non-decisive engines are overstated as clean"
@@ -221,4 +228,4 @@ if run_notes "$FIX/reversed.md" "$FIX/reversed-capture.md"; then
   fail "reversed verification markers must fail closed"
 fi
 
-echo 'PASS: release notes reuse all 16 candidate verdicts, disclose selection, and avoid a duplicate scan'
+echo 'PASS: release notes reuse all 24 candidate verdicts, disclose selection, and avoid a duplicate scan'
