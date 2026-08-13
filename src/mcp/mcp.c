@@ -597,7 +597,9 @@ static const tool_def_t TOOLS[] = {
      "signatures+metadata (default). full: with source. files: just file list.\"},"
      "\"context\":{\"type\":\"integer\",\"description\":\"Lines of context around each match "
      "(like grep -C). Only used in compact mode.\"},"
-     "\"regex\":{\"type\":\"boolean\",\"default\":false},\"limit\":{\"type\":\"integer\","
+     "\"regex\":{\"type\":\"boolean\",\"default\":false},\"debug\":{\"type\":\"boolean\","
+     "\"default\":false,\"description\":\"Include scope_ms, scan_ms, and enrich_ms phase timing "
+     "diagnostics.\"},\"limit\":{\"type\":\"integer\","
      "\"description\":\"Max enriched results per call. Default 10. Response includes "
      "'total_grep_matches' and 'total_results' so callers can detect truncation. No "
      "offset parameter — raise limit or narrow with file_pattern / path_filter to see more."
@@ -8722,6 +8724,14 @@ typedef struct {
     int match_count;
 } search_result_t;
 
+typedef struct {
+    uint64_t scope_ms;
+    uint64_t scan_ms;
+    uint64_t enrich_ms;
+    uint64_t elapsed_ms;
+    bool include_phase_timings;
+} search_metrics_t;
+
 /* Score a result for ranking: project source first, vendored last, tests lowest */
 enum { SCORE_FUNC = 10, SCORE_ROUTE = 15, SCORE_VENDORED = -50, SCORE_TEST = -5 };
 enum { MAX_LINE_SPAN = 999999 };
@@ -8980,7 +8990,7 @@ static yyjson_mut_val *build_dir_distribution(yyjson_mut_doc *doc, search_result
  * distribution table, and the summary scalars. */
 static char *assemble_search_output_toon(search_result_t *sr, int sr_count, grep_match_t *raw,
                                          int raw_count, int gm_count, int limit,
-                                         bool warn_literal_pipe, uint64_t elapsed_ms) {
+                                         bool warn_literal_pipe, const search_metrics_t *metrics) {
     enum { MAX_RAW = 20, SEARCH_SLOW_MS = 5000 };
     cbm_sb_t sb;
     cbm_sb_init(&sb);
@@ -9050,14 +9060,19 @@ static char *assemble_search_output_toon(search_result_t *sr, int sr_count, grep
     cbm_tree_scalar_int(&sb, "total_grep_matches", gm_count);
     cbm_tree_scalar_int(&sb, "total_results", sr_count);
     cbm_tree_scalar_int(&sb, "raw_match_count", raw_count);
-    cbm_tree_scalar_int(&sb, "elapsed_ms", (long long)elapsed_ms);
+    if (metrics->include_phase_timings) {
+        cbm_tree_scalar_int(&sb, "scope_ms", (long long)metrics->scope_ms);
+        cbm_tree_scalar_int(&sb, "scan_ms", (long long)metrics->scan_ms);
+        cbm_tree_scalar_int(&sb, "enrich_ms", (long long)metrics->enrich_ms);
+    }
+    cbm_tree_scalar_int(&sb, "elapsed_ms", (long long)metrics->elapsed_ms);
     if (warn_literal_pipe) {
         cbm_tree_scalar_str(&sb, "warning",
                             "pattern contains '|' but regex=false, so it is matched literally "
                             "(not as alternation). Pass regex=true for 'foo|bar' to mean "
                             "'foo OR bar'.");
     }
-    if (elapsed_ms >= SEARCH_SLOW_MS) {
+    if (metrics->elapsed_ms >= SEARCH_SLOW_MS) {
         cbm_tree_scalar_str(&sb, "warning_slow",
                             "search was slow; narrow file_pattern/path_filter or use a more "
                             "specific pattern");
@@ -9069,7 +9084,7 @@ static char *assemble_search_output_toon(search_result_t *sr, int sr_count, grep
 static char *assemble_search_output(search_result_t *sr, int sr_count, grep_match_t *raw,
                                     int raw_count, int gm_count, int limit, int mode,
                                     int context_lines, const char *root_path,
-                                    bool warn_literal_pipe, uint64_t elapsed_ms) {
+                                    bool warn_literal_pipe, const search_metrics_t *metrics) {
     enum { MODE_COMPACT = 0, MODE_FULL = 1, MODE_FILES = 2, SEARCH_SLOW_MS = 5000 };
 
     yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
@@ -9153,7 +9168,12 @@ static char *assemble_search_output(search_result_t *sr, int sr_count, grep_matc
     yyjson_mut_obj_add_int(doc, root_obj, "total_grep_matches", gm_count);
     yyjson_mut_obj_add_int(doc, root_obj, "total_results", sr_count);
     yyjson_mut_obj_add_int(doc, root_obj, "raw_match_count", raw_count);
-    yyjson_mut_obj_add_int(doc, root_obj, "elapsed_ms", (int)elapsed_ms);
+    if (metrics->include_phase_timings) {
+        yyjson_mut_obj_add_uint(doc, root_obj, "scope_ms", metrics->scope_ms);
+        yyjson_mut_obj_add_uint(doc, root_obj, "scan_ms", metrics->scan_ms);
+        yyjson_mut_obj_add_uint(doc, root_obj, "enrich_ms", metrics->enrich_ms);
+    }
+    yyjson_mut_obj_add_uint(doc, root_obj, "elapsed_ms", metrics->elapsed_ms);
     if (sr_count > 0 && gm_count > 0) {
         char ratio[CBM_SZ_32];
         snprintf(ratio, sizeof(ratio), "%.1fx", (double)gm_count / (double)(sr_count + raw_count));
@@ -9168,15 +9188,15 @@ static char *assemble_search_output(search_result_t *sr, int sr_count, grep_matc
             "pattern contains '|' but regex=false, so it is matched literally (not as "
             "alternation). Pass regex=true for 'foo|bar' to mean 'foo OR bar'.");
     }
-    if (elapsed_ms >= SEARCH_SLOW_MS) {
+    if (metrics->elapsed_ms >= SEARCH_SLOW_MS) {
         char slow[CBM_SZ_128];
         snprintf(slow, sizeof(slow),
                  "search took %dms (>%ds); narrow file_pattern/path_filter or use a more "
                  "specific pattern",
-                 (int)elapsed_ms, SEARCH_SLOW_MS / 1000);
+                 (int)metrics->elapsed_ms, SEARCH_SLOW_MS / 1000);
         yyjson_mut_arr_add_strcpy(doc, warnings, slow);
         char ems[CBM_SZ_32];
-        snprintf(ems, sizeof(ems), "%d", (int)elapsed_ms);
+        snprintf(ems, sizeof(ems), "%d", (int)metrics->elapsed_ms);
         cbm_log_warn("search.slow", "elapsed_ms", ems); /* visibility in logs */
     }
     if (yyjson_mut_arr_size(warnings) > 0) {
@@ -9652,6 +9672,8 @@ static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
     int context_lines = cbm_mcp_get_int_arg(args, "context", 0);
     bool use_regex = cbm_mcp_get_bool_arg(args, "regex");
     uint64_t search_t0 = cbm_now_ms();
+    search_metrics_t metrics = {0};
+    metrics.include_phase_timings = cbm_mcp_get_bool_arg(args, "debug");
     /* In literal (non-regex) mode a '|' is matched as a byte, not alternation —
      * a common silent 0-match trap; flagged in the result warnings (#282). */
     bool pat_has_pipe = pattern && strchr(pattern, '|') != NULL;
@@ -9787,6 +9809,7 @@ static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
     bool scoped = false;
     int scoped_written = 0;
 
+    uint64_t scope_t0 = metrics.include_phase_timings ? cbm_now_ms() : 0;
     scoped = write_scoped_filelist(srv, project, root_path, scratch.filelist, has_path_filter,
                                    has_path_filter ? &path_regex : NULL, &scoped_written);
     /* Close before grep runs: this is what flushes the records the helper wrote
@@ -9794,10 +9817,14 @@ static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
      * search_scratch_close, which still unlinks the file itself. */
     (void)fclose(scratch.filelist);
     scratch.filelist = NULL;
+    if (metrics.include_phase_timings) {
+        metrics.scope_ms = cbm_now_ms() - scope_t0;
+    }
 
     /* Collect grep matches into array */
     int gm_count = 0;
     grep_match_t *gm = NULL;
+    uint64_t scan_t0 = metrics.include_phase_timings ? cbm_now_ms() : 0;
     if (scoped && scoped_written == 0) {
         /* The path_filter excluded every indexed file — nothing to scan.
          * Skip the grep subprocess: xargs on an empty filelist is
@@ -9827,11 +9854,15 @@ static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
          * code, the file list is removed even when the scan was not scoped. */
         search_scratch_close(&scratch);
     }
+    if (metrics.include_phase_timings) {
+        metrics.scan_ms = cbm_now_ms() - scan_t0;
+    }
 
     /* ── Phase 2+3: Block expansion + graph ranking ──────────── */
     /* Sort grep matches by file for contiguous processing.
      * Then: one SQL query per unique file for nodes, one batch query for all degrees. */
 
+    uint64_t enrich_t0 = metrics.include_phase_timings ? cbm_now_ms() : 0;
     cbm_store_t *store = resolve_store(srv, project);
 
     int sr_cap = CBM_SZ_32;
@@ -9875,6 +9906,10 @@ static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
     if (sr_count > SKIP_ONE) {
         qsort(sr, sr_count, sizeof(search_result_t), search_result_cmp);
     }
+    if (metrics.include_phase_timings) {
+        metrics.enrich_ms = cbm_now_ms() - enrich_t0;
+    }
+    metrics.elapsed_ms = cbm_now_ms() - search_t0;
 
     /* ── Phase 4: Context assembly (extracted helper) ─────────── */
 
@@ -9887,15 +9922,14 @@ static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
 
     char *result = NULL;
     if (mode == 0 && !sc_legacy_json) {
-        char *toon_text =
-            assemble_search_output_toon(sr, sr_count, raw, raw_count, gm_count, limit,
-                                        pat_has_pipe && !use_regex, cbm_now_ms() - search_t0);
+        char *toon_text = assemble_search_output_toon(sr, sr_count, raw, raw_count, gm_count, limit,
+                                                      pat_has_pipe && !use_regex, &metrics);
         result = cbm_mcp_text_result(toon_text ? toon_text : "out of memory", toon_text == NULL);
         free(toon_text);
     } else {
-        result = assemble_search_output(sr, sr_count, raw, raw_count, gm_count, limit, mode,
-                                        context_lines, root_path, pat_has_pipe && !use_regex,
-                                        cbm_now_ms() - search_t0);
+        result =
+            assemble_search_output(sr, sr_count, raw, raw_count, gm_count, limit, mode,
+                                   context_lines, root_path, pat_has_pipe && !use_regex, &metrics);
     }
     free(gm);
     free(sr);

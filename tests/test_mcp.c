@@ -4557,6 +4557,46 @@ TEST(search_code_literal_pipe_warns_issue282) {
     PASS();
 }
 
+TEST(search_code_reports_phase_timings_only_in_debug_mode) {
+    char tmp[512];
+    cbm_mcp_server_t *srv = setup_snippet_server(tmp, sizeof(tmp));
+    ASSERT_NOT_NULL(srv);
+
+    char *response = cbm_mcp_handle_tool(
+        srv, "search_code", "{\"pattern\":\"HandleRequest\",\"project\":\"test-project\"}");
+    ASSERT_NOT_NULL(response);
+    ASSERT_NULL(strstr(response, "scope_ms"));
+    ASSERT_NULL(strstr(response, "scan_ms"));
+    ASSERT_NULL(strstr(response, "enrich_ms"));
+    ASSERT_NOT_NULL(strstr(response, "elapsed_ms"));
+    free(response);
+
+    response = cbm_mcp_handle_tool(
+        srv, "search_code",
+        "{\"pattern\":\"HandleRequest\",\"project\":\"test-project\",\"debug\":true}");
+    ASSERT_NOT_NULL(response);
+    ASSERT_NOT_NULL(strstr(response, "scope_ms"));
+    ASSERT_NOT_NULL(strstr(response, "scan_ms"));
+    ASSERT_NOT_NULL(strstr(response, "enrich_ms"));
+    ASSERT_NOT_NULL(strstr(response, "elapsed_ms"));
+    free(response);
+
+    response = cbm_mcp_handle_tool(
+        srv, "search_code",
+        "{\"pattern\":\"HandleRequest\",\"project\":\"test-project\",\"format\":\"json\","
+        "\"debug\":true}");
+    ASSERT_NOT_NULL(response);
+    ASSERT_NOT_NULL(strstr(response, "\\\"scope_ms\\\":"));
+    ASSERT_NOT_NULL(strstr(response, "\\\"scan_ms\\\":"));
+    ASSERT_NOT_NULL(strstr(response, "\\\"enrich_ms\\\":"));
+    ASSERT_NOT_NULL(strstr(response, "\\\"elapsed_ms\\\":"));
+    free(response);
+
+    cleanup_snippet_dir(tmp);
+    cbm_mcp_server_free(srv);
+    PASS();
+}
+
 /* issue #272: '&' in a path / file_pattern is neutralised by the command's
  * quoting and must no longer be rejected as "invalid characters". */
 TEST(search_code_ampersand_accepted_issue272) {
@@ -10724,6 +10764,7 @@ SUITE(mcp) {
     RUN_TEST(search_code_path_filter_matches_nothing);
     RUN_TEST(search_code_invalid_regex_errors_issue283);
     RUN_TEST(search_code_literal_pipe_warns_issue282);
+    RUN_TEST(search_code_reports_phase_timings_only_in_debug_mode);
     RUN_TEST(search_code_ampersand_accepted_issue272);
     RUN_TEST(tool_detect_changes_no_project);
     RUN_TEST(tool_manage_adr_no_project);
