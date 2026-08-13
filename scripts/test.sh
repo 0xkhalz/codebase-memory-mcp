@@ -318,5 +318,6 @@ CBM_TEST_BINARY="$WATCHDOG_BINARY" bash "$ROOT/tests/test_worker_error_response.
 # audit must allow-list it (Windows-only — Linux smoke never saw it).
 echo "=== Step 6: security-strings allow-list regression ==="
 bash "$ROOT/tests/test_security_strings_allowlist.sh"
+bash "$ROOT/tests/test_destructive_ordering_contract.sh"
 
 echo "=== All tests passed ==="
