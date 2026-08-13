@@ -428,23 +428,25 @@ def parse_completed(document: object, submission: Submission) -> Tuple[str, Opti
         raise GateError(f"VirusTotal response has an invalid analysis id: {submission.expected.scan_path}")
     # The id is recorded as evidence, NOT required to equal the submitted one.
     #
-    # VirusTotal is content-addressed: for bytes it already holds it may answer
-    # with its own canonical analysis rather than the one this upload created,
-    # and the id then differs legitimately. Requiring equality blocked a real
-    # release dry-run on the 282 MB linux-arm64 candidate — precisely the kind
-    # of large, previously-seen artifact where this happens, so it would have
-    # recurred on most releases.
+    # VirusTotal is content-addressed, and it recognising our bytes is the
+    # behaviour we WANT, not a problem to defend against. The evidence this
+    # pipeline publishes is the hash-keyed file report — append-vt-notes.sh
+    # asserts the URL is exactly .../gui/file/<sha256>/detection — so what we
+    # gate on and what a reader sees when they look that SHA-256 up themselves
+    # are the same report. Demanding a freshly minted analysis id would have
+    # contradicted the evidence we publish alongside it.
+    #
+    # It also does not work in practice: requiring equality blocked a real
+    # dry-run on the 282 MB linux-arm64 candidate, exactly the kind of large,
+    # previously seen artifact VirusTotal answers for from its own record, so it
+    # would have recurred on most releases.
     #
     # What must hold is that the verdict describes THESE bytes, and the
-    # completed branch below enforces exactly that against file_info.sha256 and
-    # size. That is also what keeps a tuple's two candidates apart: stripped and
-    # unstripped have different hashes by construction, so neither can be read
-    # as the other regardless of what ids VirusTotal hands out (the wrong-hash
-    # and wrong-size contract cases pin this).
-    #
-    # The property given up is freshness: an older cached analysis of identical
-    # bytes is accepted. For identical bytes that is the same content risk, and
-    # it is the trade this gate deliberately takes to stay deterministic.
+    # completed branch below enforces that against file_info.sha256 and size —
+    # a strictly stronger binding than an id. It is also what keeps a tuple's
+    # two candidates apart: stripped and unstripped differ in hash by
+    # construction, so neither can be read as the other whatever ids VirusTotal
+    # hands out (the wrong-hash and wrong-size contract cases pin this).
     attributes = data.get("attributes")
     if not isinstance(attributes, dict):
         raise GateError("VirusTotal response has no analysis attributes")
