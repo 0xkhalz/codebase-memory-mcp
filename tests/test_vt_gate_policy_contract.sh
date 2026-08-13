@@ -19,6 +19,19 @@ hash_file() {
   sha256sum "$1" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$1" | awk '{print $1}'
 }
 
+# Public policy surfaces must not promise a stricter/different gate than the
+# one actually enforced here. Native ClamAV/Defender jobs remain separate and
+# may still use an any-detection-fails rule.
+for surface in "$ROOT/README.md" "$ROOT/SECURITY.md" "$ROOT/docs/index.html"; do
+  if grep -Eqi '(zero malicious( and| or) zero suspicious (required|verdicts required)|zero malicious or suspicious verdicts (are )?required|no exception path in this release gate)' "$surface"; then
+    fail "stale zero-tolerance VirusTotal promise contradicts the Microsoft !ml policy: $surface"
+  fi
+done
+grep -Fq 'Microsoft `!ml` tolerance' "$ROOT/README.md" || \
+  fail "README must link the exact documented Microsoft !ml tolerance"
+grep -Fq 'Policy identifier: `cbm-vt-candidate-selection-v1`' "$ROOT/SECURITY.md" || \
+  fail "SECURITY.md must name the versioned candidate-selection policy"
+
 # Tripwire for the REVERTED endpoint-verification mechanism specifically. The
 # current `!ml` tolerance is a policy branch inside this gate, not a callout to
 # an external verification service, and must never become one.
@@ -105,7 +118,16 @@ write_response wrong-size 0 0 60 "$PROBE_SHA" "$((PROBE_SIZE + 1))"
 
 cat > "$FIX/responses/upload-alias.json" <<EOF
 {"meta":{"file_info":{"sha256":"$PROBE_SHA","size":$PROBE_SIZE}},
- "data":{"id":"canonical-analysis","type":"analysis","attributes":{"status":"completed",
+ "data":{"id":"upload-alias","type":"analysis","attributes":{"status":"completed",
+ "stats":{"malicious":0,"suspicious":0,"undetected":60,"harmless":0,
+          "timeout":0,"confirmed-timeout":0,"failure":0,"type-unsupported":0},
+ "results":{"Microsoft":{"category":"undetected","result":null,
+               "engine_version":"1.26070","engine_update":"20260808"}}}}}
+EOF
+
+cat > "$FIX/responses/mismatched-response-id.json" <<EOF
+{"meta":{"file_info":{"sha256":"$PROBE_SHA","size":$PROBE_SIZE}},
+ "data":{"id":"different-analysis","type":"analysis","attributes":{"status":"completed",
  "stats":{"malicious":0,"suspicious":0,"undetected":60,"harmless":0,
           "timeout":0,"confirmed-timeout":0,"failure":0,"type-unsupported":0},
  "results":{"Microsoft":{"category":"undetected","result":null,
@@ -258,14 +280,20 @@ clean_output="binaries/objects/probe=$(url_for clean-analysis)"
 [ "$(run_gate "$clean_output")" = "0" ] || fail "clean exact scan must pass: $(cat "$FIX/last.log")"
 alias_output="binaries/objects/probe=$(url_for upload-alias)"
 [ "$(run_gate "$alias_output")" = "0" ] || \
-  fail "a content-bound canonical response alias must pass: $(cat "$FIX/last.log")"
+  fail "a content-bound action-output path alias must pass: $(cat "$FIX/last.log")"
 RESULTS="$FIX/work/binaries/vt-results.tsv"
 [ -f "$RESULTS" ] || fail "clean gate did not atomically publish its results manifest"
-grep -q '^# cbm-virustotal-results-v1$' "$RESULTS" || fail "results marker missing"
+grep -q '^# cbm-virustotal-results-v2$' "$RESULTS" || fail "results marker missing"
 grep -q "objects/probe.*$PROBE_SHA.*$PROBE_SIZE.*60" "$RESULTS" || \
   fail "results do not bind path/hash/size/actual engine count"
 grep -Fq 'upload-alias' "$RESULTS" || \
   fail "results must retain the action's submitted analysis ID"
+grep -q $'undetected\t\tclean\t' "$RESULTS" || \
+  fail "clean result must carry an explicit clean policy classification"
+[ "$(run_gate "binaries/objects/probe=$(url_for mismatched-response-id)")" != "0" ] || \
+  fail "a response for a different analysis ID must block even when hash/size match"
+grep -q 'response analysis id does not match' "$FIX/last.log" || \
+  fail "analysis-ID mismatch failure is not explicit"
 
 for id in one-malicious one-suspicious; do
   [ "$(run_gate "binaries/objects/probe=$(url_for "$id")")" != "0" ] || \
@@ -285,6 +313,9 @@ grep -q 'Microsoft = Trojan:Script/Wacatac.B!ml' "$FIX/last.log" || \
   fail "gate must report the flagging engine and label"
 grep -q $'objects/probe\t.*\t1\t0\t' "$FIX/work/binaries/vt-results.tsv" || \
   fail "tolerated detection was not preserved as workflow evidence"
+grep -Fq $'malicious\tTrojan:Script/Wacatac.B!ml\tmicrosoft-ml\t' \
+  "$FIX/work/binaries/vt-results.tsv" || \
+  fail "tolerated result must retain Microsoft's exact label and policy classification"
 if grep -q 'detected by: Kaspersky' "$FIX/last.log"; then
   fail "gate listed a non-flagging engine as a detection"
 fi
@@ -292,6 +323,9 @@ fi
 # Everything adjacent to the tolerated case still blocks.
 [ "$(run_gate "binaries/objects/probe=$(url_for ms-signature)")" != "0" ] || \
   fail "a Microsoft signature (non-!ml) detection must block"
+grep -Fq $'malicious\tTrojan:Win32/Emotet\thard\t' \
+  "$FIX/work/binaries/vt-results.tsv" || \
+  fail "blocking result must be recorded as hard with its exact label"
 [ "$(run_gate "binaries/objects/probe=$(url_for other-engine)")" != "0" ] || \
   fail "a non-Microsoft detection must block"
 [ "$(run_gate "binaries/objects/probe=$(url_for two-engines)")" != "0" ] || \

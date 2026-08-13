@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# Idempotently publish the exact VirusTotal scope and measured result evidence
-# after check-virustotal.sh has passed.
+# Publish the already-completed candidate scans and tuple-local selections.
 set -euo pipefail
 
 : "${GH_TOKEN:?append-vt-notes: GH_TOKEN is required}"
 : "${VERSION:?append-vt-notes: VERSION is required}"
 : "${GITHUB_REPOSITORY:?append-vt-notes: GITHUB_REPOSITORY is required}"
 
-VT_ASSOCIATIONS="${VT_ASSOCIATIONS:-binaries/associations.tsv}"
-VT_RESULTS_PATH="${VT_RESULTS_PATH:-binaries/vt-results.tsv}"
+VT_CANDIDATES="${VT_CANDIDATES:-release-candidates.tsv}"
+VT_RESULTS_PATH="${VT_RESULTS_PATH:-virustotal-candidate-results.tsv}"
+RELEASE_SELECTION="${RELEASE_SELECTION:-release-selection.tsv}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/cbm-vt-notes.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
-gh release view "$VERSION" \
-  --json body --jq '.body // ""' --repo "$GITHUB_REPOSITORY" > "$WORK/current.md"
+gh release view "$VERSION" --json body --jq '.body // ""' \
+  --repo "$GITHUB_REPOSITORY" > "$WORK/current.md"
 
-python3 - "$VT_ASSOCIATIONS" "$VT_RESULTS_PATH" "$WORK/current.md" "$WORK/updated.md" \
-  "$GITHUB_REPOSITORY" "$VERSION" <<'PY'
+python3 - "$VT_CANDIDATES" "$VT_RESULTS_PATH" "$RELEASE_SELECTION" \
+  "$WORK/current.md" "$WORK/updated.md" "$GITHUB_REPOSITORY" "$VERSION" <<'PY'
 from __future__ import annotations
 
 import csv
@@ -24,262 +24,257 @@ import pathlib
 import re
 import sys
 import urllib.parse
-from typing import Dict, List, Sequence, Tuple
 
 
 START = "<!-- cbm-security-verification:start -->"
 END = "<!-- cbm-security-verification:end -->"
-ASSOCIATION_FIELDS = (
-    "association_type",
-    "archive",
-    "archive_sha256",
-    "variant",
-    "kind",
-    "member",
-    "asset_path",
-    "mime",
-    "scan_path",
-    "object_sha256",
-    "size",
+TARGETS = (
+    "linux-amd64",
+    "linux-arm64",
+    "linux-amd64-portable",
+    "linux-arm64-portable",
+    "darwin-amd64",
+    "darwin-arm64",
+    "windows-amd64",
+    "windows-arm64",
+)
+VARIANTS = ("unstripped", "stripped")
+CANDIDATE_FIELDS = (
+    "target", "variant", "relative_path", "source_sha256", "pre_sign_sha256",
+    "sha256", "size", "format", "architecture", "linkage", "transform",
+    "signature", "strip_tool", "strip_version", "pair_verification", "scan_path",
 )
 RESULT_FIELDS = (
-    "scan_path",
-    "sha256",
-    "size",
-    "association_count",
-    "completed_engines",
-    "total_engines",
-    "malicious",
-    "suspicious",
-    "analysis_id",
-    "microsoft_category",
-    "microsoft_engine_version",
-    "microsoft_engine_update",
-    "virustotal_url",
+    "scan_path", "sha256", "size", "association_count", "completed_engines",
+    "total_engines", "malicious", "suspicious", "analysis_id",
+    "microsoft_category", "microsoft_result", "policy_classification",
+    "microsoft_engine_version", "microsoft_engine_update", "virustotal_url",
 )
+SELECTION_FIELDS = (
+    "target", "selected_variant", "selected_path", "selected_sha256",
+    "selected_size", "decision", "unstripped_sha256", "unstripped_scan_path",
+    "unstripped_classification", "unstripped_analysis_id",
+    "unstripped_virustotal_url", "stripped_sha256", "stripped_scan_path",
+    "stripped_classification", "stripped_analysis_id", "stripped_virustotal_url",
+)
+SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def fail(message: str) -> None:
     raise SystemExit(f"append-vt-notes: {message}")
 
 
-def read_tsv(
-    path: pathlib.Path,
-    marker: str,
-    fields: Sequence[str],
-) -> Tuple[Dict[str, int], List[Dict[str, str]]]:
+def read_tsv(path: pathlib.Path, marker: str, fields: tuple[str, ...]):
     if path.is_symlink() or not path.is_file() or path.stat().st_size > 16 * 1024 * 1024:
         fail(f"missing, unsafe or oversized evidence file: {path}")
-    lines = path.read_text(encoding="utf-8").splitlines()
+    text = path.read_text(encoding="utf-8")
+    if "\x00" in text or "\r" in text:
+        fail(f"forbidden control bytes in evidence file: {path}")
+    lines = text.splitlines()
     if not lines or lines[0] != f"# {marker}":
         fail(f"wrong evidence marker in {path}")
-    metadata: Dict[str, int] = {}
+    metadata: dict[str, str] = {}
     cursor = 1
     while cursor < len(lines) and lines[cursor].startswith("# "):
-        key, separator, raw_value = lines[cursor][2:].partition("=")
-        if not separator or not key or key in metadata or not raw_value.isdigit():
+        key, separator, value = lines[cursor][2:].partition("=")
+        if not separator or not key or not value or key in metadata:
             fail(f"malformed evidence metadata in {path}")
-        metadata[key] = int(raw_value)
+        metadata[key] = value
         cursor += 1
     reader = csv.DictReader(lines[cursor:], delimiter="\t")
-    if tuple(reader.fieldnames or ()) != tuple(fields):
+    if tuple(reader.fieldnames or ()) != fields:
         fail(f"unexpected TSV header in {path}")
     rows = list(reader)
     if any(None in row or any(row.get(field) is None for field in fields) for row in rows):
-        fail(f"TSV row has missing or surplus cells in {path}")
-    if not rows:
-        fail(f"empty evidence rows in {path}")
+        fail(f"missing or surplus TSV cells in {path}")
     return metadata, rows
 
 
-association_path = pathlib.Path(sys.argv[1])
+candidates_path = pathlib.Path(sys.argv[1])
 results_path = pathlib.Path(sys.argv[2])
-current_path = pathlib.Path(sys.argv[3])
-updated_path = pathlib.Path(sys.argv[4])
-repository = sys.argv[5]
-version = sys.argv[6]
+selection_path = pathlib.Path(sys.argv[3])
+current_path = pathlib.Path(sys.argv[4])
+updated_path = pathlib.Path(sys.argv[5])
+repository = sys.argv[6]
+version = sys.argv[7]
 if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None or not version:
-    fail("unsafe repository or version for public evidence links")
+    fail("unsafe repository or version")
+
+candidate_meta, candidates = read_tsv(
+    candidates_path, "cbm-release-candidates-v1", CANDIDATE_FIELDS
+)
+result_meta, results = read_tsv(
+    results_path, "cbm-virustotal-results-v2", RESULT_FIELDS
+)
+selection_meta, selections = read_tsv(
+    selection_path, "cbm-release-selection-v1", SELECTION_FIELDS
+)
+expected_pairs = [(target, variant) for target in TARGETS for variant in VARIANTS]
+if candidate_meta != {"targets": "8", "candidates": "16"}:
+    fail("candidate metadata does not bind the 8-target/16-candidate matrix")
+if [(row["target"], row["variant"]) for row in candidates] != expected_pairs:
+    fail("candidate rows are not the canonical target/variant matrix")
+if result_meta.get("scan_objects") != "16" or result_meta.get("associations") != "16":
+    fail("VirusTotal results do not cover all 16 candidates")
+if selection_meta != {"policy": "virustotal-v2", "targets": "8", "candidates": "16"}:
+    fail("selection was not produced by the scanned release policy")
+if [row["target"] for row in selections] != list(TARGETS):
+    fail("selection rows are not the canonical target matrix")
+
+candidate_by_pair = {(row["target"], row["variant"]): row for row in candidates}
+candidate_by_path = {row["scan_path"]: row for row in candidates}
+if len(candidate_by_pair) != 16 or len(candidate_by_path) != 16:
+    fail("candidate evidence contains duplicates")
+
+results_by_path: dict[str, dict[str, str]] = {}
+for result in results:
+    candidate = candidate_by_path.get(result["scan_path"])
+    if candidate is None or result["scan_path"] in results_by_path:
+        fail("VirusTotal evidence contains an unknown or duplicate candidate")
+    for field in ("size", "completed_engines", "total_engines", "malicious", "suspicious"):
+        if not result[field].isdigit():
+            fail(f"malformed numeric result for {result['scan_path']}")
+    if (
+        result["sha256"] != candidate["sha256"]
+        or result["size"] != candidate["size"]
+        or result["association_count"] != "1"
+        or SHA256.fullmatch(result["sha256"]) is None
+        or result["virustotal_url"]
+        != f"https://www.virustotal.com/gui/file/{result['sha256']}/detection"
+    ):
+        fail(f"VirusTotal result is not bound to candidate bytes: {result['scan_path']}")
+    completed = int(result["completed_engines"])
+    total = int(result["total_engines"])
+    if completed < 50 or total < completed:
+        fail(f"incomplete VirusTotal result: {result['scan_path']}")
+    classification = result["policy_classification"]
+    clean = (
+        classification == "clean"
+        and result["malicious"] == "0"
+        and result["suspicious"] == "0"
+        and result["microsoft_category"] in {"undetected", "harmless"}
+        and result["microsoft_result"] == ""
+    )
+    microsoft_ml = (
+        classification == "microsoft-ml"
+        and result["malicious"] == "1"
+        and result["suspicious"] == "0"
+        and result["microsoft_category"] == "malicious"
+        and result["microsoft_result"].endswith("!ml")
+    )
+    if not clean and not microsoft_ml:
+        fail(f"blocked VirusTotal result reached release notes: {result['scan_path']}")
+    if not result["analysis_id"] or not result["microsoft_engine_version"] or not result["microsoft_engine_update"]:
+        fail(f"incomplete VirusTotal evidence: {result['scan_path']}")
+    results_by_path[result["scan_path"]] = result
+if set(results_by_path) != set(candidate_by_path):
+    fail("VirusTotal results are missing candidates")
+
+selection_by_target: dict[str, dict[str, str]] = {}
+for selection in selections:
+    target = selection["target"]
+    pair = {variant: candidate_by_pair[target, variant] for variant in VARIANTS}
+    pair_results = {variant: results_by_path[pair[variant]["scan_path"]] for variant in VARIANTS}
+    stripped_class = pair_results["stripped"]["policy_classification"]
+    unstripped_class = pair_results["unstripped"]["policy_classification"]
+    expected_variant = "stripped" if stripped_class == "clean" or unstripped_class != "clean" else "unstripped"
+    selected = pair[expected_variant]
+    if (
+        selection["selected_variant"] != expected_variant
+        or selection["selected_sha256"] != selected["sha256"]
+        or selection["selected_size"] != selected["size"]
+    ):
+        fail(f"selection contradicts candidate results: {target}")
+    for variant in VARIANTS:
+        result = pair_results[variant]
+        if (
+            selection[f"{variant}_sha256"] != pair[variant]["sha256"]
+            or selection[f"{variant}_scan_path"] != pair[variant]["scan_path"]
+            or selection[f"{variant}_classification"] != result["policy_classification"]
+            or selection[f"{variant}_analysis_id"] != result["analysis_id"]
+            or selection[f"{variant}_virustotal_url"] != result["virustotal_url"]
+        ):
+            fail(f"selection evidence is not bound to both candidate verdicts: {target}")
+    selection_by_target[target] = selection
+
 asset_base = (
     f"https://github.com/{repository}/releases/download/"
     f"{urllib.parse.quote(version, safe='')}"
 )
-association_meta, associations = read_tsv(
-    association_path,
-    "cbm-release-scan-associations-v3",
-    ASSOCIATION_FIELDS,
+
+
+def verdict_cell(target: str, variant: str) -> str:
+    result = results_by_path[candidate_by_pair[target, variant]["scan_path"]]
+    label = "clean" if result["policy_classification"] == "clean" else "Microsoft `!ml`"
+    return f"[{label}]({result['virustotal_url']})"
+
+
+ml_count = sum(
+    result["policy_classification"] == "microsoft-ml" for result in results
 )
-result_meta, results = read_tsv(
-    results_path,
-    "cbm-virustotal-results-v1",
-    RESULT_FIELDS,
-)
-if association_meta.get("associations") != len(associations):
-    fail("association manifest count does not match its rows")
-if result_meta.get("scan_objects") != len(results):
-    fail("VirusTotal result count does not match its rows")
-if result_meta.get("associations") != len(associations):
-    fail("VirusTotal results do not cover the association manifest")
-
-results_by_path: Dict[str, Dict[str, str]] = {}
-association_counts: Dict[str, int] = {}
-executable_paths = {
-    association["scan_path"]
-    for association in associations
-    if association["kind"] == "binary"
-}
-for association in associations:
-    scan_path = association["scan_path"]
-    association_counts[scan_path] = association_counts.get(scan_path, 0) + 1
-tolerated_paths: List[str] = []
-for result in results:
-    scan_path = result["scan_path"]
-    if scan_path in results_by_path:
-        fail(f"duplicate VirusTotal result path: {scan_path}")
-    for numeric in (
-        "size",
-        "association_count",
-        "completed_engines",
-        "total_engines",
-        "malicious",
-        "suspicious",
-    ):
-        if not result[numeric].isdigit():
-            fail(f"malformed numeric result field {numeric}: {scan_path}")
-    # Mirrors the gate's release policy: a single Microsoft machine-learning
-    # verdict is tolerated and disclosed in the notes; anything else must never
-    # have reached publication.
-    tolerated = (
-        int(result["malicious"]) == 1
-        and int(result["suspicious"]) == 0
-        and result["microsoft_category"] == "malicious"
-    )
-    if (int(result["malicious"]) != 0 or int(result["suspicious"]) != 0) and not tolerated:
-        fail(f"detected object reached release-note publication: {scan_path}")
-    if tolerated:
-        tolerated_paths.append(scan_path)
-    if (
-        re.fullmatch(r"[0-9a-f]{64}", result["sha256"]) is None
-        or result["virustotal_url"]
-        != f"https://www.virustotal.com/gui/file/{result['sha256']}/detection"
-    ):
-        fail(f"result SHA/link is malformed or mismatched: {scan_path}")
-    if int(result["association_count"]) != association_counts.get(scan_path):
-        fail(f"result association count mismatch: {scan_path}")
-    if scan_path in executable_paths:
-        if result["microsoft_category"] not in {"undetected", "harmless", "malicious"}:
-            fail(f"executable result lacks a decisive Microsoft verdict: {scan_path}")
-        if not result["microsoft_engine_version"] or not result["microsoft_engine_update"]:
-            fail(f"executable result lacks Microsoft version evidence: {scan_path}")
-    results_by_path[scan_path] = result
-if set(results_by_path) != set(association_counts):
-    fail("VirusTotal result paths differ from association paths")
-for association in associations:
-    result = results_by_path[association["scan_path"]]
-    if (
-        result["sha256"] != association["object_sha256"]
-        or result["size"] != association["size"]
-    ):
-        fail(f"result hash/size differs from association: {association['scan_path']}")
-
-member_rows = [row for row in associations if row["association_type"] == "member"]
-if len(member_rows) != len(associations):
-    fail("association manifest contains a non-extracted scan target")
-archive_hashes: Dict[str, str] = {}
-for association in associations:
-    archive = association["archive"]
-    archive_sha256 = association["archive_sha256"]
-    if not archive or re.fullmatch(r"[0-9a-f]{64}", archive_sha256) is None:
-        fail("member association lacks valid archive SHA provenance")
-    previous_sha256 = archive_hashes.get(archive)
-    if previous_sha256 is not None and previous_sha256 != archive_sha256:
-        fail(f"conflicting archive SHA provenance: {archive}")
-    archive_hashes[archive] = archive_sha256
-if len(archive_hashes) != association_meta.get("archives"):
-    fail("distinct archive provenance count is inconsistent")
-
-engine_counts = [int(row["completed_engines"]) for row in results]
-minimum = min(engine_counts)
-maximum = max(engine_counts)
-policy = result_meta.get("min_engines_policy")
-if policy is None or minimum < policy:
-    fail("result engine counts do not satisfy their recorded policy")
-engine_range = str(minimum) if minimum == maximum else f"{minimum}–{maximum}"
-
+engine_counts = [int(result["completed_engines"]) for result in results]
+engine_range = str(min(engine_counts)) if min(engine_counts) == max(engine_counts) else f"{min(engine_counts)}–{max(engine_counts)}"
 section = [
     START,
     "## Security Verification",
     "",
     (
-        f"VirusTotal completed **{len(results)} distinct extracted byte objects** covering "
-        f"**{len(associations)} exact extracted archive members**."
+        "Before smoke and soak testing, VirusTotal completed **16 executable scans**: "
+        "stripped and unstripped candidates for each of the **8 release products**. "
+        f"Every scan had at least 50 decisive engines (observed range: {engine_range})."
     ),
     (
-        f"The extraction manifest binds those associations to "
-        f"**{len(archive_hashes)} downloadable "
-        f"{'archive' if len(archive_hashes) == 1 else 'archives'}** by SHA-256 provenance. "
-        "Downloadable .tar.gz/.zip release containers were not submitted to VirusTotal."
+        "All candidates were clean."
+        if ml_count == 0
+        else f"**{ml_count} candidate(s)** had only the documented single Microsoft machine-learning `!ml` result; no other decisive engine reported malicious or suspicious."
     ),
     "",
-    (
-        f"Every scanned object returned **0 malicious and 0 suspicious** verdicts with "
-        f"{engine_range} decisive engine results (required minimum: {policy})."
-        if not tolerated_paths
-        else (
-            f"{len(results) - len(tolerated_paths)} of {len(results)} scanned objects returned "
-            f"**0 malicious and 0 suspicious** verdicts with {engine_range} decisive engine "
-            f"results (required minimum: {policy})."
-        )
-    ),
-    (
-        f"Microsoft returned a decisive clean verdict for all "
-        f"{len(executable_paths)} executable objects."
-        if not tolerated_paths
-        else (
-            f"**{len(tolerated_paths)} object(s) carry a single Microsoft machine-learning "
-            f"detection** (`!ml`), which this project treats as a known false positive and "
-            f"publishes rather than hides. Every other engine returned clean. See "
-            f"[Antivirus False Positives](https://github.com/{repository}"
-            f"/blob/main/SECURITY.md#antivirus-false-positives) for the evidence and for how to "
-            f"verify these artifacts yourself: "
-            + ", ".join(f"`{path}`" for path in sorted(tolerated_paths))
-        )
-    ),
-    "",
-    (
-        "Durable public evidence: "
-        f"[associations]({asset_base}/virustotal-associations.tsv), "
-        f"[exact scan set]({asset_base}/virustotal-scan-set.tsv), "
-        f"[per-extracted-object results and report links]({asset_base}/virustotal-results.tsv), "
-        f"[evidence checksums]({asset_base}/virustotal-evidence-checksums.txt)."
-    ),
-    "",
-    "Archive SHA-256 provenance (from the extraction manifest):",
-    "",
-    "| Downloadable archive | SHA-256 provenance |",
-    "|---|---|",
+    "| Product | Stripped candidate | Unstripped candidate | Shipped |",
+    "|---|---|---|---|",
 ]
-for archive, archive_sha256 in sorted(archive_hashes.items()):
-    section.append(f"| `{archive}` | `{archive_sha256}` |")
-section.append(END)
+for target in TARGETS:
+    selection = selection_by_target[target]
+    section.append(
+        f"| `{target}` | {verdict_cell(target, 'stripped')} | "
+        f"{verdict_cell(target, 'unstripped')} | `{selection['selected_variant']}` (`{selection['selected_sha256']}`) |"
+    )
+section.extend(
+    [
+        "",
+        (
+            "Selection is tuple-local and defaults to stripped. The selected executable SHA-256 "
+            "was verified again after packaging; archive containers were not redundantly submitted "
+            "to VirusTotal. Their hashes remain available in `checksums.txt`."
+        ),
+        "",
+        (
+            "Durable evidence: "
+            f"[candidate provenance]({asset_base}/release-candidates.tsv), "
+            f"[candidate VirusTotal results]({asset_base}/virustotal-candidate-results.tsv), "
+            f"[selection decisions]({asset_base}/release-selection.tsv)."
+        ),
+        END,
+    ]
+)
 replacement = "\n".join(section)
-
 current = current_path.read_text(encoding="utf-8")
-start_count = current.count(START)
-end_count = current.count(END)
-if start_count != end_count or start_count > 1:
+if current.count(START) != current.count(END) or current.count(START) > 1:
     fail("existing release notes contain malformed verification markers")
-if start_count == 1:
+if START in current:
     if current.index(START) >= current.index(END):
-        fail("existing release-note verification markers are reversed")
-    pattern = re.compile(re.escape(START) + r".*?" + re.escape(END), re.DOTALL)
-    updated, replacements = pattern.subn(replacement, current, count=1)
-    if replacements != 1:
-        fail("existing release-note verification section could not be replaced")
+        fail("existing verification markers are reversed")
+    updated, count = re.subn(
+        re.escape(START) + r".*?" + re.escape(END),
+        replacement,
+        current,
+        count=1,
+        flags=re.DOTALL,
+    )
+    if count != 1:
+        fail("could not replace existing verification section")
 else:
     updated = current.rstrip() + ("\n\n" if current.strip() else "") + replacement + "\n"
 updated_path.write_text(updated, encoding="utf-8")
 PY
 
-gh release edit "$VERSION" \
-  --notes-file "$WORK/updated.md" --repo "$GITHUB_REPOSITORY"
+gh release edit "$VERSION" --notes-file "$WORK/updated.md" --repo "$GITHUB_REPOSITORY"
