@@ -165,7 +165,7 @@
           "name": "Does codebase-memory-mcp send my code anywhere?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "No. All indexing and querying happen 100% locally on your machine. There is no embedded LLM and no API key — your MCP client acts as the intelligence layer. Before release testing, both stripped and unstripped executable candidates for every platform and link mode are submitted to VirusTotal. The selected candidate is packaged with its SHA-256 unchanged, and release notes link every measured result. Publication permits only the documented single-Microsoft !ml tolerance."
+            "text": "No. All indexing and querying happen 100% locally on your machine. There is no embedded LLM and no API key — your MCP client acts as the intelligence layer. Before release testing, three behaviourally identical executable candidates (unstripped, debug-stripped, stripped) for every platform and link mode are submitted to VirusTotal. The selected candidate is packaged with its SHA-256 unchanged, and release notes link every measured result. Publication permits only the documented single-Microsoft !ml tolerance."
           }
         },
         {
@@ -791,8 +791,8 @@
 
         <h3>Does codebase-memory-mcp send my code anywhere?</h3>
         <p>No. All indexing and querying happen 100% locally. There is no embedded LLM and no API key. Release
-           archives are signed and checksummed. Before testing, both stripped and unstripped executable candidates
-           for every platform and link mode are submitted to VirusTotal; the selected candidate is packaged with its
+           archives are signed and checksummed. Before testing, three behaviourally identical executable candidates
+           (unstripped, debug-stripped, stripped) for every platform and link mode are submitted to VirusTotal; the selected candidate is packaged with its
            SHA-256 unchanged. Release notes link every measured result. Publication permits only the
            documented single-Microsoft <code>!ml</code> tolerance.</p>
 

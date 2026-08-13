@@ -295,10 +295,10 @@ jobs:
           if-no-files-found: error
 
   # One blocking join owns the security-sensitive transition from candidates
-  # to public artifacts. Each target tuple contributes exactly two behavior-
-  # equivalent candidates (stripped/unstripped); the selector may choose only
-  # within that tuple. A hard or incomplete result for either sibling blocks
-  # the all-target release rather than selecting around missing evidence.
+  # to public artifacts. Each target tuple contributes exactly three behavior-
+  # equivalent candidates (unstripped/debug-stripped/stripped); the selector may
+  # only choose within that tuple. A hard result on ANY sibling blocks
+  # the all-target release rather than selecting around a real detection.
   select-package:
     needs: [build-unix, build-windows, build-windows-arm64, build-linux-portable]
     runs-on: ubuntu-latest
@@ -324,14 +324,14 @@ jobs:
             "$RUNNER_TEMP/release-candidate-artifacts" \
             release-candidate-scan \
             --expect-targets 8 \
-            --expect-candidates 16
+            --expect-candidates 24
           # Staging copied and re-hashed every byte into the immutable object
           # set. Drop the redundant artifact-download tree before the VT wait.
           test -n "$RUNNER_TEMP"
           rm -rf -- "$RUNNER_TEMP/release-candidate-artifacts"
           test ! -e "$RUNNER_TEMP/release-candidate-artifacts"
 
-      - name: Submit all 16 candidates to VirusTotal
+      - name: Submit all 24 candidates to VirusTotal
         if: ${{ inputs.scan_candidates }}
         uses: crazy-max/ghaction-virustotal@936d8c5c00afe97d3d9a1af26d017cfdf26800a2 # v5.0.0
         id: virustotal-candidates
@@ -379,7 +379,7 @@ jobs:
       - name: Reclaim rejected and redundant candidate bytes
         run: |
           # release-selection owns fresh, hash-verified copies of the eight
-          # chosen executables. No later release step may consume the 16-object
+          # chosen executables. No later release step may consume the 24-object
           # scan pool, so discard it before packaging to bound runner disk use.
           rm -rf -- release-candidate-scan/objects
           test ! -e release-candidate-scan/objects

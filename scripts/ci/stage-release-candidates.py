@@ -30,7 +30,7 @@ TARGETS = (
     "windows-amd64",
     "windows-arm64",
 )
-VARIANTS = ("unstripped", "stripped")
+VARIANTS = ("unstripped", "debug-stripped", "stripped")
 PROVENANCE_FIELDS = (
     "target",
     "variant",

@@ -122,16 +122,19 @@ expected_fields = (
 actual_fields = tuple(rows[0].keys()) if rows else ()
 if actual_fields != expected_fields:
     raise SystemExit("FAIL: candidate provenance header changed")
-if [row["variant"] for row in rows] != ["unstripped", "stripped"]:
+if [row["variant"] for row in rows] != ["unstripped", "debug-stripped", "stripped"]:
     raise SystemExit("FAIL: provenance rows are not in canonical variant order")
 if any(row["target"] != target for row in rows):
     raise SystemExit("FAIL: provenance target is not exact")
 if any(row["source_sha256"] != source_hash for row in rows):
-    raise SystemExit("FAIL: both candidates must bind the unchanged linker-output hash")
-if rows[0]["sha256"] == rows[1]["sha256"]:
-    raise SystemExit("FAIL: strip did not produce two byte-distinct candidates")
-if rows[0]["transform"] != "copy" or rows[1]["transform"] != "strip":
-    raise SystemExit("FAIL: transforms are not explicit copy/strip")
+    raise SystemExit("FAIL: every candidate must bind the unchanged linker-output hash")
+digests = [row["sha256"] for row in rows]
+if len(set(digests)) != len(digests):
+    # Identical candidates would be one VirusTotal draw wearing three hats, and
+    # the selector would believe it has alternatives that do not exist.
+    raise SystemExit("FAIL: strip did not produce three byte-distinct candidates")
+if [row["transform"] for row in rows] != ["copy", "strip-debug", "strip"]:
+    raise SystemExit("FAIL: transforms are not explicit copy/strip-debug/strip")
 if any(row["pair_verification"] != "same-linker-output-v1" for row in rows):
     raise SystemExit("FAIL: common linker-output provenance is not recorded")
 if target.startswith("darwin-") and any(row["signature"] != "adhoc-verified" for row in rows):

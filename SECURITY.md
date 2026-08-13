@@ -126,7 +126,7 @@ Releases are created as **drafts** (invisible to users) and only published after
 2. **Sigstore cosign signing** — keyless digital signatures verifiable by anyone
 3. **SBOM** — Software Bill of Materials (SPDX) listing all vendored dependencies
 4. **SHA-256 checksums** — published with every release
-5. **VirusTotal scanning** — both stripped and unstripped executable candidates for every release product are scanned before smoke/soak. Zero malicious and zero suspicious is preferred; the only tolerated result is exactly one Microsoft malicious label ending in `!ml`, which is disclosed. The selected executable is packaged without changing its SHA-256; archive containers are checksummed rather than redundantly rescanned. Release notes link every candidate result and the selection evidence.
+5. **VirusTotal scanning** — three behaviourally identical executable candidates — unstripped, debug-stripped and stripped — are derived from one linker output for every release product and scanned before smoke/soak. Zero malicious and zero suspicious is preferred; the only tolerated result is exactly one Microsoft malicious label ending in `!ml`, which is disclosed. The selected executable is packaged without changing its SHA-256; archive containers are checksummed rather than redundantly rescanned. Release notes link every candidate result and the selection evidence.
 6. **OpenSSF Scorecard** — repository security health score
 
 Scope of the SLSA claim: this is a build provenance claim for release

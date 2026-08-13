@@ -175,7 +175,7 @@ else:
             "select-package: timeout-minutes must be at least 300 so the bounded\n"
             "      four-hour VirusTotal poll can complete before job cleanup.")
 
-    for token in ("--expect-targets 8", "--expect-candidates 16",
+    for token in ("--expect-targets 8", "--expect-candidates 24",
                   "VT_POLL_TIMEOUT_SECONDS: 14400",
                   "scripts/ci/select-release-candidates.py",
                   "scripts/ci/verify-release-selection.py",

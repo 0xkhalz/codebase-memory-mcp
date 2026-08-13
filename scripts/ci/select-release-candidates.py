@@ -30,7 +30,7 @@ TARGETS = (
     "windows-amd64",
     "windows-arm64",
 )
-VARIANTS = ("unstripped", "stripped")
+VARIANTS = ("unstripped", "debug-stripped", "stripped")
 PROVENANCE_FIELDS = (
     "target",
     "variant",
@@ -78,6 +78,11 @@ SELECTION_FIELDS = (
     "unstripped_classification",
     "unstripped_analysis_id",
     "unstripped_virustotal_url",
+    "debug_stripped_sha256",
+    "debug_stripped_scan_path",
+    "debug_stripped_classification",
+    "debug_stripped_analysis_id",
+    "debug_stripped_virustotal_url",
     "stripped_sha256",
     "stripped_scan_path",
     "stripped_classification",
@@ -210,7 +215,11 @@ def validate_candidate_row(row: dict[str, str], *, target: str, variant: str) ->
         "format": file_format,
         "architecture": architecture,
         "linkage": linkage,
-        "transform": "copy" if variant == "unstripped" else "strip",
+        "transform": {
+            "unstripped": "copy",
+            "debug-stripped": "strip-debug",
+            "stripped": "strip",
+        }[variant],
         "signature": "adhoc-verified" if target.startswith("darwin-") else "not-applicable",
         "pair_verification": "same-linker-output-v1",
     }
@@ -517,17 +526,30 @@ def main(argv: Sequence[str]) -> None:
                     variant: results[pair[variant]["scan_path"]]["policy_classification"]
                     for variant in VARIANTS
                 }
-                stripped_class = classifications["stripped"]
-                unstripped_class = classifications["unstripped"]
-                if stripped_class == "clean":
-                    selected_variant = "stripped"
-                    decision = "stripped-preferred"
-                elif unstripped_class == "clean":
-                    selected_variant = "unstripped"
-                    decision = "unstripped-clean-after-stripped-microsoft-ml"
+                # Preference order is fixed and content-independent: the
+                # smallest artifact first, then progressively more metadata.
+                # A `hard` classification never reaches here - the gate fails
+                # the release before selection - so every candidate below is
+                # either clean or a tolerated single Microsoft `!ml`.
+                #
+                # The variants are behaviourally identical, so this picks on
+                # verdict alone: the first clean one in preference order, and
+                # only if EVERY candidate drew the tolerated verdict do we ship
+                # a flagged one (still the smallest).
+                order = ("stripped", "debug-stripped", "unstripped")
+                clean = [v for v in order if classifications[v] == "clean"]
+                if clean:
+                    selected_variant = clean[0]
+                    if selected_variant == "stripped":
+                        decision = "stripped-preferred"
+                    else:
+                        others = "-".join(
+                            f"{v}:{classifications[v]}" for v in order if v != selected_variant
+                        )
+                        decision = f"{selected_variant}-clean-after-{others}"
                 else:
                     selected_variant = "stripped"
-                    decision = "stripped-both-microsoft-ml"
+                    decision = "stripped-all-candidates-microsoft-ml"
 
             selected = pair[selected_variant]
             binary_name = expected_properties(target)[0]
@@ -547,13 +569,16 @@ def main(argv: Sequence[str]) -> None:
                 "decision": decision,
             }
             for variant in VARIANTS:
+                # Field prefixes use underscores; the variant name is the
+                # on-disk directory and keeps its hyphen ("debug-stripped").
+                key = variant.replace("-", "_")
                 candidate = pair[variant]
                 result = results[candidate["scan_path"]] if results is not None else None
-                evidence[f"{variant}_sha256"] = candidate["sha256"]
-                evidence[f"{variant}_scan_path"] = candidate["scan_path"]
-                evidence[f"{variant}_classification"] = classifications[variant]
-                evidence[f"{variant}_analysis_id"] = result["analysis_id"] if result else ""
-                evidence[f"{variant}_virustotal_url"] = result["virustotal_url"] if result else ""
+                evidence[f"{key}_sha256"] = candidate["sha256"]
+                evidence[f"{key}_scan_path"] = candidate["scan_path"]
+                evidence[f"{key}_classification"] = classifications[variant]
+                evidence[f"{key}_analysis_id"] = result["analysis_id"] if result else ""
+                evidence[f"{key}_virustotal_url"] = result["virustotal_url"] if result else ""
             selection_rows.append(evidence)
 
         write_tsv(

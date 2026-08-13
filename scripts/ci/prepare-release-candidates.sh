@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Derive the two final, immutable release candidates for one existing product
+# Derive the three final, immutable release candidates for one existing product
 # tuple from a single linker output.  Strip/signing happens here and nowhere
 # after this boundary.
 set -euo pipefail
@@ -11,8 +11,9 @@ usage() {
 Usage: scripts/ci/prepare-release-candidates.sh <goos> <goarch> \
          --binary FILE --out-dir DIR
 
-Derive one unstripped and one stripped final executable for exactly one of the
-eight release product tuples. Both candidates come from the same linker output
+Derive three final executables - unstripped, debug-stripped and stripped - for
+exactly one of the eight release product tuples. All three come from the same
+linker output
 and are finalized before hashing and atomic publication. Runtime testing starts
 only after VirusTotal selection, using the selected candidate.
 
@@ -139,12 +140,14 @@ trap cleanup EXIT
 STAGE="$WORK/$TARGET"
 BINARY_NAME=codebase-memory-mcp
 [ "$GOOS" = windows ] && BINARY_NAME=codebase-memory-mcp.exe
-mkdir -p "$STAGE/unstripped" "$STAGE/stripped"
+mkdir -p "$STAGE/unstripped" "$STAGE/debug-stripped" "$STAGE/stripped"
 UNSTRIPPED="$STAGE/unstripped/$BINARY_NAME"
+DEBUG_STRIPPED="$STAGE/debug-stripped/$BINARY_NAME"
 STRIPPED="$STAGE/stripped/$BINARY_NAME"
 cp "$BINARY" "$UNSTRIPPED"
+cp "$BINARY" "$DEBUG_STRIPPED"
 cp "$BINARY" "$STRIPPED"
-chmod 0755 "$UNSTRIPPED" "$STRIPPED"
+chmod 0755 "$UNSTRIPPED" "$DEBUG_STRIPPED" "$STRIPPED"
 
 STRIP_INVOCATION="$(basename "$STRIP_TOOL") --strip-all"
 if ! "$STRIP_TOOL" --strip-all "$STRIPPED" 2>/dev/null; then
@@ -161,7 +164,31 @@ if ! "$STRIP_TOOL" --strip-all "$STRIPPED" 2>/dev/null; then
     STRIP_INVOCATION="$(basename "$STRIP_TOOL")"
 fi
 
+# Third candidate: debug information removed, symbol table kept. Behaviourally
+# identical to the other two — same linker output, nothing but metadata differs
+# — but a distinct byte image, so VirusTotal scans it as its own file.
+#
+# That is the entire point. Release-run evidence shows the single tolerated
+# Microsoft `!ml` verdict landing on stripped and unstripped candidates of the
+# SAME build essentially at random (they disagreed on 4 of 8 targets, in both
+# directions), so each variant is an independent draw. With two candidates one
+# target came back flagged on both and had no clean binary to ship; a third
+# independent draw makes that outcome substantially rarer.
+DEBUG_STRIP_INVOCATION="$(basename "$STRIP_TOOL") --strip-debug"
+if ! "$STRIP_TOOL" --strip-debug "$DEBUG_STRIPPED" 2>/dev/null; then
+    # Apple's strip rejects --strip-debug; -S is its measured equivalent.
+    if [ "$GOOS" != darwin ]; then
+        echo "prepare-release-candidates: $STRIP_TOOL --strip-debug failed" >&2
+        exit 2
+    fi
+    cp "$BINARY" "$DEBUG_STRIPPED"
+    chmod 0755 "$DEBUG_STRIPPED"
+    "$STRIP_TOOL" -S "$DEBUG_STRIPPED"
+    DEBUG_STRIP_INVOCATION="$(basename "$STRIP_TOOL") -S"
+fi
+
 UNSTRIPPED_PRE_SIGN_SHA="$(sha256_file "$UNSTRIPPED")"
+DEBUG_STRIPPED_PRE_SIGN_SHA="$(sha256_file "$DEBUG_STRIPPED")"
 STRIPPED_PRE_SIGN_SHA="$(sha256_file "$STRIPPED")"
 SIGNATURE=not-applicable
 if [ "$GOOS" = darwin ]; then
@@ -171,7 +198,7 @@ if [ "$GOOS" = darwin ]; then
         exit 2
     }
     CODESIGN_TOOL="$(command -v "$CODESIGN_TOOL")"
-    for candidate in "$UNSTRIPPED" "$STRIPPED"; do
+    for candidate in "$UNSTRIPPED" "$DEBUG_STRIPPED" "$STRIPPED"; do
         "$CODESIGN_TOOL" --sign - --force --timestamp=none "$candidate"
         "$CODESIGN_TOOL" --verify --strict "$candidate"
     done
@@ -179,13 +206,18 @@ if [ "$GOOS" = darwin ]; then
 fi
 
 UNSTRIPPED_SHA="$(sha256_file "$UNSTRIPPED")"
+DEBUG_STRIPPED_SHA="$(sha256_file "$DEBUG_STRIPPED")"
 STRIPPED_SHA="$(sha256_file "$STRIPPED")"
-[ "$UNSTRIPPED_SHA" != "$STRIPPED_SHA" ] || {
+# All three must differ: identical candidates would be one draw wearing three
+# hats, and the selector would believe it had alternatives it does not have.
+if [ "$UNSTRIPPED_SHA" = "$STRIPPED_SHA" ] || \
+   [ "$UNSTRIPPED_SHA" = "$DEBUG_STRIPPED_SHA" ] || \
+   [ "$DEBUG_STRIPPED_SHA" = "$STRIPPED_SHA" ]; then
     echo "prepare-release-candidates: strip did not produce byte-distinct candidates" >&2
     exit 2
-}
+fi
 
-for candidate in "$UNSTRIPPED" "$STRIPPED"; do
+for candidate in "$UNSTRIPPED" "$DEBUG_STRIPPED" "$STRIPPED"; do
     bash "$ROOT/scripts/ci/check-binary-composition.sh" "$candidate" >/dev/null
 done
 
@@ -194,6 +226,7 @@ done
     exit 2
 }
 [ "$(sha256_file "$UNSTRIPPED")" = "$UNSTRIPPED_SHA" ] && \
+    [ "$(sha256_file "$DEBUG_STRIPPED")" = "$DEBUG_STRIPPED_SHA" ] && \
     [ "$(sha256_file "$STRIPPED")" = "$STRIPPED_SHA" ] || {
     echo "prepare-release-candidates: a final candidate changed during validation" >&2
     exit 2
@@ -212,6 +245,7 @@ linux-*) LINKAGE=dynamic ;;
 esac
 
 UNSTRIPPED_SIZE="$(wc -c < "$UNSTRIPPED" | tr -d '[:space:]')"
+DEBUG_STRIPPED_SIZE="$(wc -c < "$DEBUG_STRIPPED" | tr -d '[:space:]')"
 STRIPPED_SIZE="$(wc -c < "$STRIPPED" | tr -d '[:space:]')"
 MANIFEST="$STAGE/candidate-provenance.tsv"
 {
@@ -221,13 +255,17 @@ MANIFEST="$STAGE/candidate-provenance.tsv"
         "$TARGET" "$BINARY_NAME" "$SOURCE_SHA" "$UNSTRIPPED_PRE_SIGN_SHA" \
         "$UNSTRIPPED_SHA" "$UNSTRIPPED_SIZE" "$FORMAT" "$ARCHITECTURE" \
         "$LINKAGE" "$SIGNATURE" "$STRIP_INVOCATION" "$STRIP_VERSION"
+    printf '%s\tdebug-stripped\tdebug-stripped/%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\tstrip-debug\t%s\t%s\t%s\tsame-linker-output-v1\n' \
+        "$TARGET" "$BINARY_NAME" "$SOURCE_SHA" "$DEBUG_STRIPPED_PRE_SIGN_SHA" \
+        "$DEBUG_STRIPPED_SHA" "$DEBUG_STRIPPED_SIZE" "$FORMAT" "$ARCHITECTURE" \
+        "$LINKAGE" "$SIGNATURE" "$DEBUG_STRIP_INVOCATION" "$STRIP_VERSION"
     printf '%s\tstripped\tstripped/%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\tstrip\t%s\t%s\t%s\tsame-linker-output-v1\n' \
         "$TARGET" "$BINARY_NAME" "$SOURCE_SHA" "$STRIPPED_PRE_SIGN_SHA" \
         "$STRIPPED_SHA" "$STRIPPED_SIZE" "$FORMAT" "$ARCHITECTURE" \
         "$LINKAGE" "$SIGNATURE" "$STRIP_INVOCATION" "$STRIP_VERSION"
 } > "$MANIFEST"
 
-chmod 0555 "$UNSTRIPPED" "$STRIPPED"
+chmod 0555 "$UNSTRIPPED" "$DEBUG_STRIPPED" "$STRIPPED"
 chmod 0444 "$MANIFEST"
 mv "$STAGE" "$PUBLISHED"
-echo "prepare-release-candidates: published $TARGET stripped/unstripped pair"
+echo "prepare-release-candidates: published $TARGET unstripped/debug-stripped/stripped candidates"
