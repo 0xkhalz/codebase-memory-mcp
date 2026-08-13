@@ -1452,11 +1452,18 @@ static bool main_semver_newer(const char *candidate, const char *active) {
  * stdout carries a JSON-RPC error object so the agent surfaces the reason;
  * id is null because the failure precedes reading any request. stderr carries
  * the same text for humans reading a terminal. */
-static void main_report_client_bootstrap_failure(cbm_daemon_process_role_t role,
-                                                 const cbm_daemon_bootstrap_result_t *result) {
-    const char *detail = (result && result->message[0])
-                             ? result->message
-                             : "CBM daemon connection failed before the session was established";
+/* #1582: an MCP client that dies before the session exists must SAY so on
+ * stdout. #1539 added that for bootstrap failures, but every earlier exit on
+ * the client path still wrote to stderr only — which no MCP client surfaces.
+ * A reporter's log showed the whole failure as:
+ *
+ *   Server transport closed unexpectedly, this is likely due to the process
+ *   exiting early
+ *
+ * for what was a specific, nameable refusal. The guarantee is "a server that
+ * cannot start always says why", so it belongs on every client-path exit, not
+ * just the one that happened to be fixed first. */
+static void main_report_client_failure(cbm_daemon_process_role_t role, const char *detail) {
     if (cbm_daemon_process_role_requires_client(role)) {
         char escaped[CBM_DAEMON_CONFLICT_MESSAGE_SIZE * 2];
         size_t out = 0;
@@ -1479,6 +1486,14 @@ static void main_report_client_bootstrap_failure(cbm_daemon_process_role_t role,
         (void)fflush(stdout);
     }
     (void)fprintf(stderr, "codebase-memory-mcp: %s\n", detail);
+}
+
+static void main_report_client_bootstrap_failure(cbm_daemon_process_role_t role,
+                                                 const cbm_daemon_bootstrap_result_t *result) {
+    main_report_client_failure(role, (result && result->message[0])
+                                         ? result->message
+                                         : "CBM daemon connection failed before the session was "
+                                           "established");
 }
 
 /* Client bootstrap with the upgrade policy: a CONFLICT against a PERMANENT
@@ -2560,7 +2575,7 @@ int main(int argc, char **argv) {
         cleanup_ok = main_version_cohort_close(&cohort_lease, &cohort_manager) && cleanup_ok;
         cbm_daemon_ipc_endpoint_free(local_endpoint);
         if (!cleanup_ok) {
-            (void)fprintf(stderr, "codebase-memory-mcp: CLI coordination cleanup failed\n");
+            main_report_client_failure(role, "CLI coordination cleanup failed");
             return EXIT_FAILURE;
         }
         return exit_code;
@@ -2722,7 +2737,15 @@ int main(int argc, char **argv) {
 
     cbm_daemon_ipc_endpoint_t *endpoint = main_daemon_endpoint_new();
     if (!endpoint) {
-        (void)fprintf(stderr, "codebase-memory-mcp: secure daemon endpoint could not be created\n");
+        /* #1582: this is where an ownership/ancestry refusal lands, and it was
+         * the silent one — stderr only, so an MCP client saw a transport that
+         * closed with no explanation. Include the validation detail, which
+         * names the directory and the rule that refused. */
+        const char *why = cbm_daemon_ipc_validation_detail();
+        char message[CBM_DAEMON_CONFLICT_MESSAGE_SIZE];
+        (void)snprintf(message, sizeof(message), "secure daemon endpoint could not be created%s%s",
+                       (why && why[0]) ? ": " : "", (why && why[0]) ? why : "");
+        main_report_client_failure(role, message);
         return EXIT_FAILURE;
     }
 
