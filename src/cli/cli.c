@@ -9236,6 +9236,71 @@ static bool cbm_detect_self_path(char *buf, size_t buf_sz, const char *home) {
     return exact;
 }
 
+/* Is the running binary owned by an external package manager rather than by us?
+ *
+ * #1566: cbm's installer does two separable jobs — place the binary (and put its
+ * directory on PATH), and configure the agents. For someone who installed
+ * through mise, Homebrew or nix, the first job is not merely redundant: it drops
+ * a SECOND copy into ~/.local/bin that shadows the managed one depending on PATH
+ * order, and appends to a shell rc file the package manager never asked us to
+ * touch. They wanted the agent configs refreshed and nothing else.
+ *
+ * The signal is simply that the OS says we are running from somewhere other than
+ * the directory we install into. We only infer when the OS REPORTED the path
+ * (exact): the ~/.local/bin fallback is a guess, and guessing here would refuse
+ * to install for someone who has no binary at all. Naming the manager is
+ * best-effort — the behaviour does not depend on recognising it, only the
+ * wording does. */
+static const char *cli_external_manager_name(const char *self_path) {
+    if (!self_path || !self_path[0]) {
+        return NULL;
+    }
+    if (strstr(self_path, "/mise/") || strstr(self_path, "/.mise/")) {
+        return "mise";
+    }
+    if (strstr(self_path, "/Cellar/") || strstr(self_path, "/homebrew/") ||
+        strstr(self_path, "/linuxbrew/")) {
+        return "Homebrew";
+    }
+    if (strstr(self_path, "/nix/store/")) {
+        return "nix";
+    }
+    if (strstr(self_path, "/.asdf/")) {
+        return "asdf";
+    }
+    if (strstr(self_path, "/.cargo/bin/")) {
+        return "cargo";
+    }
+    return NULL;
+}
+
+#ifdef CBM_CLI_ENABLE_TEST_API
+const char *cbm_cli_external_manager_name_for_testing(const char *self_path) {
+    return cli_external_manager_name(self_path);
+}
+#endif
+
+static bool cli_binary_is_externally_managed(const char *self_path, bool self_path_exact,
+                                             const char *bin_dir) {
+    (void)bin_dir;
+    if (!self_path_exact || !self_path || !self_path[0]) {
+        return false;
+    }
+    /* POSITIVE evidence only: the path must look like a known package manager's.
+     *
+     * The tempting rule — "anything outside the directory we install into" —
+     * is wrong, and the test suite proved it immediately: a test binary runs
+     * from build/, and a perfectly ordinary `install --dir=/opt/cbm` also lives
+     * outside the default. Both would be misread as foreign, and `update` would
+     * refuse to update an installation we own.
+     *
+     * The asymmetry decides it. A false positive REFUSES a legitimate update; a
+     * false negative just leaves today's behaviour in place for an unrecognised
+     * manager, which --skip-binary covers explicitly. So we only infer when we
+     * can name the owner. */
+    return cli_external_manager_name(self_path) != NULL;
+}
+
 /* Build the agent.install.plan.v1 receipt (#388): a machine-readable list of
  * the config / instruction / skill / agent / hook files `install` WOULD write, produced by
  * running the real install dispatch in record-only mode (no mutation, no
@@ -9366,6 +9431,10 @@ typedef struct {
     cli_binary_validator_t binary_validator;
     bool has_binary_validator;
     bool copy_binary;
+    /* #1566: true when the binary is not ours to place — suppresses the PATH
+     * edit too, since adding a directory to PATH for a binary we did not
+     * install is exactly the unasked-for change that was complained about. */
+    bool skip_binary;
     bool delete_indexes;
     bool skip_config;
     bool force;
@@ -9440,6 +9509,14 @@ static int cli_install_activate(void *opaque) {
         return CLI_ACTIVATION_PARTIAL;
     }
     int path_rc = CLI_TRUE;
+    /* #1566: only touch PATH when WE placed the binary. Appending to a shell rc
+     * for a binary installed by someone else is an unasked-for change to a file
+     * we do not own, and the directory we would add may hold nothing at all. */
+    if (activation->skip_binary) {
+        cli_activation_transaction_finalize_committed_or_fail_stop(&activation->binary_transaction,
+                                                                   "install_transaction_finalize");
+        return CLI_OK;
+    }
 #ifdef _WIN32
     path_rc = cli_ensure_windows_user_path(activation->bin_dir,
                                            activation->dry_run || g_cli_activation_test_ops_set);
@@ -9489,6 +9566,8 @@ int cbm_cmd_install(int argc, char **argv) {
     bool plan = false;
     bool reset_indexes = false;
     bool skip_config = false;
+    bool skip_binary = false;
+    bool force_binary = false;
     const char *requested_bin_dir = NULL;
     for (int i = 0; i < argc; i++) {
         if (strcmp(argv[i], "--dry-run") == 0) {
@@ -9501,6 +9580,12 @@ int cbm_cmd_install(int argc, char **argv) {
             reset_indexes = true;
         } else if (strcmp(argv[i], "--skip-config") == 0) {
             skip_config = true;
+        } else if (strcmp(argv[i], "--skip-binary") == 0) {
+            /* #1566: the mirror of --skip-config. Configure the agents, leave
+             * the binary and PATH alone. */
+            skip_binary = true;
+        } else if (strcmp(argv[i], "--force-binary") == 0) {
+            force_binary = true;
         } else if (strncmp(argv[i], "--dir=", SLEN("--dir=")) == 0) {
             requested_bin_dir = argv[i] + SLEN("--dir=");
             if (!requested_bin_dir[0]) {
@@ -9564,7 +9649,24 @@ int cbm_cmd_install(int argc, char **argv) {
     printf("codebase-memory-mcp install %s\n\n", CBM_VERSION);
 
     char self_path[CLI_BUF_1K] = {0};
-    (void)cbm_detect_self_path(self_path, sizeof(self_path), home);
+    bool self_path_exact = cbm_detect_self_path(self_path, sizeof(self_path), home);
+
+    /* #1566: a binary owned by mise/Homebrew/nix is not ours to relocate. Infer
+     * it, and let either flag override the inference in either direction. */
+    bool externally_managed =
+        !force_binary && cli_binary_is_externally_managed(self_path, self_path_exact, bin_dir);
+    if (externally_managed || skip_binary) {
+        const char *manager = cli_external_manager_name(self_path);
+        if (skip_binary) {
+            printf("Skipping binary placement (--skip-binary); configuring agents only.\n\n");
+        } else {
+            printf("Binary is managed elsewhere%s%s:\n  %s\n"
+                   "Leaving it and your PATH untouched; configuring agents only.\n"
+                   "  (use --force-binary to install a copy into %s anyway)\n\n",
+                   manager ? " by " : "", manager ? manager : "", self_path, bin_dir);
+        }
+        skip_binary = true;
+    }
 
     /* NOT stat(): on Windows it goes through the ANSI code page, so an
      * extended-length or non-ASCII target reports "absent" and a non-force
@@ -9572,7 +9674,7 @@ int cbm_cmd_install(int argc, char **argv) {
     cbm_path_info_t target_status;
     bool target_exists = cbm_path_info_utf8(bin_target, &target_status) == 0;
     bool same_binary = cbm_same_file(self_path, bin_target);
-    bool do_copy = !same_binary && (!target_exists || force);
+    bool do_copy = !skip_binary && !same_binary && (!target_exists || force);
 
     /* (#607) Default: preserve existing indexes. `--reset-indexes` opts into
      * the old prompt-and-delete behaviour. The helper returns 0 only when the
@@ -9748,6 +9850,7 @@ int cbm_cmd_install(int argc, char **argv) {
         .copy_binary = do_copy,
         .delete_indexes = delete_indexes,
         .skip_config = skip_config,
+        .skip_binary = skip_binary,
         .force = force,
         .dry_run = dry_run,
     };
@@ -11573,6 +11676,37 @@ int cbm_cmd_update(int argc, char **argv) {
         (void)fprintf(stderr, "note: --ui/--standard are accepted but no longer do anything; since "
                               "v0.10.0 there is one build per platform and it always includes the "
                               "graph UI.\n");
+    }
+
+    /* #1566: we cannot update a binary a package manager owns, and pretending
+     * otherwise is the dishonest-success pattern this project keeps fixing:
+     * reporting that an update ran while changing nothing leaves the user
+     * convinced they are current. Refuse, and name the command that WILL work. */
+    {
+        char self_path[CLI_BUF_1K] = {0};
+        const char *home = cbm_get_home_dir();
+        bool self_exact = home && cbm_detect_self_path(self_path, sizeof(self_path), home);
+        char managed_dir[CLI_BUF_1K] = {0};
+        if (self_exact && home) {
+            snprintf(managed_dir, sizeof(managed_dir), "%s/.local/bin", home);
+        }
+        if (self_exact && cli_binary_is_externally_managed(self_path, true, managed_dir)) {
+            const char *manager = cli_external_manager_name(self_path);
+            (void)fprintf(stderr,
+                          "error: this binary is managed by %s, so `update` cannot replace it:\n"
+                          "  %s\n",
+                          manager ? manager : "another installer", self_path);
+            if (manager && strcmp(manager, "mise") == 0) {
+                (void)fprintf(stderr, "  update it with: mise upgrade codebase-memory-mcp\n");
+            } else if (manager && strcmp(manager, "Homebrew") == 0) {
+                (void)fprintf(stderr, "  update it with: brew upgrade codebase-memory-mcp\n");
+            } else {
+                (void)fprintf(stderr, "  update it through whichever tool installed it.\n");
+            }
+            (void)fprintf(stderr, "  to refresh only the agent configurations, run: "
+                                  "codebase-memory-mcp install --skip-binary\n");
+            return CLI_TRUE;
+        }
     }
 
     /* Updates run from the install script, not from this process — on every

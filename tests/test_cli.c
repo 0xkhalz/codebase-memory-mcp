@@ -12193,6 +12193,33 @@ TEST(cli_skill_frontmatter_scalars_with_colons_are_quoted_issue1554) {
     PASS();
 }
 
+/* #1566: a binary owned by mise/Homebrew/nix is not ours to relocate, and the
+ * detection must key on POSITIVE evidence — a recognised manager path — not on
+ * "outside our default install dir". The latter misreads an ordinary
+ * `install --dir=/opt/cbm` (and every test binary) as foreign, and would then
+ * REFUSE to update an installation we own. A false positive costs a working
+ * update; a false negative only leaves today's behaviour for an unrecognised
+ * manager, which --skip-binary covers explicitly. */
+TEST(cli_external_manager_detection_needs_positive_evidence_issue1566) {
+    /* Recognised managers -> named. */
+    ASSERT_NOT_NULL(cbm_cli_external_manager_name_for_testing(
+        "/Users/x/.local/share/mise/installs/cbm/0.10.3/bin/codebase-memory-mcp"));
+    ASSERT_NOT_NULL(cbm_cli_external_manager_name_for_testing(
+        "/opt/homebrew/Cellar/codebase-memory-mcp/0.10.3/bin/codebase-memory-mcp"));
+    ASSERT_NOT_NULL(
+        cbm_cli_external_manager_name_for_testing("/nix/store/abc-cbm/bin/codebase-memory-mcp"));
+
+    /* Ours, or merely unusual, must NOT be claimed as externally managed. */
+    ASSERT_NULL(
+        cbm_cli_external_manager_name_for_testing("/Users/x/.local/bin/codebase-memory-mcp"));
+    ASSERT_NULL(cbm_cli_external_manager_name_for_testing("/opt/cbm/codebase-memory-mcp"));
+    ASSERT_NULL(cbm_cli_external_manager_name_for_testing("/usr/local/bin/codebase-memory-mcp"));
+    ASSERT_NULL(cbm_cli_external_manager_name_for_testing("build/c/test-runner"));
+    ASSERT_NULL(cbm_cli_external_manager_name_for_testing(""));
+    ASSERT_NULL(cbm_cli_external_manager_name_for_testing(NULL));
+    PASS();
+}
+
 TEST(cli_update_accepts_retired_variant_flags_issue1544) {
     char *ui_argv[] = {"--dry-run", "--ui", "--yes"};
     char *standard_argv[] = {"--dry-run", "--standard", "--yes"};
@@ -12282,6 +12309,7 @@ SUITE(cli) {
     RUN_TEST(cli_update_download_failure_does_not_quiesce_sessions);
     RUN_TEST(cli_update_already_current_does_not_quiesce_sessions);
     RUN_TEST(cli_skill_frontmatter_scalars_with_colons_are_quoted_issue1554);
+    RUN_TEST(cli_external_manager_detection_needs_positive_evidence_issue1566);
     RUN_TEST(cli_update_accepts_retired_variant_flags_issue1544);
     RUN_TEST(cli_update_agent_configs_finish_before_guard_release);
     RUN_TEST(cli_uninstall_quiesces_active_cohort_before_removing_binary_and_index);
