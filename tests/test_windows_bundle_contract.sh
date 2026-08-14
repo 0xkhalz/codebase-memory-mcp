@@ -415,7 +415,7 @@ require(
         needle in read("src/daemon/ipc.c")
         for needle in (
             "win_directory_component_secure",
-            "win_file_security_secure(security, directory, false, mutation)",
+            "win_file_security_secure(security, directory, false, mutation, true)",
             "win_private_mutation_rights()",
             "~((DWORD)FILE_ADD_SUBDIRECTORY)",
             "FILE_ADD_FILE",
@@ -427,6 +427,30 @@ require(
         )
     ),
     "src/daemon/ipc.c must enforce the shared cross-account ancestor trust policy",
+)
+
+# ── 6b. AppContainer tolerance is ANCESTOR-ONLY ─────────────────────────────
+# Package (S-1-15-2-*) and capability (S-1-15-3-*) SIDs are admitted on ancestor
+# components so a machine running a sandboxed desktop app (Claude Desktop stamps
+# its package SID on %LOCALAPPDATA%) is not locked out. The private runtime
+# directory must keep demanding the exact current user: it is passed
+# ancestor=false and that is the whole boundary.
+require(
+    all(
+        needle in read("src/daemon/ipc.c")
+        for needle in (
+            "win_sid_is_app_container",
+            "ancestor && win_sid_is_app_container",
+            # both AppContainer forms, not capability alone
+            "first == 2U || first == 3U",
+            # APP_PACKAGE identifier authority
+            "sid[7] != 15U",
+            # the private runtime directory is validated with ancestor=false
+            "win_private_mutation_rights(), false)",
+        )
+    ),
+    "AppContainer SIDs must be tolerated on ancestors ONLY, covering both package "
+    "and capability forms, with the private runtime directory still strict",
 )
 
 # On Windows subprocess supervision receives a non-NULL lpApplicationName, so a
