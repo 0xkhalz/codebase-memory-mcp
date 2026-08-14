@@ -7303,12 +7303,53 @@ static void plan_record(const char *agent, const char *kind, const char *path) {
     snprintf(e->path, sizeof(e->path), "%s", path);
 }
 
+/* Describe what the target actually IS, so a refusal is triageable.
+ *
+ * The config editors collapse nine distinct fail-closed conditions into a
+ * single -1: unsupported structure, an inline comment on a field line, a
+ * non-single-link file, unsafe metadata, lock contention, I/O. `agent=X op=Y
+ * path=Z` alone cannot separate them, and four such failures currently live in
+ * discussion #1560 with no way to tell them apart — OpenCode and Hermes on two
+ * operating systems, unresolved across five releases.
+ *
+ * This reports only OBSERVED facts about the path, never a guess. In
+ * particular it does NOT print errno: this function is called from 119 sites
+ * and errno may be stale from an unrelated call, which is exactly the defect
+ * fixed in #1537, where a permission decision surfaced a fabricated ENOENT and
+ * sent the reporter hunting a file that was never missing.
+ *
+ * Knowing the file exists, is a regular file, and is writable already excludes
+ * most of the space — it says the refusal is structural, not a permission or
+ * missing-file problem. */
+static void describe_agent_config_target(const char *path, char *out, size_t out_size) {
+    if (!out || out_size == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (!path || !path[0]) {
+        return;
+    }
+    cbm_path_info_t info;
+    if (cbm_path_info_utf8(path, &info) != 0) {
+        (void)snprintf(out, out_size, " (target: does not exist or cannot be inspected)");
+        return;
+    }
+    const char *kind = info.is_symlink     ? "symlink"
+                       : info.is_directory ? "directory"
+                       : info.is_regular   ? "regular file"
+                                           : "special file";
+    (void)snprintf(out, out_size, " (target: %s, %lld bytes)", kind, (long long)info.size);
+}
+
 static void record_agent_config_error(bool uninstalling, const char *agent, const char *operation,
                                       const char *path) {
     int *counter = uninstalling ? &g_agent_uninstall_errors : &g_agent_install_errors;
     (*counter)++;
-    (void)fprintf(stderr, "error: agent_config agent=%s op=%s path=%s\n", agent ? agent : "unknown",
-                  operation ? operation : "unknown", path ? path : "unknown");
+    char detail[160];
+    describe_agent_config_target(path, detail, sizeof(detail));
+    (void)fprintf(stderr, "error: agent_config agent=%s op=%s path=%s%s\n",
+                  agent ? agent : "unknown", operation ? operation : "unknown",
+                  path ? path : "unknown", detail);
 }
 
 static bool prepare_config_parent(const char *path) {
