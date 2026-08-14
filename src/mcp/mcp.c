@@ -4213,7 +4213,8 @@ static void coverage_add_row_json(yyjson_mut_doc *doc, yyjson_mut_val *array,
 
 static const char *coverage_status(const cbm_coverage_row_t *rows, int count,
                                    const char *requested_path, const char *recording_status,
-                                   bool generation_matches, bool lookup_ok) {
+                                   bool generation_matches, bool lookup_ok,
+                                   bool exact_path_verified) {
     if (!lookup_ok) {
         return "coverage_unavailable";
     }
@@ -4241,7 +4242,11 @@ static const char *coverage_status(const cbm_coverage_row_t *rows, int count,
             }
         }
     }
-    if (!generation_matches || !recording_status || strcmp(recording_status, "complete") != 0) {
+    bool recording_complete =
+        recording_status && strcmp(recording_status, "complete") == 0;
+    bool truncated_exact_path_verified = exact_path_verified && recording_status &&
+                                         strcmp(recording_status, "truncated") == 0;
+    if (!generation_matches || (!recording_complete && !truncated_exact_path_verified)) {
         return "coverage_unavailable";
     }
     return "no_recorded_issue";
@@ -4358,9 +4363,12 @@ static char *handle_check_index_coverage(cbm_mcp_server_t *srv, const char *args
             bool outside = false;
             const char *freshness = coverage_path_freshness(
                 store, project, have_project ? proj.root_path : NULL, rel, &outside);
+            bool exact_path_verified = have_meta && meta.hash_records_complete &&
+                                       strcmp(freshness, "metadata_match") == 0;
             const char *status = outside ? "outside_project"
                                          : coverage_status(rows, row_count, rel, recording_status,
-                                                           generation_matches, lookup_ok);
+                                                           generation_matches, lookup_ok,
+                                                           exact_path_verified);
             yyjson_mut_obj_add_strcpy(doc, item, "status", status);
             yyjson_mut_obj_add_strcpy(doc, item, "freshness", freshness);
             yyjson_mut_obj_add_strcpy(doc, item, "recommended_action",
