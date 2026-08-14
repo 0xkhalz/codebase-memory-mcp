@@ -13,6 +13,8 @@ int tf_skip_count = 0;
 #include "test_daemon_runtime_contract.h"
 #include "foundation/compat.h"     /* cbm_setenv — #845 supervisor kill switch */
 #include "foundation/compat_fs.h"  /* cbm_fopen — worker response file */
+#include "foundation/constants.h"  /* CBM_SZ_4K — forced stderr buffer */
+#include "foundation/log.h"        /* crash-durable worker log probe */
 #include "foundation/mem.h"        /* cbm_mem_init — worker budget */
 #include "foundation/platform.h"   /* cbm_file_exists — blocking-git marker */
 #include "daemon/runtime.h"        /* bounded worker response probe */
@@ -234,6 +236,27 @@ static void tf_index_worker_probe(const char *args_json, const char *response_ou
         fflush(NULL);
         abort();
     }
+    if (strstr(args_json, "\"buffered-kill\"")) {
+        /* The 0-byte-worker-log repro. tf_maybe_run_index_worker has already
+         * put stderr into the FULL buffering a redirected stderr gets from the
+         * Windows CRT (see there), so this line only reaches the log if the
+         * production worker-log entry made the stream crash-durable.
+         *
+         * Then die the way the reports die. NOT abort(): Darwin's abort() runs
+         * the stdio cleanup handler, so it flushes the very buffer this probe
+         * exists to strand — under abort the reverted build still produced a
+         * populated log and the repro was silently toothless. SIGKILL cannot be
+         * caught, blocked or handled, so no cleanup of any kind runs. It is
+         * also literally #1070's death (`signal=9`) and how #1130's hung worker
+         * is terminated. */
+        cbm_log_info("index.worker.buffered_kill_probe", "phase", "before_kill");
+#ifdef _WIN32
+        TerminateProcess(GetCurrentProcess(), 9);
+#else
+        (void)raise(SIGKILL);
+#endif
+        _Exit(2); /* unreachable: neither primitive returns */
+    }
     if (strstr(args_json, "\"oversize\"")) {
         FILE *response = response_out ? cbm_fopen(response_out, "wb") : NULL;
         bool written = false;
@@ -299,6 +322,23 @@ static int tf_maybe_run_index_worker(int argc, char **argv) {
         return 1;
     }
 
+    /* WHY force full buffering: on POSIX stderr is unbuffered by default, so the
+     * 0-byte worker log of #1070/#1130/#1132/#1133/#1145/#1450 is invisible on
+     * two thirds of the ladder — the Windows CRT is what gives a redirected
+     * stderr FULL buffering. Starting the probe from the Windows default makes
+     * the crash-durability contract testable identically on every OS we own,
+     * instead of a Windows-only claim nobody can run locally. Scoped to the one
+     * probe that asserts it, and set before the production entry below, which is
+     * the code under test. */
+    static char tf_worker_forced_buffer[CBM_SZ_4K];
+    if (invocation.args_json && strstr(invocation.args_json, "\"buffered-kill\"")) {
+        (void)setvbuf(stderr, tf_worker_forced_buffer, _IOFBF, sizeof(tf_worker_forced_buffer));
+    }
+    /* Mirror the production worker entry (run_cli's caller in main.c): the log
+     * header is the first thing a worker records. */
+    char *worker_repo_path = cbm_mcp_get_string_arg(invocation.args_json, "repo_path");
+    cbm_index_worker_log_begin(invocation.args_json, worker_repo_path);
+    free(worker_repo_path);
     cbm_index_set_worker_role_options(true, invocation.response_out, invocation.single_thread,
                                       invocation.marker_file, invocation.quarantine_file,
                                       invocation.memory_budget_bytes);
