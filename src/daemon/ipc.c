@@ -1465,11 +1465,23 @@ static int private_directory_tree_open(const char *directory_path) {
                  * caller fell back to printing errno — which NOTHING here sets.
                  * A reporter was handed "errno 2" (ENOENT) for a permission
                  * refusal and went looking for a missing file that existed.
-                 * An unset errno is not a diagnosis; name the component. */
-                ipc_validation_detail_set("%s: ancestor '%s' is not a usable private-directory "
-                                          "parent (must be owned by you, not world-writable, and "
-                                          "carry no allow-ACL)",
-                                          directory_path, component);
+                 * An unset errno is not a diagnosis.
+                 *
+                 * The first version of that fix then named the WRONG directory.
+                 * posix_directory_parent_secure() validates current_fd — the
+                 * directory we are already in — but the message printed
+                 * `component`, the child about to be entered. So #1537 read
+                 * "ancestor '.cache'" when /Users/<user> was refusing, and
+                 * #1621 read "cbm-daemon-501" when /private/tmp was. Both
+                 * reporters inspected a directory that was not the one
+                 * refusing, found it clean, and said so — correctly. Naming the
+                 * containing directory is the difference between a report we
+                 * can act on and weeks of talking past each other. */
+                ipc_validation_detail_set(
+                    "%s: the directory CONTAINING '%s' is not a usable private-directory parent "
+                    "(it must be owned by you, not world-writable, and carry no allow-ACL). Check "
+                    "that containing directory, not '%s' itself",
+                    directory_path, component, component);
             }
             bool created = ok && mkdirat(current_fd, component, 0700) == 0;
             if (!created && errno != EEXIST) {
