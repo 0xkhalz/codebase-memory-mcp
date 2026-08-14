@@ -446,7 +446,7 @@ require(
             # APP_PACKAGE identifier authority
             "sid[7] != 15U",
             # the private runtime directory is validated with ancestor=false
-            "win_private_mutation_rights(),\n                                false)",
+            "win_private_mutation_rights(), false)",
         )
     ),
     "AppContainer SIDs must be tolerated on ancestors ONLY, covering both package "

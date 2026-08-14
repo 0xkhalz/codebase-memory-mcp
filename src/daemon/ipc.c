@@ -4120,7 +4120,7 @@ static bool win_file_acl_secure(win_security_t *security, HANDLE file, DWORD mut
         size_t sid_capacity = (size_t)header->AceSize - sid_offset;
         bool creator_owner_inherit_only = (header->AceFlags & INHERIT_ONLY_ACE) != 0U;
         if (!win_bounded_sid_trusted(security, sid, sid_capacity, creator_owner_inherit_only,
-                                    ancestor)) {
+                                     ancestor)) {
             /* Name the untrusted identity class so a harness/profile ACL leak
              * (an inherited Users / Authenticated Users / Everyone ACE) is
              * distinguishable from a genuinely hostile grant. */
@@ -4219,8 +4219,7 @@ static bool win_runtime_directory_secure(const wchar_t *runtime_dir) {
     }
     bool final_private =
         secure_result == ERROR_SUCCESS &&
-        win_file_security_secure(&security, directory, true, win_private_mutation_rights(),
-                                false);
+        win_file_security_secure(&security, directory, true, win_private_mutation_rights(), false);
     (void)CloseHandle(directory);
     win_security_destroy(&security);
     return valid_handle && owner_ok && final_private;
