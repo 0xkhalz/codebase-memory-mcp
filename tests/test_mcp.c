@@ -2531,6 +2531,72 @@ static int write_coverage_meta(cbm_store_t *store, const char *generation,
     return cbm_store_coverage_replace_ex(store, "test-project", NULL, 0, &meta);
 }
 
+TEST(tool_check_index_coverage_accepts_truncated_ignored_catalog_for_fresh_path_issue1613) {
+    char tmp[256];
+    cbm_mcp_server_t *srv = setup_snippet_server(tmp, sizeof(tmp));
+    ASSERT_NOT_NULL(srv);
+    cbm_store_t *store = cbm_mcp_server_store(srv);
+    ASSERT_NOT_NULL(store);
+    char source_path[512];
+    snprintf(source_path, sizeof(source_path), "%s/project/main.go", tmp);
+    struct stat source_stat;
+    ASSERT_EQ(stat(source_path, &source_stat), 0);
+#ifdef __APPLE__
+    int64_t source_mtime_ns =
+        ((int64_t)source_stat.st_mtimespec.tv_sec * (int64_t)CBM_NSEC_PER_SEC) +
+        (int64_t)source_stat.st_mtimespec.tv_nsec;
+#elif defined(_WIN32)
+    int64_t source_mtime_ns =
+        (int64_t)source_stat.st_mtime * (int64_t)CBM_NSEC_PER_SEC;
+#else
+    int64_t source_mtime_ns =
+        ((int64_t)source_stat.st_mtim.tv_sec * (int64_t)CBM_NSEC_PER_SEC) +
+        (int64_t)source_stat.st_mtim.tv_nsec;
+#endif
+    ASSERT_EQ(cbm_store_upsert_file_hash(store, "test-project", "main.go", "",
+                                         source_mtime_ns, source_stat.st_size),
+              CBM_STORE_OK);
+    cbm_project_t project = {0};
+    ASSERT_EQ(cbm_store_get_project(store, "test-project", &project), CBM_STORE_OK);
+    cbm_coverage_meta_t meta = {
+        .generation = project.indexed_at,
+        .index_mode = "fast",
+        .recorded_at = "2026-07-12T00:00:00Z",
+        .recording_status = "truncated",
+        .ignored_files_stored = 2000,
+        .ignored_files_total = 2001,
+        .coverage_version = 1,
+        .hash_records_complete = true,
+    };
+    ASSERT_EQ(cbm_store_coverage_replace_ex(store, "test-project", NULL, 0, &meta),
+              CBM_STORE_OK);
+    cbm_project_free_fields(&project);
+
+    char *response = cbm_mcp_handle_tool(
+        srv, "check_index_coverage",
+        "{\"project\":\"test-project\",\"paths\":[\"main.go\"],\"scopes\":[\".\"]}");
+    ASSERT_NOT_NULL(response);
+    char *inner = extract_text_content(response);
+    ASSERT_NOT_NULL(inner);
+    yyjson_doc *doc = yyjson_read(inner, strlen(inner), 0);
+    ASSERT_NOT_NULL(doc);
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    yyjson_val *path = yyjson_arr_get(yyjson_obj_get(root, "paths"), 0);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(path, "status")), "no_recorded_issue");
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(path, "freshness")), "metadata_match");
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(path, "recommended_action")),
+                  "use_graph_with_best_effort_caveat");
+    yyjson_val *scope = yyjson_arr_get(yyjson_obj_get(root, "scopes"), 0);
+    ASSERT_STR_EQ(yyjson_get_str(yyjson_obj_get(scope, "status")), "coverage_unavailable");
+
+    yyjson_doc_free(doc);
+    free(inner);
+    free(response);
+    cbm_mcp_server_free(srv);
+    cleanup_snippet_dir(tmp);
+    PASS();
+}
+
 TEST(tool_check_index_coverage_rejects_stale_generation) {
     char tmp[256];
     cbm_mcp_server_t *srv = setup_snippet_server(tmp, sizeof(tmp));
@@ -10611,6 +10677,7 @@ SUITE(mcp) {
     RUN_TEST(tool_check_index_coverage_finds_path_beyond_status_cap);
     RUN_TEST(tool_check_index_coverage_reports_paths_scopes_and_ranges);
     RUN_TEST(tool_check_index_coverage_preserves_multiple_scope_labels);
+    RUN_TEST(tool_check_index_coverage_accepts_truncated_ignored_catalog_for_fresh_path_issue1613);
     RUN_TEST(tool_check_index_coverage_rejects_stale_generation);
     RUN_TEST(tool_check_index_coverage_requires_source_when_file_metadata_changed);
     RUN_TEST(tool_check_index_coverage_surfaces_lookup_errors);
