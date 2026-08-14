@@ -8,7 +8,8 @@
 #include "compat.h" /* cbm_nanosleep */
 #include "compat_fs.h"
 #include "log.h"
-#include "platform.h" /* cbm_now_ms */
+#include "platform.h"  /* cbm_now_ms */
+#include "sanitized.h" /* CBM_SANITIZED — spawn-retry budget */
 
 #include <stdio.h>
 #include <stdatomic.h>
@@ -902,8 +903,7 @@ static cbm_proc_poll_t cbm_subprocess_poll_win(cbm_subprocess_t *process, cbm_pr
  * hang for seconds. So the extra patience is scoped to the builds that need it,
  * the same way the daemon announce backstop is (test_daemon_frontend.c). Three
  * more doublings take the sanitized ceiling to roughly 5s. */
-#if defined(CBM_SANITIZED_BUILD) || defined(__SANITIZE_ADDRESS__) || \
-    defined(__SANITIZE_MEMORY__) || defined(__SANITIZE_THREAD__)
+#if CBM_SANITIZED
 enum { CBM_SPAWN_RETRY = 2, CBM_SPAWN_RETRY_ATTEMPTS = 9 };
 #else
 enum { CBM_SPAWN_RETRY = 2, CBM_SPAWN_RETRY_ATTEMPTS = 6 };
