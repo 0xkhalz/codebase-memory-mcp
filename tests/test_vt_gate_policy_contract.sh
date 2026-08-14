@@ -32,6 +32,31 @@ grep -Fq 'Microsoft `!ml` tolerance' "$ROOT/README.md" || \
 grep -Fq 'Policy identifier: `cbm-vt-candidate-selection-v1`' "$ROOT/SECURITY.md" || \
   fail "SECURITY.md must name the versioned candidate-selection policy"
 
+# Every marker publish-vt-evidence.sh validates must be one the gate actually
+# writes. These drifted silently: the results format went to v2 while the
+# publisher still demanded v1, and nothing caught it because the publisher had
+# no caller for a while. Restoring the caller failed a real release at the very
+# last step, after the full test matrix, both builds, smoke and soak had passed.
+python3 - "$ROOT" <<'MARKERS' || fail "evidence markers disagree between writer and publisher"
+import pathlib, re, sys
+root = pathlib.Path(sys.argv[1])
+publisher = (root / "scripts/ci/publish-vt-evidence.sh").read_text(encoding="utf-8")
+writers = "\n".join(
+    (root / name).read_text(encoding="utf-8")
+    for name in ("scripts/ci/check-virustotal.sh", "scripts/ci/append-vt-notes.sh")
+)
+expected = re.findall(r"^publish_copy\s+\S+\s+(\S+)", publisher, re.M)
+if not expected:
+    print("no publish_copy markers found - has the publisher been restructured?", file=sys.stderr)
+    raise SystemExit(1)
+missing = [m for m in expected if m not in writers]
+if missing:
+    for m in missing:
+        print(f"publisher expects marker never written by the gate: {m}", file=sys.stderr)
+    raise SystemExit(1)
+print(f"OK: all {len(expected)} published evidence markers match what the gate writes")
+MARKERS
+
 # Tripwire for the REVERTED endpoint-verification mechanism specifically. The
 # current `!ml` tolerance is a policy branch inside this gate, not a callout to
 # an external verification service, and must never become one.
