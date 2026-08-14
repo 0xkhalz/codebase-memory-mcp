@@ -11424,6 +11424,30 @@ static int cli_uninstall_activate(void *opaque) {
 }
 
 int cbm_cmd_uninstall(int argc, char **argv) {
+    /* `uninstall --help` used to UNINSTALL.
+     *
+     * The top-level dispatcher matches the subcommand at argv[1] and hands the
+     * rest here, so its own --help check never sees argv[2]. Nothing downstream
+     * looked either, and --help is the one flag a person types precisely
+     * BECAUSE they are not sure what a command does. It removed the binary and
+     * every agent configuration (#1038).
+     *
+     * Checked before parse_auto_answer so a `-y` sitting elsewhere on the line
+     * cannot auto-confirm the destruction we are trying to prevent. */
+    for (int i = 0; i < argc; i++) {
+        if (argv && argv[i] && (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)) {
+            printf("Usage: codebase-memory-mcp uninstall [options]\n\n"
+                   "Removes the codebase-memory-mcp binary, its agent configurations and,\n"
+                   "with confirmation, its indexes. THIS IS DESTRUCTIVE.\n\n"
+                   "Options:\n"
+                   "  --dry-run        Show what would be removed, change nothing\n"
+                   "  --dir=PATH       Uninstall from a custom install directory\n"
+                   "  -y, --yes        Do not prompt for confirmation\n"
+                   "  -h, --help       Show this help and exit\n\n"
+                   "Run with --dry-run first if you are unsure.\n");
+            return CLI_OK;
+        }
+    }
     parse_auto_answer(argc, argv);
     bool dry_run = false;
     /* An install into a custom --dir must be removable from that same dir:
