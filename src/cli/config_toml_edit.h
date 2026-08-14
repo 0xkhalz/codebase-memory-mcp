@@ -82,7 +82,10 @@ typedef enum {
     CBM_TOML_CODEX_HOOK_FAILURE_EDIT_BUILD,
     CBM_TOML_CODEX_HOOK_FAILURE_CONFIG_WRITE
 } cbm_toml_codex_hook_failure_t;
+/* Returns a stable, content-free diagnostic name for a failure category. */
 const char *cbm_toml_codex_hook_failure_name(cbm_toml_codex_hook_failure_t failure);
+/* `failure` may be NULL. When non-NULL, it is reset to NONE on entry and remains
+ * NONE on success; failure categories never contain configuration content. */
 int cbm_toml_reconcile_codex_hooks_detailed(const char *file_path, const char *begin_marker,
                                             const char *end_marker, const char *command,
                                             const char *command_windows,

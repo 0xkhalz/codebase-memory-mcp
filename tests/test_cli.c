@@ -9326,12 +9326,18 @@ TEST(cli_codex_preflight_reports_heading_and_reason) {
     snprintf(codex_dir, sizeof(codex_dir), "%s/.codex", tmpdir);
     snprintf(config_path, sizeof(config_path), "%s/config.toml", codex_dir);
     snprintf(agents_path, sizeof(agents_path), "%s/AGENTS.md", codex_dir);
-    test_mkdirp(codex_dir);
+    if (test_mkdirp(codex_dir) != 0) {
+        test_rmdir_r(tmpdir);
+        FAIL("failed to create Codex preflight fixture directory");
+    }
     const char *ambiguous =
         "[hooks]\nSessionStart = [{ matcher = 'startup|resume|clear|compact', hooks = ["
         "{ type = 'command', command = 'codebase-memory-mcp hook-augment' }, "
         "{ type = 'command', command = 'foreign' }] }]\n";
-    write_test_file(config_path, ambiguous);
+    if (write_test_file(config_path, ambiguous) != 0) {
+        test_rmdir_r(tmpdir);
+        FAIL("failed to write Codex preflight fixture config");
+    }
 
     char *saved_home = save_test_env("HOME");
     char *saved_path = save_test_env("PATH");
