@@ -34,6 +34,14 @@ const char *cbm_cli_get_version(void);
  * must free. Caller frees the returned JSON string. */
 char *cbm_cli_build_args_json(const char *tool_name, int argc, char **argv, char **err_out);
 
+/* Decide whether `cli <tool>` may take its JSON arguments from stdin, given
+ * that no --args-file, raw-JSON positional and no --flag form was supplied.
+ * stdin_is_tty is the caller's isatty(0) result. True only for a non-terminal
+ * stdin AND a tool whose input_schema declares at least one property; a
+ * zero-argument tool such as list_projects must never read stdin, because an
+ * inherited-but-never-closed pipe makes that read block forever (#1359). */
+bool cbm_cli_args_from_stdin_allowed(const char *tool_name, bool stdin_is_tty);
+
 /* Print per-tool help (usage + the tool's flags with type/description/required)
  * derived from its input_schema, to stdout. Returns 0 if the tool is known,
  * non-zero (and prints nothing) if it is not. */

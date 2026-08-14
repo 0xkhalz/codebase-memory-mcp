@@ -12273,6 +12273,49 @@ static void cli_add_typed(yyjson_mut_doc *out, yyjson_mut_val *obj, const char *
     yyjson_mut_obj_add(obj, yyjson_mut_strcpy(out, key), vv);
 }
 
+bool cbm_cli_args_from_stdin_allowed(const char *tool_name, bool stdin_is_tty) {
+    /* An interactive run has nothing piped to read: consulting the terminal
+     * would just sit waiting for the user to type JSON. Unchanged by #1359 —
+     * this is why the hang was only ever reachable from automation. */
+    if (stdin_is_tty) {
+        return false;
+    }
+
+    /* WHY the schema gate (#1359): a non-interactive stdin used to be accepted
+     * as piped arguments unconditionally, and cli_slurp_stream reads to EOF. An
+     * ordinary non-interactive caller never sends that EOF — Node's
+     * child_process.spawn defaults to stdio:['pipe','pipe','pipe'] and the
+     * parent must call child.stdin.end() explicitly, which almost nobody does
+     * for a command they are not writing to. fd 0 then stays open with no
+     * writer and the read never returns; the reporter's shell script was still
+     * parked in fread(0) fourteen minutes later. For a tool whose input_schema
+     * declares no properties (list_projects) stdin cannot carry anything the
+     * tool would accept, so that read is pure deadlock with nothing to gain:
+     * never start it, and let the caller fall through to `{}` exactly as an
+     * interactive run already did. Tools that DO declare properties keep the
+     * documented `echo '<json>' | cli <tool>` channel untouched. */
+    const char *schema_str = cbm_mcp_tool_input_schema(tool_name);
+    if (!schema_str) {
+        /* Unknown tool: dispatch rejects it by name and no stdin content can
+         * change that verdict, so do not block for input we would discard. */
+        return false;
+    }
+
+    yyjson_doc *schema_doc = yyjson_read(schema_str, strlen(schema_str), 0);
+    if (!schema_doc) {
+        /* The schemas are compile-time constants, so a parse failure means a
+         * malformed literal rather than caller input. Keep the documented stdin
+         * channel rather than silently narrowing it on a schema we could not
+         * read — the gate must only ever fire on positive evidence that the
+         * tool takes no arguments. */
+        return true;
+    }
+    yyjson_val *props = yyjson_obj_get(yyjson_doc_get_root(schema_doc), "properties");
+    bool accepts_arguments = props && yyjson_is_obj(props) && yyjson_obj_size(props) > 0;
+    yyjson_doc_free(schema_doc);
+    return accepts_arguments;
+}
+
 char *cbm_cli_build_args_json(const char *tool_name, int argc, char **argv, char **err_out) {
     if (err_out) {
         *err_out = NULL;
