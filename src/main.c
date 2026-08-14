@@ -2482,9 +2482,22 @@ int main(int argc, char **argv) {
             coordination_failure = main_build_identity_status_name(local_identity_status);
         }
         if (coordination_failure) {
+            /* Name the rule that refused, not just the stage that failed.
+             *
+             * "(endpoint)" alone is what four separate reporters in #1533 and
+             * #1574 were left with: every mode fails, `config list` included,
+             * so the product cannot even be reconfigured out of it, and
+             * CBM_LOG_LEVEL=debug adds nothing. One of them had to build an
+             * instrumented binary to discover that a single ACE on an ancestor
+             * of %LOCALAPPDATA% was the cause. The validation detail already
+             * holds that — it names the directory, the offending SID and the
+             * right it granted — and the daemon-endpoint path a few hundred
+             * lines below has printed it since #1582. This path did not. */
+            const char *why = cbm_daemon_ipc_validation_detail();
             (void)fprintf(
-                stderr, "codebase-memory-mcp: secure CLI coordination could not be created (%s)\n",
-                coordination_failure);
+                stderr,
+                "codebase-memory-mcp: secure CLI coordination could not be created (%s)%s%s\n",
+                coordination_failure, (why && why[0]) ? ": " : "", (why && why[0]) ? why : "");
             goto local_cli_cleanup;
         }
         cbm_http_server_set_binary_path(local_executable);
