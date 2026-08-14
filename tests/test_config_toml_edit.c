@@ -50,6 +50,13 @@ static int cte_codex_edit(const char *path, cbm_toml_codex_hook_action_t action,
                                           CTE_CODEX_COMMAND, action, check_only);
 }
 
+static int cte_codex_edit_detailed(const char *path, cbm_toml_codex_hook_action_t action,
+                                   int check_only, cbm_toml_codex_hook_failure_t *failure) {
+    return cbm_toml_reconcile_codex_hooks_detailed(path, CTE_CODEX_BEGIN, CTE_CODEX_END,
+                                                   CTE_CODEX_COMMAND, CTE_CODEX_COMMAND, action,
+                                                   check_only, failure);
+}
+
 static int cte_fixture(char *dir, size_t dir_size, char *path, size_t path_size) {
     char *created = th_mktempdir("cbm_toml_edit");
     if (!created) {
@@ -1129,6 +1136,60 @@ TEST(config_toml_codex_rejects_ambiguous_inline_byte_identically) {
     PASS();
 }
 
+TEST(config_toml_codex_reports_stable_failure_reasons) {
+    char dir[CTE_PATH_CAP];
+    char path[CTE_PATH_CAP];
+    char actual[CTE_FILE_CAP];
+    static const struct {
+        const char *content;
+        cbm_toml_codex_hook_failure_t expected;
+        const char *name;
+    } cases[] = {
+        {
+            .content =
+                "[hooks]\nSessionStart = [{ matcher = 'startup|resume|clear|compact', hooks = ["
+                "{ type = 'command', command = 'codebase-memory-mcp hook-augment' }, "
+                "{ type = 'command', command = 'foreign' }] }]\n",
+            .expected = CBM_TOML_CODEX_HOOK_FAILURE_AMBIGUOUS_OWNERSHIP,
+            .name = "ambiguous_hook_ownership",
+        },
+        {
+            .content =
+                "[hooks]\n"
+                "SessionStart = [{ matcher = 'startup|resume|clear|compact', hooks = [{ type = "
+                "'command', command = 'echo \"Code discovery: prefer codebase-memory-mcp\"' }] "
+                "}]\n"
+                "SessionStart = [{ matcher = 'startup|resume|clear|compact', hooks = [{ type = "
+                "'command', command = 'echo \"Code discovery: prefer codebase-memory-mcp\"' }] "
+                "}]\n",
+            .expected = CBM_TOML_CODEX_HOOK_FAILURE_CONFLICTING_HOOKS,
+            .name = "conflicting_hook_representations",
+        },
+        {
+            .content = "[hooks\n",
+            .expected = CBM_TOML_CODEX_HOOK_FAILURE_MALFORMED_CONFIG,
+            .name = "malformed_config",
+        },
+    };
+    ASSERT_EQ(cte_fixture(dir, sizeof(dir), path, sizeof(path)), 0);
+    for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        cbm_toml_codex_hook_failure_t failure = CBM_TOML_CODEX_HOOK_FAILURE_NONE;
+        ASSERT_EQ(th_write_file(path, cases[i].content), 0);
+        ASSERT_EQ(cte_codex_edit_detailed(path, CBM_TOML_CODEX_HOOK_UPSERT, 1, &failure), -1);
+        ASSERT_EQ(failure, cases[i].expected);
+        ASSERT_STR_EQ(cbm_toml_codex_hook_failure_name(failure), cases[i].name);
+        ASSERT_EQ(cte_read(path, actual, sizeof(actual)), 0);
+        ASSERT_STR_EQ(actual, cases[i].content);
+    }
+
+    cbm_toml_codex_hook_failure_t failure = CBM_TOML_CODEX_HOOK_FAILURE_INVALID_ARGUMENT;
+    ASSERT_EQ(th_write_file(path, "keep = true\n"), 0);
+    ASSERT_EQ(cte_codex_edit_detailed(path, CBM_TOML_CODEX_HOOK_UPSERT, 1, &failure), 0);
+    ASSERT_EQ(failure, CBM_TOML_CODEX_HOOK_FAILURE_NONE);
+    th_cleanup(dir);
+    PASS();
+}
+
 TEST(config_toml_codex_preserves_bom_crlf_and_foreign_aot) {
     char dir[CTE_PATH_CAP];
     char path[CTE_PATH_CAP];
@@ -1241,6 +1302,7 @@ SUITE(config_toml_edit) {
     RUN_TEST(config_toml_target_table_rejects_significant_nonassignments_byte_identically);
     RUN_TEST(config_toml_codex_reconciles_minimal_owned_forms);
     RUN_TEST(config_toml_codex_rejects_ambiguous_inline_byte_identically);
+    RUN_TEST(config_toml_codex_reports_stable_failure_reasons);
     RUN_TEST(config_toml_codex_preserves_bom_crlf_and_foreign_aot);
     RUN_TEST(config_toml_legacy_remove_reports_foreign_table_without_mutation);
 }
