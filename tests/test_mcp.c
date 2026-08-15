@@ -4501,6 +4501,48 @@ TEST(search_code_path_filter_matches_nothing) {
     PASS();
 }
 
+TEST(search_code_file_pattern_prefilter_boundaries) {
+    ASSERT_TRUE(cbm_search_code_file_pattern_can_prefilter("*.pas"));
+    ASSERT_TRUE(cbm_search_code_file_pattern_can_prefilter("*.PAS"));
+    ASSERT_TRUE(cbm_search_code_file_pattern_can_prefilter("*.d.ts"));
+    ASSERT_TRUE(cbm_search_code_file_pattern_can_prefilter("*.foo-bar_1"));
+
+    ASSERT_FALSE(cbm_search_code_file_pattern_can_prefilter(NULL));
+    ASSERT_FALSE(cbm_search_code_file_pattern_can_prefilter(""));
+    ASSERT_FALSE(cbm_search_code_file_pattern_can_prefilter(".pas"));
+    ASSERT_FALSE(cbm_search_code_file_pattern_can_prefilter("*.*"));
+    ASSERT_FALSE(cbm_search_code_file_pattern_can_prefilter("src/*.pas"));
+    ASSERT_FALSE(cbm_search_code_file_pattern_can_prefilter("src\\*.pas"));
+    ASSERT_FALSE(cbm_search_code_file_pattern_can_prefilter("*.c++"));
+    ASSERT_FALSE(cbm_search_code_file_pattern_can_prefilter("*R&D*.go"));
+    PASS();
+}
+
+TEST(search_code_windows_prefilter_precedes_content_scan) {
+#ifdef _WIN32
+    char command[CBM_SZ_4K];
+    cbm_search_code_build_grep_cmd(command, sizeof(command), false, true, "*.go", "C:/tmp/pattern",
+                                   "C:/tmp/filelist", "C:/tmp/root");
+
+    const char *prefilter = strstr(command, "Where-Object { $_ -like '*.go' }");
+    const char *content_scan = strstr(command, "ForEach-Object { Select-String");
+    const char *postfilter = strstr(command, "Where-Object { $_.Path -like '**.go' }");
+    ASSERT_NOT_NULL(prefilter);
+    ASSERT_NOT_NULL(content_scan);
+    ASSERT_NOT_NULL(postfilter);
+    ASSERT_TRUE(prefilter < content_scan);
+    ASSERT_TRUE(content_scan < postfilter);
+
+    cbm_search_code_build_grep_cmd(command, sizeof(command), false, true, "*handler*.go",
+                                   "C:/tmp/pattern", "C:/tmp/filelist", "C:/tmp/root");
+    ASSERT_NULL(strstr(command, "Where-Object { $_ -like '*handler*.go' }"));
+    ASSERT_NOT_NULL(strstr(command, "Where-Object { $_.Path -like '**handler*.go' }"));
+    PASS();
+#else
+    SKIP_PLATFORM("PowerShell prefilter runs on Windows");
+#endif
+}
+
 /* issue #283: search_code with regex=true and a syntactically invalid pattern
  * must return an explicit error, not an empty result indistinguishable from a
  * legitimate no-match. */
@@ -10722,6 +10764,8 @@ SUITE(mcp) {
 #endif
     RUN_TEST(search_code_path_filter_prefilter_keeps_matches);
     RUN_TEST(search_code_path_filter_matches_nothing);
+    RUN_TEST(search_code_file_pattern_prefilter_boundaries);
+    RUN_TEST(search_code_windows_prefilter_precedes_content_scan);
     RUN_TEST(search_code_invalid_regex_errors_issue283);
     RUN_TEST(search_code_literal_pipe_warns_issue282);
     RUN_TEST(search_code_ampersand_accepted_issue272);

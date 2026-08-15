@@ -8751,25 +8751,57 @@ static int search_result_cmp(const void *a, const void *b) {
     return rb->score - ra->score; /* descending */
 }
 
+/* Moving an arbitrary file_pattern ahead of Select-String is not generally results-preserving:
+ * the current Windows path applies PowerShell -like to the full MatchInfo.Path, while POSIX
+ * delegates glob semantics to grep --include. Restrict the Windows optimization to plain suffix
+ * globs whose meaning cannot depend on path separator normalization or directory components. The
+ * original post-scan filter remains in place as a second guard. */
+bool cbm_search_code_file_pattern_can_prefilter(const char *file_pattern) {
+    if (!file_pattern || file_pattern[0] != '*' || file_pattern[1] != '.' ||
+        file_pattern[2] == '\0') {
+        return false;
+    }
+    for (const unsigned char *p = (const unsigned char *)file_pattern + 2; *p; p++) {
+        if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') ||
+              *p == '.' || *p == '_' || *p == '-')) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /* Build the grep/search command string based on scoped vs recursive mode.
  * On Windows, uses PowerShell Select-String with tab-delimited output.
  * On POSIX, uses grep with colon-delimited output. */
-static void build_grep_cmd(char *cmd, size_t cmd_sz, bool use_regex, bool scoped,
-                           const char *file_pattern, const char *tmpfile, const char *filelist,
-                           const char *root_path) {
+void cbm_search_code_build_grep_cmd(char *cmd, size_t cmd_sz, bool use_regex, bool scoped,
+                                    const char *file_pattern, const char *tmpfile,
+                                    const char *filelist, const char *root_path) {
 #ifdef _WIN32
     const char *sm = use_regex ? "" : " -SimpleMatch";
     if (scoped) {
         if (file_pattern) {
-            snprintf(
-                cmd, cmd_sz,
-                "powershell -Command \"$pat = Get-Content -Encoding UTF8 -LiteralPath '%s'; "
-                "Get-Content -Encoding UTF8 -LiteralPath '%s' | ForEach-Object { Select-String "
-                "-LiteralPath $_ -Pattern $pat%s "
-                "-ErrorAction SilentlyContinue }"
-                " | Where-Object { $_.Path -like '*%s' }"
-                " | ForEach-Object { $_.Path + [char]9 + $_.LineNumber + [char]9 + $_.Line }\"",
-                tmpfile, filelist, sm, file_pattern);
+            if (cbm_search_code_file_pattern_can_prefilter(file_pattern)) {
+                snprintf(
+                    cmd, cmd_sz,
+                    "powershell -Command \"$pat = Get-Content -Encoding UTF8 -LiteralPath '%s'; "
+                    "Get-Content -Encoding UTF8 -LiteralPath '%s'"
+                    " | Where-Object { $_ -like '%s' }"
+                    " | ForEach-Object { Select-String -LiteralPath $_ -Pattern $pat%s "
+                    "-ErrorAction SilentlyContinue }"
+                    " | Where-Object { $_.Path -like '*%s' }"
+                    " | ForEach-Object { $_.Path + [char]9 + $_.LineNumber + [char]9 + $_.Line }\"",
+                    tmpfile, filelist, file_pattern, sm, file_pattern);
+            } else {
+                snprintf(
+                    cmd, cmd_sz,
+                    "powershell -Command \"$pat = Get-Content -Encoding UTF8 -LiteralPath '%s'; "
+                    "Get-Content -Encoding UTF8 -LiteralPath '%s' | ForEach-Object { Select-String "
+                    "-LiteralPath $_ -Pattern $pat%s "
+                    "-ErrorAction SilentlyContinue }"
+                    " | Where-Object { $_.Path -like '*%s' }"
+                    " | ForEach-Object { $_.Path + [char]9 + $_.LineNumber + [char]9 + $_.Line }\"",
+                    tmpfile, filelist, sm, file_pattern);
+            }
         } else {
             snprintf(
                 cmd, cmd_sz,
@@ -9807,8 +9839,8 @@ static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
         search_scratch_close(&scratch);
     } else {
         char cmd[CBM_SZ_4K];
-        build_grep_cmd(cmd, sizeof(cmd), use_regex, scoped, file_pattern, tmpfile, filelist,
-                       root_path);
+        cbm_search_code_build_grep_cmd(cmd, sizeof(cmd), use_regex, scoped, file_pattern, tmpfile,
+                                       filelist, root_path);
 
         FILE *fp = cbm_popen(cmd, "r");
         if (!fp) {
