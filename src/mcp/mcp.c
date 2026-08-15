@@ -9813,6 +9813,9 @@ static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
         FILE *fp = cbm_popen(cmd, "r");
         if (!fp) {
             search_scratch_close(&scratch);
+            if (has_path_filter) {
+                cbm_regfree(&path_regex);
+            }
             free(root_path);
             free(pattern);
             free(project);
