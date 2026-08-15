@@ -164,6 +164,14 @@ jobs:
             release-selection.tsv \
             > checksums.txt
 
+      # The legacy ui-* aliases are byte-identical copies published after verify
+      # (scripts/ci/publish-legacy-aliases.sh), so they were absent from
+      # checksums.txt and 0.9.x updaters refused to install them (#1134). Their
+      # digests are added here, BEFORE attestation, so the attested artifact
+      # covers both names.
+      - name: Cover legacy ui-* aliases in checksums
+        run: scripts/ci/append-legacy-alias-checksums.sh checksums.txt
+
       - name: Attest checksum provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
