@@ -1806,6 +1806,15 @@ int cbm_pipeline_finalize_staged_generation(char *stage_path, const char *final_
     struct timespec t_fin;
     cbm_clock_gettime(CLOCK_MONOTONIC, &t_fin);
     if (cbm_remove_db_sidecars(stage_path) != 0) {
+        /* This returned PERSIST_FAILED with no log at all, which is how #1620
+         * presented: every pass succeeded, the worker exited 0, no error-level
+         * line was emitted anywhere, and the user was told "Pipeline failed.
+         * Check repo_path exists and contains source files" — pointed at their
+         * repository for a filesystem permission problem. A publish that fails
+         * must say so. */
+        char errno_text[16];
+        (void)snprintf(errno_text, sizeof(errno_text), "%d", errno);
+        cbm_log_error("finalize.sidecar_removal_failed", "errno", errno_text, "stage", stage_path);
         discard_generation_stage(stage_path);
         return CBM_PIPELINE_PERSIST_FAILED;
     }
