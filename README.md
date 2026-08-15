@@ -598,7 +598,7 @@ codebase-memory-mcp cli --progress index_repository --repo-path /path/to/repo
 codebase-memory-mcp cli search_graph --project my-project --label Function | jq '.results[].name'
 ```
 
-JSON arguments can also be piped on stdin. Inline JSON remains accepted for backward compatibility but is deprecated in favor of flags, `--args-file`, or stdin.
+JSON arguments can also be piped on stdin, for tools that take arguments. A tool whose input schema declares none — `list_projects` — never reads stdin, so it stays responsive when it inherits a pipe the caller never closes (the default for `child_process.spawn` and similar wrappers). Inline JSON remains accepted for backward compatibility but is deprecated in favor of flags, `--args-file`, or stdin.
 
 ## MCP Tools
 

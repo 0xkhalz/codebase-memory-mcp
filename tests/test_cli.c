@@ -12192,6 +12192,63 @@ TEST(cli_print_tool_help_issue680) {
     PASS();
 }
 
+/* #1359: `cli <tool>` with no argument-bearing token used to slurp stdin to EOF
+ * for ANY non-terminal stdin. The ordinary automation caller never sends that
+ * EOF — Node's child_process.spawn defaults to stdio:['pipe','pipe','pipe'] and
+ * the parent must call child.stdin.end() explicitly — so `cli list_projects`
+ * parked in fread(0) with no writer and never returned (the reporter's script
+ * was still stuck fourteen minutes later). list_projects declares no schema
+ * properties, so stdin could never have carried anything it accepts: the read
+ * was pure deadlock. Gate the read on the tool actually declaring arguments. */
+TEST(cli_zero_argument_tool_never_reads_stdin_issue1359) {
+    /* The reported hang: zero-argument tool + non-terminal stdin. */
+    ASSERT_FALSE(cbm_cli_args_from_stdin_allowed("list_projects", false));
+
+    /* The documented `echo '<json>' | cli <tool>` channel must survive. */
+    ASSERT_TRUE(cbm_cli_args_from_stdin_allowed("index_status", false));
+    ASSERT_TRUE(cbm_cli_args_from_stdin_allowed("search_graph", false));
+    ASSERT_TRUE(cbm_cli_args_from_stdin_allowed("index_repository", false));
+
+    /* Interactive runs never read the terminal for arguments — unchanged. */
+    ASSERT_FALSE(cbm_cli_args_from_stdin_allowed("index_status", true));
+    ASSERT_FALSE(cbm_cli_args_from_stdin_allowed("list_projects", true));
+
+    /* An unknown tool is rejected by name; blocking for input first can only
+     * delay that verdict, never change it. */
+    ASSERT_FALSE(cbm_cli_args_from_stdin_allowed("nope_not_a_tool", false));
+    ASSERT_FALSE(cbm_cli_args_from_stdin_allowed(NULL, false));
+    PASS();
+}
+
+/* The gate must track the advertised input_schema for the WHOLE tool table, not
+ * carry a special case for list_projects: a future zero-argument tool would
+ * otherwise reintroduce #1359 silently. Expectation is derived independently
+ * from the schema the MCP tools/list publishes. */
+TEST(cli_stdin_args_gate_tracks_tool_schema_issue1359) {
+    int zero_argument_tools = 0;
+    for (int i = 0; i < cbm_mcp_tool_count(); i++) {
+        const char *name = cbm_mcp_tool_name(i);
+        ASSERT_NOT_NULL(name);
+        const char *schema = cbm_mcp_tool_input_schema(name);
+        ASSERT_NOT_NULL(schema);
+
+        yyjson_doc *doc = yyjson_read(schema, strlen(schema), 0);
+        ASSERT_NOT_NULL(doc);
+        yyjson_val *props = yyjson_obj_get(yyjson_doc_get_root(doc), "properties");
+        bool declares_properties = props && yyjson_is_obj(props) && yyjson_obj_size(props) > 0;
+        yyjson_doc_free(doc);
+
+        if (!declares_properties) {
+            zero_argument_tools++;
+        }
+        ASSERT_EQ(cbm_cli_args_from_stdin_allowed(name, false), declares_properties);
+        ASSERT_FALSE(cbm_cli_args_from_stdin_allowed(name, true));
+    }
+    /* list_projects at minimum; without one the sweep above proves nothing. */
+    ASSERT_GTE(zero_argument_tools, 1);
+    PASS();
+}
+
 /* The self-update path verifies a downloaded archive against a published
  * checksum. That check is only meaningful if the digest is actually computed —
  * a broken hash command (it once invoked `shasum -a CBM_SZ_256`, an invalid
@@ -12911,4 +12968,8 @@ SUITE(cli) {
     RUN_TEST(cli_build_args_json_key_equals_value_issue680);
     RUN_TEST(cli_build_args_json_bad_positional_errors_issue680);
     RUN_TEST(cli_print_tool_help_issue680);
+
+    /* Stdin argument gate (#1359) */
+    RUN_TEST(cli_zero_argument_tool_never_reads_stdin_issue1359);
+    RUN_TEST(cli_stdin_args_gate_tracks_tool_schema_issue1359);
 }
