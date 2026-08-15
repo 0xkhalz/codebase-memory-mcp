@@ -9313,6 +9313,89 @@ TEST(cli_codex_migrates_to_single_hook_representation) {
     PASS();
 }
 
+#ifndef _WIN32
+TEST(cli_codex_preflight_reports_heading_and_reason) {
+    char tmpdir[256];
+    snprintf(tmpdir, sizeof(tmpdir), "/tmp/cli-codex-preflight-reason-XXXXXX");
+    if (!cbm_mkdtemp(tmpdir))
+        FAIL("cbm_mkdtemp failed");
+
+    char codex_dir[512];
+    char config_path[640];
+    char agents_path[640];
+    snprintf(codex_dir, sizeof(codex_dir), "%s/.codex", tmpdir);
+    snprintf(config_path, sizeof(config_path), "%s/config.toml", codex_dir);
+    snprintf(agents_path, sizeof(agents_path), "%s/AGENTS.md", codex_dir);
+    if (test_mkdirp(codex_dir) != 0) {
+        test_rmdir_r(tmpdir);
+        FAIL("failed to create Codex preflight fixture directory");
+    }
+    const char *ambiguous =
+        "[hooks]\nSessionStart = [{ matcher = 'startup|resume|clear|compact', hooks = ["
+        "{ type = 'command', command = 'codebase-memory-mcp hook-augment' }, "
+        "{ type = 'command', command = 'foreign' }] }]\n";
+    if (write_test_file(config_path, ambiguous) != 0) {
+        test_rmdir_r(tmpdir);
+        FAIL("failed to write Codex preflight fixture config");
+    }
+
+    char *saved_home = save_test_env("HOME");
+    char *saved_path = save_test_env("PATH");
+    char *saved_codex = save_test_env("CODEX_HOME");
+    cbm_setenv("HOME", tmpdir, 1);
+    cbm_setenv("PATH", tmpdir, 1);
+    cbm_unsetenv("CODEX_HOME");
+
+    FILE *capture = tmpfile();
+    int saved_stdout = capture ? dup(STDOUT_FILENO) : -1;
+    int saved_stderr = capture ? dup(STDERR_FILENO) : -1;
+    bool redirected = false;
+    int install_rc = -1;
+    if (capture && saved_stdout >= 0 && saved_stderr >= 0) {
+        fflush(NULL);
+        redirected =
+            dup2(fileno(capture), STDOUT_FILENO) >= 0 && dup2(fileno(capture), STDERR_FILENO) >= 0;
+        if (redirected) {
+            install_rc =
+                cbm_install_agent_configs(tmpdir, "/opt/codebase-memory-mcp", false, false);
+        }
+        fflush(NULL);
+        (void)dup2(saved_stdout, STDOUT_FILENO);
+        (void)dup2(saved_stderr, STDERR_FILENO);
+    }
+    if (saved_stdout >= 0) {
+        close(saved_stdout);
+    }
+    if (saved_stderr >= 0) {
+        close(saved_stderr);
+    }
+
+    char output[8192] = {0};
+    if (capture) {
+        rewind(capture);
+        size_t count = fread(output, 1, sizeof(output) - 1U, capture);
+        output[count] = '\0';
+        fclose(capture);
+    }
+    char *after = read_test_file_alloc(config_path);
+    struct stat state;
+    bool unchanged = after && strcmp(after, ambiguous) == 0 && stat(agents_path, &state) != 0;
+    bool diagnostic =
+        strstr(output, "Codex CLI:\nerror: agent_config agent=Codex CLI op=hook_preflight path=") !=
+            NULL &&
+        strstr(output, "reason=ambiguous_hook_ownership") != NULL;
+    free(after);
+
+    restore_test_env("HOME", saved_home);
+    restore_test_env("PATH", saved_path);
+    restore_test_env("CODEX_HOME", saved_codex);
+    test_rmdir_r(tmpdir);
+    if (!redirected || install_rc == 0 || !unchanged || !diagnostic)
+        FAIL("Codex preflight refusal must retain its heading, reason, and fail-closed state");
+    PASS();
+}
+#endif
+
 /* The PreToolUse augmenter parses search_graph's format:"json" payload to
  * build additionalContext. This test feeds it the REAL envelope from a live
  * in-memory server, so any drift between the response shape and the parser
@@ -12933,6 +13016,9 @@ SUITE(cli) {
     RUN_TEST(cli_claude_hook_scripts_shell_quote_binary_path);
     RUN_TEST(cli_claude_hook_commands_shell_quote_custom_config_dir);
     RUN_TEST(cli_codex_migrates_to_single_hook_representation);
+#ifndef _WIN32
+    RUN_TEST(cli_codex_preflight_reports_heading_and_reason);
+#endif
     RUN_TEST(cli_hook_augment_context_tracks_search_json_shape);
     RUN_TEST(cli_hook_augment_lifecycle_output_contract);
     RUN_TEST(cli_hook_augment_subagent_tier_router_contract);

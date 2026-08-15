@@ -3487,16 +3487,25 @@ bool cbm_optional_hook_supported_for_testing(const char *agent_name, bool window
 }
 #endif
 
-static int cbm_reconcile_codex_hooks_command(const char *config_path, const char *command,
-                                             const char *command_windows,
-                                             cbm_toml_codex_hook_action_t action, bool check_only) {
+static int cbm_reconcile_codex_hooks_command_detailed(const char *config_path, const char *command,
+                                                      const char *command_windows,
+                                                      cbm_toml_codex_hook_action_t action,
+                                                      bool check_only,
+                                                      cbm_toml_codex_hook_failure_t *failure) {
     if (!config_path || !command || !command_windows) {
         return CLI_ERR;
     }
-    return cbm_toml_reconcile_codex_hooks(config_path, CODEX_HOOK_BEGIN, CODEX_HOOK_END, command,
-                                          command_windows, action, check_only ? 1 : 0) == 0
+    return cbm_toml_reconcile_codex_hooks_detailed(config_path, CODEX_HOOK_BEGIN, CODEX_HOOK_END,
+                                                   command, command_windows, action,
+                                                   check_only ? 1 : 0, failure) == 0
                ? CLI_OK
                : CLI_ERR;
+}
+static int cbm_reconcile_codex_hooks_command(const char *config_path, const char *command,
+                                             const char *command_windows,
+                                             cbm_toml_codex_hook_action_t action, bool check_only) {
+    return cbm_reconcile_codex_hooks_command_detailed(config_path, command, command_windows, action,
+                                                      check_only, NULL);
 }
 static int cbm_upsert_codex_hooks_command(const char *config_path, const char *command,
                                           const char *command_windows) {
@@ -7362,15 +7371,25 @@ static void describe_agent_config_target(const char *path, char *out, size_t out
     (void)snprintf(out, out_size, " (target: %s, %lld bytes)", kind, (long long)info.size);
 }
 
-static void record_agent_config_error(bool uninstalling, const char *agent, const char *operation,
-                                      const char *path) {
+static void record_agent_config_error_with_reason(bool uninstalling, const char *agent,
+                                                  const char *operation, const char *path,
+                                                  const char *reason) {
     int *counter = uninstalling ? &g_agent_uninstall_errors : &g_agent_install_errors;
     (*counter)++;
     char detail[160];
     describe_agent_config_target(path, detail, sizeof(detail));
-    (void)fprintf(stderr, "error: agent_config agent=%s op=%s path=%s%s\n",
-                  agent ? agent : "unknown", operation ? operation : "unknown",
-                  path ? path : "unknown", detail);
+    (void)fprintf(stderr, "error: agent_config agent=%s op=%s path=%s", agent ? agent : "unknown",
+                  operation ? operation : "unknown", path ? path : "unknown");
+    if (reason && reason[0]) {
+        (void)fprintf(stderr, " reason=%s", reason);
+    }
+    (void)fputs(detail, stderr);
+    (void)fputc('\n', stderr);
+}
+
+static void record_agent_config_error(bool uninstalling, const char *agent, const char *operation,
+                                      const char *path) {
+    record_agent_config_error_with_reason(uninstalling, agent, operation, path, NULL);
 }
 
 static bool prepare_config_parent(const char *path) {
@@ -8507,10 +8526,22 @@ static void install_cli_agent_configs(const cbm_detected_agents_t *agents, const
                                               sizeof(command_windows)) == CLI_OK;
         cbm_toml_codex_hook_action_t preflight_action =
             use_hooks_json ? CBM_TOML_CODEX_HOOK_REMOVE : CBM_TOML_CODEX_HOOK_UPSERT;
-        if (!commands_ok || cbm_reconcile_codex_hooks_command(cp, command, command_windows,
-                                                              preflight_action, true) != CLI_OK) {
-            record_agent_config_error(false, "Codex CLI",
-                                      commands_ok ? "hook_preflight" : "hook_command_build", cp);
+        cbm_toml_codex_hook_failure_t preflight_failure = CBM_TOML_CODEX_HOOK_FAILURE_NONE;
+        int preflight_result = commands_ok ? cbm_reconcile_codex_hooks_command_detailed(
+                                                 cp, command, command_windows, preflight_action,
+                                                 true, &preflight_failure)
+                                           : CLI_ERR;
+        if (preflight_result != CLI_OK) {
+            if (!g_install_plan) {
+                printf("Codex CLI:\n");
+                fflush(stdout);
+            }
+            const char *reason = preflight_failure == CBM_TOML_CODEX_HOOK_FAILURE_NONE
+                                     ? NULL
+                                     : cbm_toml_codex_hook_failure_name(preflight_failure);
+            record_agent_config_error_with_reason(
+                false, "Codex CLI", commands_ok ? "hook_preflight" : "hook_command_build", cp,
+                reason);
             goto codex_install_done;
         }
         install_generic_agent_config("Codex CLI", binary_path, cp, ip, dry_run,
@@ -10760,14 +10791,21 @@ static void uninstall_cli_agents(const cbm_detected_agents_t *agents, const char
         char hook_command_windows[CLI_BUF_8K];
         bool hook_command_ok = cbm_build_augment_command(installed_binary, hook_command,
                                                          sizeof(hook_command)) == CLI_OK;
+        bool hook_commands_ok = hook_command_ok && cbm_build_augment_command_windows(
+                                                       installed_binary, hook_command_windows,
+                                                       sizeof(hook_command_windows)) == CLI_OK;
+        cbm_toml_codex_hook_failure_t preflight_failure = CBM_TOML_CODEX_HOOK_FAILURE_NONE;
         bool hook_preflight_ok =
-            hook_command_ok &&
-            cbm_build_augment_command_windows(installed_binary, hook_command_windows,
-                                              sizeof(hook_command_windows)) == CLI_OK &&
-            cbm_reconcile_codex_hooks_command(cp, hook_command, hook_command_windows,
-                                              CBM_TOML_CODEX_HOOK_REMOVE, true) == CLI_OK;
+            hook_commands_ok && cbm_reconcile_codex_hooks_command_detailed(
+                                    cp, hook_command, hook_command_windows,
+                                    CBM_TOML_CODEX_HOOK_REMOVE, true, &preflight_failure) == CLI_OK;
         if (!hook_preflight_ok) {
-            record_agent_config_error(true, "Codex CLI", "hook_preflight", cp);
+            printf("Codex CLI:\n");
+            fflush(stdout);
+            const char *reason = preflight_failure == CBM_TOML_CODEX_HOOK_FAILURE_NONE
+                                     ? NULL
+                                     : cbm_toml_codex_hook_failure_name(preflight_failure);
+            record_agent_config_error_with_reason(true, "Codex CLI", "hook_preflight", cp, reason);
             goto codex_toml_done;
         }
         uninstall_agent_mcp_instr((mcp_uninstall_args_t){"Codex CLI", cp, ip}, dry_run,
