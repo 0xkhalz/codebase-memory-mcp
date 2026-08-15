@@ -2398,6 +2398,14 @@ int main(int argc, char **argv) {
     }
 #endif
     cbm_daemon_process_role_t role = cbm_daemon_process_role(argc, argv);
+    if (role == CBM_DAEMON_PROCESS_WORKER) {
+        /* Before this process writes ANYTHING. A worker's stderr is a file the
+         * supervisor keeps for post-mortem, and setvbuf only binds before a
+         * stream's first operation — claim it here so even the "could not
+         * start" messages below reach disk. The header follows once the argv
+         * grammar has been validated. */
+        cbm_log_set_crash_durable(true);
+    }
     if (role == CBM_DAEMON_PROCESS_INVALID) {
         (void)fprintf(stderr, "codebase-memory-mcp: invalid internal process arguments\n");
         return EXIT_FAILURE;
@@ -2623,6 +2631,13 @@ int main(int argc, char **argv) {
                           cbm_index_worker_argv_status_message(worker_status));
             return EXIT_FAILURE;
         }
+        /* First thing a worker records, and the only thing six 0-byte-log
+         * reports were missing: who I am, what I was asked to index, with what
+         * arguments. Everything below here can crash and the log still names
+         * the run. */
+        char *worker_repo_path = cbm_mcp_get_string_arg(invocation.args_json, "repo_path");
+        cbm_index_worker_log_begin(invocation.args_json, worker_repo_path);
+        free(worker_repo_path);
         cbm_daemon_ipc_endpoint_t *worker_endpoint = cbm_daemon_bootstrap_endpoint_new(NULL);
         cbm_project_lock_manager_t *worker_project_locks =
             worker_endpoint ? cbm_project_lock_manager_new(worker_endpoint) : NULL;

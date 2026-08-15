@@ -827,8 +827,16 @@ static void extract_worker(int worker_id, void *ctx_ptr) {
         }
 
         /* Per-file start log: shows which file each worker is processing.
-         * Critical for diagnosing stuck workers on large vendored files. */
-        if (sort_pos < PP_LOG_THRESH) { /* first 2 rounds of workers = most interesting */
+         * Critical for diagnosing stuck workers on large vendored files.
+         *
+         * Under a crash-durable log (i.e. a supervised worker) EVERY file gets
+         * its line, not just the first rounds. That log is the only evidence a
+         * contained crash or a kill leaves behind, and #1145/#1130 are
+         * unattributable precisely because it never named the file that was in
+         * flight — the run ends with the culprit still on the last lines. One
+         * line per file, never per node. */
+        if (sort_pos < PP_LOG_THRESH || /* first 2 rounds of workers = most interesting */
+            cbm_log_crash_durable()) {
             cbm_log_info("parallel.extract.file.start", "pos", itoa_log(sort_pos), "size_kb",
                          itoa_log(source_len / CBM_SZ_1K), "path", fi->rel_path);
         }
