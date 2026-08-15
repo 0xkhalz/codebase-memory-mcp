@@ -482,6 +482,12 @@ int cbm_cmd_uninstall(int argc, char **argv);
 
 /* update: check latest release, prompt for index deletion, prompt for ui/standard,
  * download and replace binary. */
+/* True when the installer script (install.sh / install.ps1 on Windows) is
+ * present beside the binary. `update` prints a command built from this;
+ * naming a path that does not exist ends the interaction on a failing
+ * command (#1632). Exposed for testing. */
+bool cbm_cli_installer_beside_binary(const char *dir);
+
 int cbm_cmd_update(int argc, char **argv);
 
 /* config: get/set/list/reset runtime config values. */
