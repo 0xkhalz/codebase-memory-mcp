@@ -7497,6 +7497,39 @@ TEST(cli_opencode_still_refuses_foreign_command_issue1630) {
     PASS();
 }
 
+/* #1038: `uninstall --help` performed a REAL uninstall - it removed the binary
+ * and every agent configuration. The top-level dispatcher matches the
+ * subcommand at argv[1] and forwards the rest, so its own --help check never
+ * saw argv[2], and nothing downstream looked.
+ *
+ * --help is the flag someone types precisely BECAUSE they are unsure what a
+ * command does; it must never be the thing that destroys their install. */
+TEST(cli_uninstall_help_does_not_uninstall_issue1038) {
+    char tmpdir[256];
+    snprintf(tmpdir, sizeof(tmpdir), "/tmp/cli-uninstall-help-XXXXXX");
+    if (!cbm_mkdtemp(tmpdir))
+        FAIL("cbm_mkdtemp failed");
+    char bin_dir[512];
+    snprintf(bin_dir, sizeof(bin_dir), "%s/bin", tmpdir);
+    test_mkdirp(bin_dir);
+    char binary[640];
+    snprintf(binary, sizeof(binary), "%s/codebase-memory-mcp", bin_dir);
+    write_test_file(binary, "#!/bin/sh\nexit 0\n");
+
+    char dir_arg[640];
+    snprintf(dir_arg, sizeof(dir_arg), "--dir=%s", bin_dir);
+    char *argv_help[] = {(char *)"uninstall", dir_arg, (char *)"--help"};
+    int rc = cbm_cmd_uninstall(3, argv_help);
+
+    bool binary_survived = access(binary, F_OK) == 0;
+    test_rmdir_r(tmpdir);
+    if (rc != 0)
+        FAIL("uninstall --help must succeed");
+    if (!binary_survived)
+        FAIL("uninstall --help must NOT remove the installed binary");
+    PASS();
+}
+
 TEST(cli_opencode_config_dir_detects_without_retargeting_global_json) {
     char tmpdir[256];
     snprintf(tmpdir, sizeof(tmpdir), "/tmp/cli-opencode-dir-XXXXXX");
@@ -12810,6 +12843,7 @@ SUITE(cli) {
     RUN_TEST(cli_opencode_prefers_existing_jsonc_config_discussion1560);
     RUN_TEST(cli_opencode_accepts_entry_annotated_with_enabled_issue1630);
     RUN_TEST(cli_opencode_still_refuses_foreign_command_issue1630);
+    RUN_TEST(cli_uninstall_help_does_not_uninstall_issue1038);
     RUN_TEST(cli_opencode_config_dir_detects_without_retargeting_global_json);
     RUN_TEST(cli_kiro_and_hermes_homes_are_honored);
     RUN_TEST(cli_detect_agents_finds_official_kiro_cli_executable);
