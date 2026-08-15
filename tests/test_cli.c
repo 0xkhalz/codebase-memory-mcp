@@ -12636,7 +12636,61 @@ TEST(cli_windows_update_hands_off_to_install_script) {
  *  Suite definition
  * ═══════════════════════════════════════════════════════════════════ */
 
+/* #1632: `update` derives the installer command from the BINARY's directory,
+ * which is not the same question as "is the installer there". A binary in
+ * ~/.local/bin with no install.sh beside it still produced:
+ *
+ *     bash "/home/<user>/.local/bin/install.sh"
+ *     /usr/bin/bash: .../install.sh: No such file or directory
+ *
+ * reported on discussion #1560 by a user already three releases deep in install
+ * trouble. `update` exists to tell someone how to proceed; ending on a command
+ * that cannot run is the one outcome it must not produce. */
+TEST(cli_update_only_names_an_installer_that_exists_issue1632) {
+    char tmpdir[256];
+    snprintf(tmpdir, sizeof(tmpdir), "/tmp/cli-installer-probe-XXXXXX");
+    if (!cbm_mkdtemp(tmpdir)) {
+        FAIL("cbm_mkdtemp failed");
+    }
+#ifdef _WIN32
+    const char *installer = "install.ps1";
+#else
+    const char *installer = "install.sh";
+#endif
+
+    /* A directory holding the binary but no installer must not be advertised. */
+    bool absent_is_refused = !cbm_cli_installer_beside_binary(tmpdir);
+
+    char script[512];
+    snprintf(script, sizeof(script), "%s/%s", tmpdir, installer);
+    write_test_file(script, "#!/bin/sh\nexit 0\n");
+    bool present_is_accepted = cbm_cli_installer_beside_binary(tmpdir);
+
+    /* A directory of that name must not count: `bash <dir>` is not a command. */
+    char decoy[512];
+    snprintf(decoy, sizeof(decoy), "%s/decoy", tmpdir);
+    test_mkdirp(decoy);
+    char decoy_installer[640];
+    snprintf(decoy_installer, sizeof(decoy_installer), "%s/%s", decoy, installer);
+    test_mkdirp(decoy_installer);
+    bool directory_is_refused = !cbm_cli_installer_beside_binary(decoy);
+
+    bool empty_is_refused = !cbm_cli_installer_beside_binary("");
+    test_rmdir_r(tmpdir);
+
+    if (!absent_is_refused)
+        FAIL("a directory with no installer must not be named as one");
+    if (!present_is_accepted)
+        FAIL("an installer that is present must be named");
+    if (!directory_is_refused)
+        FAIL("a DIRECTORY named install.sh is not a runnable installer");
+    if (!empty_is_refused)
+        FAIL("an empty directory string must be refused");
+    PASS();
+}
+
 SUITE(cli) {
+    RUN_TEST(cli_update_only_names_an_installer_that_exists_issue1632);
     RUN_TEST(cli_progress_visibility_policy);
     RUN_TEST(cli_raw_mcp_result_preserves_tool_error_status);
     RUN_TEST(cli_maintenance_cancellation_forces_failure_status);

@@ -11972,6 +11972,36 @@ static bool check_already_latest(void) {
 
 #endif /* CBM_CLI_ENABLE_TEST_API */
 
+/* Is the installer script actually present beside the binary? (#1632)
+ *
+ * `update` hands off to install.sh / install.ps1 and prints the command to run.
+ * It derived that path from the binary's own location, which is not the same
+ * question: the installer is placed beside the binary by install.sh, but a
+ * binary moved, packaged, or built from source has no installer next to it, and
+ * we still printed the path. The user's session then ended on a command that
+ * cannot run.
+ *
+ * Checked with cbm_path_info_utf8 so a non-ASCII install path resolves on
+ * Windows. A symlink counts: it is reported rather than followed, and the shell
+ * will run it perfectly well. */
+bool cbm_cli_installer_beside_binary(const char *dir) {
+    if (!dir || !dir[0]) {
+        return false;
+    }
+    char script[CLI_BUF_1K];
+#ifdef _WIN32
+    const char *name = "install.ps1";
+#else
+    const char *name = "install.sh";
+#endif
+    int written = snprintf(script, sizeof(script), "%s/%s", dir, name);
+    if (written <= 0 || (size_t)written >= sizeof(script)) {
+        return false;
+    }
+    cbm_path_info_t info;
+    return cbm_path_info_utf8(script, &info) == 0 && !info.is_directory;
+}
+
 int cbm_cmd_update(int argc, char **argv) {
     parse_auto_answer(argc, argv);
 
