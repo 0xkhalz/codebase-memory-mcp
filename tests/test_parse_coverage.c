@@ -272,11 +272,10 @@ TEST(dockerfile_missing_final_newline_not_flagged_issue1610) {
     CBMFileResult *r = do_extract(src, CBM_LANG_DOCKERFILE, "Dockerfile");
     ASSERT_NOT_NULL(r);
     bool flagged = r->parse_incomplete;
-    const char *ranges = r->error_ranges;
+    cbm_free_result(r);
     if (flagged) {
         FAIL("a Dockerfile lacking only its final newline must not be parse_partial");
     }
-    (void)ranges;
     PASS();
 }
 
@@ -288,7 +287,9 @@ TEST(dockerfile_with_final_newline_still_clean_issue1610) {
                       "ENTRYPOINT [\"dotnet\", \"App.dll\"]\n";
     CBMFileResult *r = do_extract(src, CBM_LANG_DOCKERFILE, "Dockerfile");
     ASSERT_NOT_NULL(r);
-    if (r->parse_incomplete) {
+    bool flagged = r->parse_incomplete;
+    cbm_free_result(r);
+    if (flagged) {
         FAIL("a terminated Dockerfile must not be parse_partial");
     }
     PASS();
@@ -310,9 +311,13 @@ TEST(missing_final_newline_not_flagged_across_grammars_issue1610) {
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         CBMFileResult *r = do_extract(cases[i].src, cases[i].lang, cases[i].path);
         ASSERT_NOT_NULL(r);
-        if (r->parse_incomplete) {
+        bool flagged = r->parse_incomplete;
+        if (flagged) {
             fprintf(stderr, "  %s flagged: ranges=%s\n", cases[i].path,
                     r->error_ranges ? r->error_ranges : "(none)");
+        }
+        cbm_free_result(r);
+        if (flagged) {
             FAIL("an unterminated final line must not be parse_partial in any grammar");
         }
     }
@@ -335,11 +340,11 @@ TEST(real_error_before_eof_still_flagged_without_final_newline_issue1610) {
     unterminated[n - 1] = '\0'; /* drop the final newline */
 
     CBMFileResult *r = do_extract(unterminated, CBM_LANG_C, "split.c");
-    bool flagged = r && r->parse_incomplete;
-    bool has_ranges = r && r->error_ranges != NULL;
     free(unterminated);
-
     ASSERT_NOT_NULL(r);
+    bool flagged = r->parse_incomplete;
+    bool has_ranges = r->error_ranges != NULL;
+    cbm_free_result(r);
     if (!flagged) {
         FAIL("a real mid-file parse failure must still be reported when the file also lacks its final newline");
     }
@@ -356,7 +361,9 @@ TEST(width_bearing_error_at_eof_still_flagged_issue1610) {
     const char *src = "all:\n\techo hi"; /* no trailing newline; recipe is lost */
     CBMFileResult *r = do_extract(src, CBM_LANG_MAKEFILE, "Makefile");
     ASSERT_NOT_NULL(r);
-    if (!r->parse_incomplete) {
+    bool flagged = r->parse_incomplete;
+    cbm_free_result(r);
+    if (!flagged) {
         FAIL("a width-bearing parse failure at EOF must still be reported");
     }
     PASS();
