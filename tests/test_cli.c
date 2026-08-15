@@ -7415,6 +7415,88 @@ TEST(cli_opencode_prefers_existing_jsonc_config_discussion1560) {
     PASS();
 }
 
+/* #1630: OpenCode writes `"enabled": true` beside our `command` and `type`, so
+ * an entry we wrote ourselves carries three keys. Our ownership check demanded
+ * an exact key set, classified our own entry as foreign, and refused the whole
+ * install. Confirmed on Linux (#1630) and Windows (#1582) with two independent
+ * configs in which EVERY MCP server carried the key.
+ *
+ * The entry below is the reporters' actual shape. It already says what we would
+ * say, so the correct outcome is success WITHOUT a write - rewriting it would
+ * drop `enabled`, turning a visible refusal into silent config loss. */
+TEST(cli_opencode_accepts_entry_annotated_with_enabled_issue1630) {
+    char tmpdir[256];
+    snprintf(tmpdir, sizeof(tmpdir), "/tmp/cli-opencode-enabled-XXXXXX");
+    if (!cbm_mkdtemp(tmpdir))
+        FAIL("cbm_mkdtemp failed");
+    char config_path[512];
+    snprintf(config_path, sizeof(config_path), "%s/opencode.json", tmpdir);
+    const char *original = "{\n"
+                           "  \"$schema\": \"https://opencode.ai/config.json\",\n"
+                           "  \"mcp\": {\n"
+                           "    \"codebase-memory-mcp\": {\n"
+                           "      \"enabled\": true,\n"
+                           "      \"type\": \"local\",\n"
+                           "      \"command\": [\n"
+                           "        \"/usr/local/bin/codebase-memory-mcp\"\n"
+                           "      ]\n"
+                           "    }\n"
+                           "  }\n"
+                           "}\n";
+    write_test_file(config_path, original);
+
+    int rc = cbm_upsert_opencode_mcp("/usr/local/bin/codebase-memory-mcp", config_path);
+
+    char *after = read_test_file_alloc(config_path);
+    bool preserved = after && strstr(after, "\"enabled\": true") != NULL;
+    bool unchanged = after && strcmp(after, original) == 0;
+    free(after);
+    test_rmdir_r(tmpdir);
+    if (rc != 0)
+        FAIL("an entry annotated with enabled must be accepted, not refused");
+    if (!preserved)
+        FAIL("the client's enabled key must survive");
+    if (!unchanged)
+        FAIL("an already-correct entry must not be rewritten at all");
+    PASS();
+}
+
+/* The other direction: an entry whose command points at a DIFFERENT binary is
+ * genuinely foreign and must still be refused, extra keys or not. Without this
+ * the change above would be a blanket loosening. */
+TEST(cli_opencode_still_refuses_foreign_command_issue1630) {
+    char tmpdir[256];
+    snprintf(tmpdir, sizeof(tmpdir), "/tmp/cli-opencode-foreign-XXXXXX");
+    if (!cbm_mkdtemp(tmpdir))
+        FAIL("cbm_mkdtemp failed");
+    char config_path[512];
+    snprintf(config_path, sizeof(config_path), "%s/opencode.json", tmpdir);
+    const char *original = "{\n"
+                           "  \"mcp\": {\n"
+                           "    \"codebase-memory-mcp\": {\n"
+                           "      \"enabled\": true,\n"
+                           "      \"type\": \"local\",\n"
+                           "      \"command\": [\n"
+                           "        \"/opt/somebody-elses/binary\"\n"
+                           "      ]\n"
+                           "    }\n"
+                           "  }\n"
+                           "}\n";
+    write_test_file(config_path, original);
+
+    int rc = cbm_upsert_opencode_mcp("/usr/local/bin/codebase-memory-mcp", config_path);
+
+    char *after = read_test_file_alloc(config_path);
+    bool unchanged = after && strcmp(after, original) == 0;
+    free(after);
+    test_rmdir_r(tmpdir);
+    if (rc == 0)
+        FAIL("an entry pointing at a foreign binary must still be refused");
+    if (!unchanged)
+        FAIL("a refused entry must be left byte-identical");
+    PASS();
+}
+
 TEST(cli_opencode_config_dir_detects_without_retargeting_global_json) {
     char tmpdir[256];
     snprintf(tmpdir, sizeof(tmpdir), "/tmp/cli-opencode-dir-XXXXXX");
@@ -12669,6 +12751,8 @@ SUITE(cli) {
     RUN_TEST(cli_antigravity_plan_uses_documented_global_files);
     RUN_TEST(cli_opencode_honors_custom_config);
     RUN_TEST(cli_opencode_prefers_existing_jsonc_config_discussion1560);
+    RUN_TEST(cli_opencode_accepts_entry_annotated_with_enabled_issue1630);
+    RUN_TEST(cli_opencode_still_refuses_foreign_command_issue1630);
     RUN_TEST(cli_opencode_config_dir_detects_without_retargeting_global_json);
     RUN_TEST(cli_kiro_and_hermes_homes_are_honored);
     RUN_TEST(cli_detect_agents_finds_official_kiro_cli_executable);

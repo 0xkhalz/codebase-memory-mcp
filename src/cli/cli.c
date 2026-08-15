@@ -1979,7 +1979,8 @@ static int cbm_json_mcp_snapshot_ownership(const char *document, size_t document
     char *command = NULL;
     int result = cbm_json_like_match_object_entry(document, document_length, object_path, path_len,
                                                   entry_name, fields, field_count, &command);
-    if (result == CBM_JSON_LIKE_OBJECT_MATCH &&
+    if ((result == CBM_JSON_LIKE_OBJECT_MATCH ||
+         result == CBM_JSON_LIKE_OBJECT_MATCH_WITH_EXTRAS) &&
         !cbm_json_mcp_owned_command(command, expected_binary, previous_managed_binary)) {
 #ifdef _WIN32
         result = cbm_json_mcp_command_availability(command) == CBM_JSON_MCP_COMMAND_MISSING
@@ -2010,6 +2011,26 @@ static int cbm_upsert_json_named_mcp(const char *binary_path, const char *config
         int ownership = cbm_json_mcp_snapshot_ownership(
             document, document_length, object_path, path_len, schema, entry_name, argument,
             binary_path, g_previous_managed_mcp_command);
+        /* An entry that already says what we would say, but carries extra keys
+         * the client added, is ALREADY SATISFIED. Return success without
+         * touching the file.
+         *
+         * We must not rewrite it: the editor replaces an entry wholesale, so
+         * writing our canonical shape over it would delete those keys. Doing
+         * nothing is both correct and lossless — the entry already points at
+         * this binary with the right type, which is the whole content of the
+         * install.
+         *
+         * This is #1630: OpenCode writes `"enabled": true` next to our
+         * `command` and `type`, so every user who had toggled a server in the
+         * UI hit `op=mcp_install` failure. Confirmed on Linux and Windows with
+         * two independent configs. Merging our fields into an annotated entry
+         * while preserving the rest is the fuller fix and is tracked there;
+         * this makes the common case work without risking anyone's config. */
+        if (ownership == CBM_JSON_LIKE_OBJECT_MATCH_WITH_EXTRAS) {
+            free(document);
+            return CLI_OK;
+        }
         /* STALE (our exact shape, dead binary path) is repairable — that is
          * the update contract. Only a genuinely foreign shape refuses. */
         if (ownership != CBM_JSON_LIKE_OBJECT_MATCH && ownership != CBM_JSON_LIKE_OBJECT_MISSING &&
