@@ -1646,6 +1646,18 @@ static bool is_actual_import_boundary(CBMExtractCtx *ctx, TSNode node, const CBM
     char *name = ts_node_is_null(head) ? NULL : cbm_node_text(ctx->arena, head, ctx->source);
 
     switch (ctx->language) {
+    case CBM_LANG_CSHARP:
+        /* cs_import_types also lists namespace_declaration (so the import pass
+         * can map namespace names) and using_statement (C#'s RAII block, a
+         * grammar-name collision with using_directive). Neither is an import
+         * CONTEXT: treating them as one put every namespaced C# file's whole
+         * body behind inside_import, which both suppressed ordinary usage
+         * extraction there and sent every identifier through the ancestor-
+         * walking import-binding check — 92% of extract time on wide files
+         * (dotnet/runtime JIT torture tests, 490 s for one 147 KB file). Only
+         * the using DIRECTIVE opens an import scope. */
+        return strcmp(kind, "using_directive") == 0 ||
+               strcmp(kind, "namespace_use_declaration") == 0;
     case CBM_LANG_ELIXIR:
         return strcmp(kind, "call") != 0 ||
                (name && (strcmp(name, "import") == 0 || strcmp(name, "alias") == 0 ||
