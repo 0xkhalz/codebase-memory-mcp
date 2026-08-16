@@ -1980,6 +1980,27 @@ const CBMType *ts_eval_expr_type(TSLSPContext *ctx, TSNode node) {
         return cbm_type_unknown();
     if (ctx->eval_depth > TS_LSP_MAX_EVAL_DEPTH)
         return cbm_type_unknown();
+    /* Depth alone does not bound WORK: crafted expressions (e.g. the TS test
+     * suite's repeated object spreads) stay under the depth cap while fanning
+     * out exponentially — one 3.6 KB baseline file measured 11 s here. Charge
+     * the same per-file budget the type-text parser uses and degrade to
+     * UNKNOWN on exhaustion, exactly like that path. */
+    if (g_ts_type_budget >= 0) {
+        /* An eval entry does ~two orders of magnitude more work than one
+         * text-parse unit (allocations, lookups, recursion bookkeeping), so it
+         * charges accordingly — otherwise the default per-file budget still
+         * permits ~12 s of evaluation on a crafted file. Normal files run
+         * hundreds-to-thousands of entries, far under any budget. */
+        g_ts_type_budget -= 16;
+        if (g_ts_type_budget < 0) {
+            if (!g_ts_type_budget_warned) {
+                g_ts_type_budget_warned = true;
+                fprintf(stderr, "  [tslsp] expression-eval budget exhausted; degrading to "
+                                "unknown\n");
+            }
+            return cbm_type_unknown();
+        }
+    }
     ctx->eval_depth++;
 
     const CBMType *result = cbm_type_unknown();
