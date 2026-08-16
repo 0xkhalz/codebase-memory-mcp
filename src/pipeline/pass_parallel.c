@@ -3315,6 +3315,26 @@ int cbm_parallel_resolve(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *files, 
         cbm_log_info("parallel.resolve.cross_lsp_cost", "cross_lsp_ms", cu_buf, "files", nf_buf,
                      "us_per_file", cf_buf, "defs_total", itoa_log(def_count),
                      "us_per_file_per_kdef", pk_buf);
+
+        /* What the per-file registry build actually cost. defs_per_file is the
+         * lever: if it tracks defs_total rather than the file's own module plus
+         * imports, the module filter is not containing the work and cross-file
+         * LSP is O(files x corpus_defs). */
+        uint64_t reg_defs = 0;
+        uint64_t reg_files = 0;
+        uint64_t flt_files = 0;
+        uint64_t flt_failed = 0;
+        cbm_pxc_filter_stats(&reg_defs, &reg_files, &flt_files, &flt_failed);
+        if (reg_files > 0) {
+            char rd_buf[CBM_SZ_32];
+            char ff_buf[CBM_SZ_32];
+            char fp_buf[CBM_SZ_32];
+            snprintf(rd_buf, sizeof(rd_buf), "%llu", (unsigned long long)(reg_defs / reg_files));
+            snprintf(ff_buf, sizeof(ff_buf), "%llu", (unsigned long long)flt_failed);
+            snprintf(fp_buf, sizeof(fp_buf), "%llu", (unsigned long long)flt_files);
+            cbm_log_info("parallel.resolve.perfile_registry", "defs_per_file", rd_buf, "defs_total",
+                         itoa_log(def_count), "filtered_files", fp_buf, "filter_failed", ff_buf);
+        }
     }
 
     cbm_log_info("parallel.resolve.done", "calls", itoa_log(total_calls), "usages",

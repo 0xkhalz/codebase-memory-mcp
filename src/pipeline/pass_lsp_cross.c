@@ -36,6 +36,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 
 /* ── Constants ─────────────────────────────────────────────────── */
@@ -1001,6 +1002,25 @@ void cbm_pxc_run_one_ts(CBMFileResult *r, const char *source, int source_len, co
  * `rust_shared_get` supplies the lazily-built shared Rust all-defs registry
  * (the parallel resolver owns its once-guard); NULL means "no shared rust
  * registry available" and rust NULL-filter files take the per-file build. */
+/* Per-file registry-build cost counters (#1669). Surfaced by pass_parallel at
+ * end of resolve. */
+_Atomic uint64_t g_pxc_defs_registered = 0;
+_Atomic uint64_t g_pxc_build_files = 0;
+_Atomic uint64_t g_pxc_filter_files = 0;
+_Atomic uint64_t g_pxc_filter_failed = 0;
+
+void cbm_pxc_filter_stats(uint64_t *defs_registered, uint64_t *build_files, uint64_t *filter_files,
+                          uint64_t *filter_failed) {
+    if (defs_registered)
+        *defs_registered = atomic_load_explicit(&g_pxc_defs_registered, memory_order_relaxed);
+    if (build_files)
+        *build_files = atomic_load_explicit(&g_pxc_build_files, memory_order_relaxed);
+    if (filter_files)
+        *filter_files = atomic_load_explicit(&g_pxc_filter_files, memory_order_relaxed);
+    if (filter_failed)
+        *filter_failed = atomic_load_explicit(&g_pxc_filter_failed, memory_order_relaxed);
+}
+
 void cbm_pxc_dispatch_file(CBMLanguage lang, CBMFileResult *result, const char *source,
                            int source_len, const char *rel, const char *def_module,
                            const CBMCrossLspRegistries *cross_registries,
@@ -1112,7 +1132,17 @@ void cbm_pxc_dispatch_file(CBMLanguage lang, CBMFileResult *result, const char *
             file_defs = filtered;
             file_def_count = filtered_count;
         }
+        atomic_fetch_add_explicit(&g_pxc_filter_files, 1, memory_order_relaxed);
+        if (!filter_succeeded) {
+            atomic_fetch_add_explicit(&g_pxc_filter_failed, 1, memory_order_relaxed);
+        }
     }
+    /* Per-file registry build cost is driven by THIS number. If it tracks the
+     * corpus instead of the file's own module + imports, cross-file LSP is
+     * O(files x corpus_defs) — see #1669. */
+    atomic_fetch_add_explicit(&g_pxc_defs_registered, (uint64_t)file_def_count,
+                              memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_pxc_build_files, 1, memory_order_relaxed);
     if (lang == CBM_LANG_RUST) {
         CBMTypeRegistry *shared = rust_shared_get ? rust_shared_get(rust_shared_ctx) : NULL;
         if (shared) {
