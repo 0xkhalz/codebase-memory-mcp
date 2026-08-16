@@ -3714,9 +3714,15 @@ CBMTypeRegistry *cbm_cs_build_cross_registry(CBMArena *arena, CBMLSPDef *defs, i
      * the type buckets exist, then register FUNCS with O(1) lookups, and
      * finalize again to index them. Stable order per phase: overload ties
      * resolve to the first registered QN match. */
-    CBMLSPDef *cs = (CBMLSPDef *)cbm_arena_alloc(arena, (size_t)def_count * sizeof(*cs));
-    if (!cs)
-        return NULL;
+    /* def_count == 0 is a valid corpus (no C# files): arena_alloc(0) returns
+     * NULL, which must not be mistaken for OOM — the empty registry is still
+     * built, finalized, and shared. */
+    CBMLSPDef *cs = NULL;
+    if (def_count > 0) {
+        cs = (CBMLSPDef *)cbm_arena_alloc(arena, (size_t)def_count * sizeof(*cs));
+        if (!cs)
+            return NULL;
+    }
     int total = 0;
     for (int i = 0; i < def_count; i++) {
         if (defs[i].lang == CBM_LANG_CSHARP && cs_def_is_type(&defs[i]))

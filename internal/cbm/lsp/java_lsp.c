@@ -3846,9 +3846,15 @@ CBMTypeRegistry *cbm_java_build_cross_registry(CBMArena *arena, CBMLSPDef *defs,
      * post-finalize tail stays empty. Bonus over the old one-pass order: a
      * signature can now resolve a type that appears LATER in defs[], the same
      * source-order independence the per-file path already guarantees. */
-    CBMLSPDef *jvm = (CBMLSPDef *)cbm_arena_alloc(arena, (size_t)def_count * sizeof(*jvm));
-    if (!jvm) {
-        return NULL;
+    /* def_count == 0 is a valid corpus (no Java files): arena_alloc(0) returns
+     * NULL, which must not be mistaken for OOM — the empty registry is still
+     * built, finalized, and shared. */
+    CBMLSPDef *jvm = NULL;
+    if (def_count > 0) {
+        jvm = (CBMLSPDef *)cbm_arena_alloc(arena, (size_t)def_count * sizeof(*jvm));
+        if (!jvm) {
+            return NULL;
+        }
     }
     /* Stable two-pass partition: types in defs[] order, then funcs in defs[]
      * order. Func registration order is load-bearing — overload ties resolve
