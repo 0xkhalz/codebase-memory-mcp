@@ -3297,8 +3297,7 @@ int cbm_parallel_resolve(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *files, 
      * Emitted next to defs_total so one grep on two differently sized repos
      * answers it. */
     int cross_files = atomic_load_explicit(&rc.lsp_cross_processed, memory_order_relaxed);
-    uint64_t cross_us =
-        atomic_load_explicit(&rc.time_ns_cross_lsp, memory_order_relaxed) / 1000ULL;
+    uint64_t cross_us = atomic_load_explicit(&rc.time_ns_cross_lsp, memory_order_relaxed) / 1000ULL;
     if (cross_files > 0) {
         char cf_buf[CBM_SZ_32];
         char nf_buf[CBM_SZ_32];
@@ -3309,10 +3308,10 @@ int cbm_parallel_resolve(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *files, 
         snprintf(nf_buf, sizeof(nf_buf), "%d", cross_files);
         snprintf(cu_buf, sizeof(cu_buf), "%llu", (unsigned long long)(cross_us / 1000ULL));
         snprintf(pk_buf, sizeof(pk_buf), "%llu",
-                 (unsigned long long)(def_count > 0 ? (cross_us * 1000ULL) /
-                                                          ((uint64_t)cross_files *
-                                                           (uint64_t)def_count)
-                                                    : 0ULL));
+                 (unsigned long long)(def_count > 0
+                                          ? (cross_us * 1000ULL) /
+                                                ((uint64_t)cross_files * (uint64_t)def_count)
+                                          : 0ULL));
         cbm_log_info("parallel.resolve.cross_lsp_cost", "cross_lsp_ms", cu_buf, "files", nf_buf,
                      "us_per_file", cf_buf, "defs_total", itoa_log(def_count),
                      "us_per_file_per_kdef", pk_buf);

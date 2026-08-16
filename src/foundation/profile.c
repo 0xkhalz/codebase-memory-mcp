@@ -173,8 +173,9 @@ void cbm_scale_end(cbm_scale_probe_t *probe) {
     char curve[PROF_BUF_LEN * CBM_SCALE_CHECKPOINTS];
     int used = 0;
     for (int i = 0; i < recorded && used < (int)sizeof(curve) - 1; i++) {
-        int wrote = snprintf(curve + used, sizeof(curve) - (size_t)used, "%s%ld:%ld",
-                             i == 0 ? "" : ",", probe->cp_items[i], probe->cp_us[i] / PROF_US_PER_MS);
+        int wrote =
+            snprintf(curve + used, sizeof(curve) - (size_t)used, "%s%ld:%ld", i == 0 ? "" : ",",
+                     probe->cp_items[i], probe->cp_us[i] / PROF_US_PER_MS);
         if (wrote < 0) {
             break;
         }
