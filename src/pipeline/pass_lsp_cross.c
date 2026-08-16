@@ -1009,6 +1009,15 @@ _Atomic uint64_t g_pxc_build_files = 0;
 _Atomic uint64_t g_pxc_filter_files = 0;
 _Atomic uint64_t g_pxc_filter_failed = 0;
 
+/* Overlay registrations count as per-file registry work too: the complexity
+ * gate (test_complexity.c) sums ALL defs registered per file, whichever path
+ * built them. Without this the shared-registry languages would report zero and
+ * the linearity gate would pass vacuously. */
+void cbm_pxc_count_perfile_defs(uint64_t defs) {
+    atomic_fetch_add_explicit(&g_pxc_defs_registered, defs, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_pxc_build_files, 1, memory_order_relaxed);
+}
+
 void cbm_pxc_filter_stats(uint64_t *defs_registered, uint64_t *build_files, uint64_t *filter_files,
                           uint64_t *filter_failed) {
     if (defs_registered)
@@ -1068,6 +1077,14 @@ void cbm_pxc_dispatch_file(CBMLanguage lang, CBMFileResult *result, const char *
             cbm_run_cs_lsp_cross_with_registry(&result->arena, source, source_len, def_module,
                                                prebuilt, imp_vals, imp_count, result->cached_tree,
                                                &result->resolved_calls);
+            used_prebuilt = true;
+            break;
+        case CBM_LANG_JAVA:
+            /* Own-module defs go into a per-file overlay; imports and stdlib
+             * resolve through the shared base (#1669). */
+            cbm_run_java_lsp_cross_with_registry(
+                &result->arena, result, source, source_len, def_module, prebuilt, imp_keys,
+                imp_vals, imp_count, result->cached_tree, &result->resolved_calls);
             used_prebuilt = true;
             break;
         case CBM_LANG_JAVASCRIPT:
