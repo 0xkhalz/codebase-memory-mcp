@@ -68,6 +68,31 @@ smoke_file_sha256() {
   fi
 }
 
+# Fixture cleanup, never an assertion. On Windows a directory holding an
+# executable that was just written or just run can refuse deletion for a moment
+# while a scanner or an unreaped child still holds it. Under `set -e` a plain
+# `rm -rf` then kills the run WITHOUT printing anything — three release smoke
+# jobs died exactly that way, silently, immediately after "OK 13h".
+#
+# Retry so the disk actually gets reclaimed (these fixtures hold ~300 MB
+# binaries and runners are disk-tight), then warn and continue: an ephemeral
+# temp dir must never decide the verdict.
+smoke_rmtree() {
+  local target
+  for target in "$@"; do
+    [ -n "$target" ] || continue
+    local attempt
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+      rm -rf "$target" 2>/dev/null && break
+      sleep 0.5
+    done
+    if [ -e "$target" ]; then
+      echo "warn: could not remove smoke fixture $target (leaving it to the runner)"
+    fi
+  done
+  return 0
+}
+
 # Every platform ships ONE binary, Windows included: a fixture copy is complete
 # with nothing beside it.
 copy_smoke_binary() {
@@ -123,10 +148,30 @@ DRYRUN_HOME=""
 if command -v cygpath &>/dev/null; then
     TMPDIR=$(cygpath -m "$TMPDIR")
 fi
-trap 'rm -rf "$TMPDIR" "${DRYRUN_HOME:-}"' EXIT
+trap 'smoke_rmtree "$TMPDIR" "${DRYRUN_HOME:-}"' EXIT
 
 CLI_STDERR=$(smoke_mktemp_file)
-cli() { "$BINARY" cli "$@" 2>"$CLI_STDERR"; }
+# 10 of the cli call sites assign directly (VAR=$(cli ...)). Under
+# `set -euo pipefail` a non-zero exit there kills the smoke with NOTHING
+# printed: no FAIL line, no stderr, just an abort indistinguishable from a hang,
+# a starved runner, or a real regression. One such abort cost a full Windows
+# cycle just to locate, and still could not be attributed. Surface the command
+# and its stderr here, while we still can.
+#
+# Neutral wording on purpose: one call site deliberately expects a non-zero exit
+# (the unknown-function query must error loudly), so this must not read as a
+# failure on its own.
+cli() {
+  local rc=0
+  "$BINARY" cli "$@" 2>"$CLI_STDERR" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    {
+      printf 'cli: `%s` exited %s\n' "$*" "$rc"
+      sed 's/^/  /' "$CLI_STDERR" 2>/dev/null
+    } >&2
+  fi
+  return "$rc"
+}
 
 echo "=== Phase 1: version ==="
 VERSION_STATUS=0
@@ -141,6 +186,58 @@ if ! echo "$OUTPUT" | grep -qE 'v?[0-9]+\.[0-9]+|dev'; then
   exit 1
 fi
 echo "OK"
+
+echo ""
+echo "=== Phase 1b: allocator override matches this platform's contract ==="
+# Asserts the SHIPPED binary's actual allocator wiring, per platform:
+#
+#   Windows, Linux -> ordinary malloc MUST reach mimalloc (all size classes
+#                     owned). If it does not, every purge/reclaim option in
+#                     cbm_mem_init is decoration and freed pages stay committed
+#                     — that is #581, which hid in production for months
+#                     precisely because nothing asserted it on a real artifact.
+#   macOS          -> it MUST NOT. Enabling the override there aborts on the
+#                     first pointer crossing the two-level-namespace boundary
+#                     ("mi_free: invalid pointer"), so "owned" here would mean
+#                     we shipped a binary that crashes on index.
+#
+# Both directions fail. A silent flip either way is a release blocker, which is
+# why this lives in smoke (real artifact, all platforms) and not only in a unit
+# test built from source.
+ALLOC_LOG=$("$BINARY" cli list_projects 2>&1 >/dev/null || true)
+case "$(uname -s)" in
+  Darwin)
+    if echo "$ALLOC_LOG" | grep -q 'mem.allocator.not_owned'; then
+      echo "FAIL: macOS emitted the not_owned WARNING; expected the by-design"
+      echo "      bound-populations INFO line (see #1360)"
+      exit 1
+    fi
+    if echo "$ALLOC_LOG" | grep -q 'mem.allocator.owned'; then
+      echo "FAIL: macOS reports ordinary malloc as allocator-owned. The override"
+      echo "      must stay OFF here: under the two-level namespace it aborts"
+      echo "      with 'mi_free: invalid pointer' on the first crossing pointer."
+      exit 1
+    fi
+    echo "OK: macOS serves ordinary malloc from the system allocator, no warning"
+    ;;
+  MINGW*|MSYS*|CYGWIN*|Linux)
+    if echo "$ALLOC_LOG" | grep -q 'mem.allocator.not_owned'; then
+      echo "FAIL: ordinary malloc does NOT reach mimalloc on $(uname -s)."
+      echo "      Allocator tuning is inert and freed pages will stay committed (#581/#1360)."
+      echo "$ALLOC_LOG" | grep 'mem.allocator' | head -2
+      exit 1
+    fi
+    if echo "$ALLOC_LOG" | grep -q 'mem.allocator.bound_populations_only'; then
+      echo "FAIL: $(uname -s) reports bound-populations-only; the global override"
+      echo "      is expected to be compiled in on this platform (#1360)."
+      exit 1
+    fi
+    echo "OK: ordinary malloc reaches the allocator on $(uname -s)"
+    ;;
+  *)
+    echo "SKIP: no allocator contract defined for $(uname -s)"
+    ;;
+esac
 
 if [ "$SMOKE_MODE" != "--agent-config-only" ]; then
 echo ""
@@ -293,6 +390,174 @@ if [ "$TOTAL" -lt 1 ]; then
   echo "FAIL: search_graph for 'compute' returned 0 results"
   exit 1
 fi
+
+echo ""
+echo "=== Phase 3z: structuredContent carries structure or is absent — never {} and never a copy (#1375, #1522) ==="
+# Asserts on the SHIPPED artifact what the unit suite asserts from source: a
+# non-JSON payload must travel ONCE. It used to appear twice — content[0].text
+# plus an identical structuredContent.text — costing 2.05x the bytes on a large
+# query_graph, i.e. half the 10 MiB transport budget and double the tokens billed
+# to every LLM caller.
+#
+# In smoke as well as the unit suite because this is a WIRE-FORMAT property: it
+# is what a real client actually receives from the real binary, and a from-source
+# test cannot prove the released artifact behaves the same way.
+DUP_TOOLS=0
+DUP_CHECKED=0
+for TOOL_ARGS in "search_graph --project $PROJECT --name-pattern compute" \
+                 "search_code --project $PROJECT --query compute" \
+                 "get_architecture --project $PROJECT" \
+                 "index_status --project $PROJECT"; do
+  # shellcheck disable=SC2086
+  ENVELOPE=$("$BINARY" cli $TOOL_ARGS --json 2>/dev/null || true)
+  [ -z "$ENVELOPE" ] && continue
+  VERDICT=$(printf '%s' "$ENVELOPE" | python3 -c '
+import json,sys
+try:
+    d = json.loads(sys.stdin.read())
+except Exception:
+    print("skip"); raise SystemExit
+if d.get("isError"):
+    print("skip"); raise SystemExit
+content = d.get("content") or []
+text = content[0].get("text", "") if content else ""
+sc = d.get("structuredContent", "ABSENT")
+try:
+    payload_is_object = isinstance(json.loads(text), dict)
+except Exception:
+    payload_is_object = False
+if payload_is_object:
+    # Object payloads must carry the parsed, NON-EMPTY object.
+    print("ok" if isinstance(sc, dict) and sc else "object-lost"); raise SystemExit
+# Text payloads: no structuredContent key at all. {} rendered as the whole
+# result in outputSchema-honoring clients (#1522); {"text": ...} duplicated
+# the wire (#1375).
+if sc == "ABSENT":
+    print("ok")
+elif isinstance(sc, dict) and not sc:
+    print("empty-lie")
+elif isinstance(sc, dict) and sc.get("text") == text and text:
+    print("dup")
+else:
+    print("unexpected")
+')
+  case "$VERDICT" in
+    dup) echo "FAIL: $(echo "$TOOL_ARGS" | cut -d" " -f1) repeats its payload in structuredContent (#1375)"; DUP_TOOLS=$((DUP_TOOLS+1)) ;;
+    empty-lie) echo "FAIL: $(echo "$TOOL_ARGS" | cut -d" " -f1) ships structuredContent {} beside a non-empty payload (#1522)"; DUP_TOOLS=$((DUP_TOOLS+1)) ;;
+    object-lost) echo "FAIL: $(echo "$TOOL_ARGS" | cut -d" " -f1) dropped the parsed object from structuredContent"; DUP_TOOLS=$((DUP_TOOLS+1)) ;;
+    unexpected) echo "FAIL: $(echo "$TOOL_ARGS" | cut -d" " -f1) has an unexpected structuredContent shape"; DUP_TOOLS=$((DUP_TOOLS+1)) ;;
+    ok) DUP_CHECKED=$((DUP_CHECKED+1)) ;;
+  esac
+done
+if [ "$DUP_TOOLS" -ne 0 ]; then
+  echo "FAIL: $DUP_TOOLS tool(s) duplicate their payload on the shipped binary"
+  exit 1
+fi
+if [ "$DUP_CHECKED" -eq 0 ]; then
+  echo "FAIL: no tool produced a non-JSON payload — this check proved nothing"
+  exit 1
+fi
+echo "OK: $DUP_CHECKED tool(s) deliver their payload exactly once"
+
+echo "=== Phase 3z1: default-format MCP replies are usable in schema-honoring clients (#1522) ==="
+# The exact end-to-end failure shape of #1522: a spec-compliant MCP client
+# (Claude Code) reads structuredContent as THE result when a tool declares an
+# outputSchema. Drive the REAL stdio server the way such a client does and
+# assert a default-format search_graph reply cannot render as "{}": either
+# structuredContent is absent (client falls back to content text) or it is a
+# non-empty object. Also assert no tool declares an outputSchema anymore.
+MCP_1522=$(python3 - "$BINARY" "$PROJECT" <<'PYMCP'
+import json, subprocess, sys
+BIN, PROJECT = sys.argv[1], sys.argv[2]
+def rpc(i, m, p): return json.dumps({"jsonrpc": "2.0", "id": i, "method": m, "params": p})
+reqs = "\n".join([
+    rpc(1, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+        "clientInfo": {"name": "smoke-1522", "version": "0"}}),
+    json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    rpc(2, "tools/list", {}),
+    rpc(3, "tools/call", {"name": "search_graph", "arguments":
+        {"project": PROJECT, "name_pattern": "compute"}}),
+]) + "\n"
+out = subprocess.run([BIN], input=reqs, capture_output=True, text=True, timeout=180).stdout
+verdict = []
+for line in out.splitlines():
+    try:
+        d = json.loads(line)
+    except Exception:
+        continue
+    if d.get("id") == 2:
+        schemas = [t["name"] for t in d.get("result", {}).get("tools", []) if "outputSchema" in t]
+        if schemas:
+            verdict.append("FAIL: outputSchema declared by: " + ",".join(schemas))
+    if d.get("id") == 3:
+        r = d.get("result", {})
+        text = (r.get("content") or [{}])[0].get("text", "")
+        sc = r.get("structuredContent", "ABSENT")
+        if not text:
+            verdict.append("FAIL: search_graph content text is empty")
+        if isinstance(sc, dict) and not sc:
+            verdict.append("FAIL: search_graph ships structuredContent {} (#1522)")
+if not verdict:
+    verdict.append("OK")
+print("; ".join(verdict))
+PYMCP
+)
+case "$MCP_1522" in
+  OK) echo "OK: default-format MCP reply is client-usable, no outputSchema declared" ;;
+  *) echo "$MCP_1522"; exit 1 ;;
+esac
+
+echo "=== Phase 3z2: pipelined requests beyond queue capacity all get answers ==="
+# Any 7+ requests written in one stdin burst used to kill the server with
+# rc=1 and ZERO bytes of output — the frontend queue (capacity 8 frames,
+# initialize + notification included) failed the whole session at overflow
+# instead of backpressuring the reader. Agent clients issuing parallel tool
+# calls pipeline exactly like this.
+PIPELINE=$(python3 - "$BINARY" <<'PYPIPE'
+import json, subprocess, sys
+BIN = sys.argv[1]
+N = 24
+def rpc(i, m, p): return json.dumps({"jsonrpc": "2.0", "id": i, "method": m, "params": p})
+lines = [rpc(1, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+         "clientInfo": {"name": "smoke-pipe", "version": "0"}}),
+         json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"})]
+for i in range(N):
+    lines.append(rpc(100 + i, "tools/call", {"name": "list_projects", "arguments": {}}))
+r = subprocess.run([BIN], input="\n".join(lines) + "\n",
+                   capture_output=True, text=True, timeout=300)
+answered = set()
+for line in r.stdout.splitlines():
+    try:
+        d = json.loads(line)
+    except Exception:
+        continue
+    if isinstance(d.get("id"), int) and d["id"] >= 100:
+        answered.add(d["id"])
+if r.returncode == 0 and len(answered) == N:
+    print("OK")
+else:
+    print(f"FAIL: rc={r.returncode} answered={len(answered)}/{N} stdout_bytes={len(r.stdout)}")
+PYPIPE
+)
+case "$PIPELINE" in
+  OK) echo "OK: 24 pipelined tool calls all answered, clean exit" ;;
+  *) echo "$PIPELINE"; exit 1 ;;
+esac
+
+echo "=== Phase 3z3: config get prints real defaults and rejects unknown keys (#1522) ==="
+CFG_HOME=$(smoke_mktemp_dir)
+CFG_WATCH=$(CBM_CACHE_DIR="$CFG_HOME" "$BINARY" config get auto_watch 2>/dev/null || true)
+if [ "$CFG_WATCH" != "true" ] && [ "$CFG_WATCH" != "false" ]; then
+  echo "FAIL: config get auto_watch printed '$CFG_WATCH' (expected the stored value or the default 'true')"
+  rm -rf "$CFG_HOME"; exit 1
+fi
+if CBM_CACHE_DIR="$CFG_HOME" "$BINARY" config get totally_bogus_key >/dev/null 2>&1; then
+  echo "FAIL: config get of an unknown key exited 0"
+  rm -rf "$CFG_HOME"; exit 1
+fi
+rm -rf "$CFG_HOME"
+echo "OK: config get returns defaults and errors on unknown keys"
+
 echo "OK: search_graph found $TOTAL result(s) for 'compute'"
 
 # 3b: trace_path — verify compute has callers
@@ -901,47 +1166,48 @@ if ! echo "$UNINSTALL_OUT" | grep -qi 'uninstall\|remov'; then
 fi
 echo "OK: uninstall --dry-run completed"
 
-# 6c: update --dry-run --standard -y
+# 6c: update --dry-run -y
+# The product binary never replaces itself on ANY platform. `update` is a
+# handoff: it prints the shipped install script's command and exits 0. An
+# in-process updater is structurally a downloader -- fetch archive, extract,
+# chmod, exec -- which is impossible on Windows without a second resident
+# binary, and is the shape Defender's ML scores as a dropper everywhere else.
 echo "--- Phase 6c: update --dry-run ---"
 if [[ "$BINARY" == *.exe ]]; then
-  # Same contract Phase 14a asserts against a real update: Windows never
-  # replaces the running image in-process, so `update` is a handoff — it exits 0
-  # and prints the exact install.ps1 command. The old refusal here was the
-  # portable-vs-managed split, which died with the launcher stub.
-  if ! UPDATE_OUT=$(run_dryrun_env "$BINARY" update --dry-run --standard -y 2>&1); then
-    echo "FAIL: Windows update handoff exited non-zero"
-    echo "$UPDATE_OUT"
-    exit 1
-  fi
-  if ! echo "$UPDATE_OUT" | grep -q 'install.ps1'; then
-    echo "FAIL: Windows update did not print the install.ps1 handoff"
-    echo "$UPDATE_OUT"
-    exit 1
-  fi
+  UPDATE_SCRIPT="install.ps1"
 else
-  UPDATE_OUT=$(run_dryrun_env "$BINARY" update --dry-run --standard -y 2>&1)
-  if ! echo "$UPDATE_OUT" | grep -qi 'dry-run'; then
-    echo "FAIL: update --dry-run did not indicate dry-run mode"
-    echo "$UPDATE_OUT"
-    exit 1
-  fi
-  if ! echo "$UPDATE_OUT" | grep -qi 'standard'; then
-    echo "FAIL: update --dry-run did not respect --standard flag"
-    exit 1
-  fi
+  UPDATE_SCRIPT="install.sh"
 fi
-# On Linux the binary must self-update from the static "-portable" asset: the
-# standard linux asset dynamically links glibc 2.38+ and breaks on older distros
-# (Debian 11, RHEL 8, Ubuntu 20.04). Guards build_update_url in src/cli/cli.c.
-if [ "$(uname -s)" = "Linux" ]; then
-  if ! echo "$UPDATE_OUT" | grep -q -- '-portable'; then
-    echo "FAIL: linux update --dry-run does not target the -portable asset"
-    echo "$UPDATE_OUT"
+if ! UPDATE_OUT=$(run_dryrun_env "$BINARY" update --dry-run -y 2>&1); then
+  echo "FAIL: update handoff exited non-zero"
+  echo "$UPDATE_OUT"
+  exit 1
+fi
+if ! echo "$UPDATE_OUT" | grep -q "$UPDATE_SCRIPT"; then
+  echo "FAIL: update did not print the $UPDATE_SCRIPT handoff"
+  echo "$UPDATE_OUT"
+  exit 1
+fi
+# A handoff that still fetched something would defeat the entire point.
+if echo "$UPDATE_OUT" | grep -qiE 'downloading |releases/latest/download'; then
+  echo "FAIL: update still performs an in-process download"
+  echo "$UPDATE_OUT"
+  exit 1
+fi
+echo "OK: update hands off to $UPDATE_SCRIPT without downloading"
+
+# The glibc constraint did NOT disappear with in-process update -- it moved. The
+# standard linux asset dynamically links glibc 2.38+ and breaks on Debian 11,
+# RHEL 8 and Ubuntu 20.04, so the installer must fetch the static "-portable"
+# build. Guard it where the behaviour now lives instead of retiring the
+# protection along with the code that used to implement it.
+if [ -f "$REPO_ROOT/install.sh" ]; then
+  if ! grep -q 'PORTABLE="-portable"' "$REPO_ROOT/install.sh"; then
+    echo "FAIL: install.sh no longer selects the static -portable Linux asset"
     exit 1
   fi
-  echo "OK: linux update targets the -portable (static) asset"
+  echo "OK: install.sh targets the -portable (static) Linux asset"
 fi
-echo "OK: update --dry-run --standard completed"
 
 # 6d: config set/get/reset round-trip
 echo "--- Phase 6d: config set/get/reset ---"
@@ -970,7 +1236,7 @@ chmod 755 "$INSTALL_DIR/codebase-memory-mcp"
 INSTALLED_VER=$("$INSTALL_DIR/codebase-memory-mcp" --version 2>&1)
 if ! echo "$INSTALLED_VER" | grep -qE 'v?[0-9]+\.[0-9]+|dev'; then
   echo "FAIL: installed binary --version failed: $INSTALLED_VER"
-  rm -rf "$REPLACE_DIR"
+  smoke_rmtree "$REPLACE_DIR"
   exit 1
 fi
 
@@ -986,7 +1252,7 @@ chmod 755 "$INSTALL_DIR/codebase-memory-mcp"
 REPLACED_VER=$("$INSTALL_DIR/codebase-memory-mcp" --version 2>&1)
 if ! echo "$REPLACED_VER" | grep -qE 'v?[0-9]+\.[0-9]+|dev'; then
   echo "FAIL: replaced binary --version failed: $REPLACED_VER"
-  rm -rf "$REPLACE_DIR"
+  smoke_rmtree "$REPLACE_DIR"
   exit 1
 fi
 echo "OK: binary replacement succeeded (version: $REPLACED_VER)"
@@ -1000,12 +1266,12 @@ chmod 755 "$INSTALL_DIR/codebase-memory-mcp"
 READONLY_VER=$("$INSTALL_DIR/codebase-memory-mcp" --version 2>&1)
 if ! echo "$READONLY_VER" | grep -qE 'v?[0-9]+\.[0-9]+|dev'; then
   echo "FAIL: read-only replacement --version failed: $READONLY_VER"
-  rm -rf "$REPLACE_DIR"
+  smoke_rmtree "$REPLACE_DIR"
   exit 1
 fi
 echo "OK: read-only binary replacement succeeded"
 
-rm -rf "$REPLACE_DIR"
+smoke_rmtree "$REPLACE_DIR"
 
 echo ""
 echo "=== Phase 7: MCP advanced tool calls ==="
@@ -2671,7 +2937,7 @@ if ! echo "$INSTALL_OUT" | grep -qi 'detected agents'; then
 fi
 echo "OK 9b-1: install with minimal agents exits cleanly"
 retire_account_daemon "9b-1-cleanup"
-rm -rf "$EMPTY_HOME"
+smoke_rmtree "$EMPTY_HOME"
 
 # 9b-2: Install twice (idempotent)
 IDEM_HOME=$(smoke_mktemp_dir)
@@ -2695,7 +2961,7 @@ if [ "$COUNT" != "1" ]; then
 fi
 echo "OK 9b-2: double install is idempotent"
 retire_account_daemon "9b-2-cleanup"
-rm -rf "$IDEM_HOME"
+smoke_rmtree "$IDEM_HOME"
 
 # 9b-3: Uninstall without prior install
 CLEAN_HOME=$(smoke_mktemp_dir)
@@ -2708,7 +2974,7 @@ if [ "$UNINSTALL_RC" -ge 128 ]; then
 fi
 echo "OK 9b-3: uninstall without install doesn't crash"
 retire_account_daemon "9b-3-cleanup"
-rm -rf "$CLEAN_HOME"
+smoke_rmtree "$CLEAN_HOME"
 
 # 9b-4: Install over corrupt JSON
 CORRUPT_HOME=$(smoke_mktemp_dir)
@@ -2719,7 +2985,7 @@ run_no_crash 9b-4 env HOME="$CORRUPT_HOME" "$BINARY" install -y
 # Should either fix it or handle gracefully — not crash
 echo "OK 9b-4: install over corrupt JSON doesn't crash"
 retire_account_daemon "9b-4-cleanup"
-rm -rf "$CORRUPT_HOME"
+smoke_rmtree "$CORRUPT_HOME"
 
 # 9b-8: Double uninstall
 DBL_HOME=$(smoke_mktemp_dir)
@@ -2734,9 +3000,9 @@ run_no_crash 9b-8-first env HOME="$DBL_HOME" "$DBL_UNINSTALLER" uninstall -y -n
 run_no_crash 9b-8-second env HOME="$DBL_HOME" "$BINARY" uninstall -y -n
 echo "OK 9b-8: double uninstall doesn't crash"
 retire_account_daemon "9b-8-cleanup"
-rm -rf "$DBL_HOME"
+smoke_rmtree "$DBL_HOME"
 
-# 9b-9: Non-interactive update without --standard/--ui should fail cleanly (not hang)
+# 9b-9: Non-interactive update must not hang (no variant prompt exists since #1538)
 if [ "$(uname -s)" != "MINGW64_NT" ] 2>/dev/null; then
   NONINT_OUT=$(echo "" | "$BINARY" update --dry-run 2>&1) || true
   if echo "$NONINT_OUT" | grep -qi 'terminal\|requires.*flag\|error'; then
@@ -2748,7 +3014,7 @@ if [ "$(uname -s)" != "MINGW64_NT" ] 2>/dev/null; then
 fi
 
 retire_account_daemon "9-cleanup"
-rm -rf "$FAKE_HOME" "$EMPTY_HOME"
+smoke_rmtree "$FAKE_HOME" "$EMPTY_HOME"
 
 if [ "$SMOKE_MODE" = "--agent-config-only" ]; then
   echo ""
@@ -2848,7 +3114,7 @@ else
   fi
 fi
 
-rm -rf "$SECURITY_DIR"
+smoke_rmtree "$SECURITY_DIR"
 
 echo ""
 echo "=== Phase 11: process kill E2E ==="
@@ -2912,6 +3178,9 @@ if [ -n "${SMOKE_DOWNLOAD_URL:-}" ]; then
   fi
   UPDATE_HOME=$(smoke_mktemp_dir)
   mkdir -p "$UPDATE_HOME/.claude" "$UPDATE_HOME/.local/bin"
+  # This phase stages the binary by hand into a fresh HOME — it does NOT go
+  # through install.sh or `install`. The binary is self-contained, so a staged
+  # copy is immediately able to render and remove its own integrations.
   if [[ "$BINARY" == *.exe ]]; then
     cp "$BINARY" "$UPDATE_HOME/.local/bin/codebase-memory-mcp.exe"
     mkdir -p "$UPDATE_HOME/retired-install"
@@ -2929,15 +3198,14 @@ if [ -n "${SMOKE_DOWNLOAD_URL:-}" ]; then
     fi
   fi
 
-  # POSIX runs `update` from the retired image so the in-process replacement is
-  # exercised end to end. Windows has no in-process replacement: a running .exe
-  # cannot replace itself, so `update` hands off to install.ps1 (asserted in
-  # 14a below) and the installed copy drives the later uninstall phases.
+  # No platform replaces its own image any more, so there is no in-process
+  # swap left to exercise from a retired copy: every platform drives `update`
+  # from the installed binary, and the installed copy drives the later
+  # uninstall phases.
   if [[ "$BINARY" == *.exe ]]; then
     UPDATE_DRIVER="$UPDATE_HOME/.local/bin/codebase-memory-mcp.exe"
   else
-    RETIRED_DIR=$(cd "$UPDATE_HOME/retired-install" && pwd -P)
-    UPDATE_DRIVER="$RETIRED_DIR/codebase-memory-mcp"
+    UPDATE_DRIVER="$UPDATE_HOME/.local/bin/codebase-memory-mcp"
   fi
 
   # Pre-install agent config with positive prior-install identity. POSIX runs
@@ -2950,11 +3218,7 @@ if [ -n "${SMOKE_DOWNLOAD_URL:-}" ]; then
   # make 14f demand that uninstall delete an entry owned by a DIFFERENT
   # installation, which it correctly refuses to do. install.ps1 re-runs
   # `install`, so this is exactly what a real Windows user is left holding.
-  if [[ "$BINARY" == *.exe ]]; then
-    STALE_CMD="$UPDATE_HOME/.local/bin/codebase-memory-mcp.exe"
-  else
-    STALE_CMD="$UPDATE_DRIVER"
-  fi
+  STALE_CMD="$UPDATE_DRIVER"
   if command -v cygpath &>/dev/null; then
     STALE_CMD=$(cygpath -m "$STALE_CMD")
   fi
@@ -2962,36 +3226,36 @@ if [ -n "${SMOKE_DOWNLOAD_URL:-}" ]; then
     'import json, os; print(json.dumps({"mcpServers":{"codebase-memory-mcp":{"command":os.environ["STALE_CMD"]}}}))' \
     > "$UPDATE_HOME/.claude.json"
 
-  # 14a: Run actual update command (detect variant from available archive)
-  UPDATE_VARIANT="--standard"
-  if curl --noproxy '*' -sf "$SMOKE_DOWNLOAD_URL/" 2>/dev/null | grep -q "ui-"; then
-    UPDATE_VARIANT="--ui"
-  fi
+  # 14a: Run actual update command (one composition ships — no variant flag)
   UPDATE_LOG=$(smoke_mktemp_file)
+  # Hash the driver BEFORE the run and compare it against itself afterwards.
+  # Comparing against "$BINARY" instead looks equivalent but is not: the POSIX
+  # fixture ad-hoc re-signs its copy on macOS, so the two differ before `update`
+  # is ever invoked and the assertion fires on a difference the fixture created.
+  UPDATE_BIN_SHA_BEFORE=$(smoke_file_sha256 "$UPDATE_DRIVER")
   HOME="$UPDATE_HOME" CBM_DOWNLOAD_URL="$UPDATE_DOWNLOAD_URL" \
-    "$UPDATE_DRIVER" update $UPDATE_VARIANT -y > "$UPDATE_LOG" 2>&1
+    "$UPDATE_DRIVER" update -y > "$UPDATE_LOG" 2>&1
   UPDATE_RC=$?
   cat "$UPDATE_LOG"
 
-  if [[ "$BINARY" == *.exe ]]; then
-    # Windows contract: update NEVER replaces the running image in-process. It
-    # exits 0 and prints the install.ps1 command. Regressing to an in-process
-    # self-update means reintroducing the AV-flagged launcher stub.
-    if [ "$UPDATE_RC" -ne 0 ]; then
-      echo "FAIL 14a: Windows update exited rc=$UPDATE_RC (expected 0)"
-      exit 1
-    fi
-    if ! grep -q "install.ps1" "$UPDATE_LOG"; then
-      echo "FAIL 14a: Windows update did not print the install.ps1 command"
-      exit 1
-    fi
-    if [ "$(smoke_file_sha256 "$BINARY")" != \
-         "$(smoke_file_sha256 "$UPDATE_HOME/.local/bin/codebase-memory-mcp.exe")" ]; then
-      echo "FAIL 14a: Windows update replaced the binary in-process"
-      exit 1
-    fi
-    echo "OK 14a: Windows update handed off to install.ps1 without touching the binary"
+  # Contract, every platform: update NEVER replaces the running image in
+  # process. It exits 0 and prints the shipped install script's command. On
+  # Windows regressing this means reintroducing the AV-flagged launcher stub;
+  # everywhere else it means putting download -> extract -> chmod -> exec back
+  # into the product binary.
+  if [ "$UPDATE_RC" -ne 0 ]; then
+    echo "FAIL 14a: update exited rc=$UPDATE_RC (expected 0)"
+    exit 1
   fi
+  if ! grep -q "$UPDATE_SCRIPT" "$UPDATE_LOG"; then
+    echo "FAIL 14a: update did not print the $UPDATE_SCRIPT command"
+    exit 1
+  fi
+  if [ "$UPDATE_BIN_SHA_BEFORE" != "$(smoke_file_sha256 "$UPDATE_DRIVER")" ]; then
+    echo "FAIL 14a: update replaced the binary in-process"
+    exit 1
+  fi
+  echo "OK 14a: update handed off to $UPDATE_SCRIPT without touching the binary"
   rm -f "$UPDATE_LOG"
 
   # 14b: Verify new binary exists and runs
@@ -3013,25 +3277,11 @@ if [ -n "${SMOKE_DOWNLOAD_URL:-}" ]; then
   fi
   echo "OK 14b: updated binary runs"
 
-  # 14c: Verify agent config was refreshed to the exact installed binary.
-  # Windows has no in-process update, so there is no config refresh to assert:
-  # install.ps1 re-runs `install`, which is covered by Phase 8 and Phase 13.
-  if [[ "$BINARY" == *.exe ]]; then
-    echo "SKIP 14c: Windows update hands off to install.ps1 (config refresh covered by install)"
-  else
-  UPD_CMD=$(cat "$UPDATE_HOME/.claude.json" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('mcpServers',{}).get('codebase-memory-mcp',{}).get('command',''))" 2>/dev/null || echo "")
-  EXPECTED_UPD_CMD="$UPD_BIN"
-  if command -v cygpath &>/dev/null; then
-    EXPECTED_UPD_CMD=$(cygpath -w "$UPD_BIN")
-  fi
-  if [ "$UPD_CMD" != "$EXPECTED_UPD_CMD" ]; then
-    echo "FAIL 14c: agent config does not point at the updated binary"
-    echo "  expected: $EXPECTED_UPD_CMD"
-    echo "  actual:   ${UPD_CMD:-<missing>}"
-    exit 1
-  fi
-  echo "OK 14c: agent config refreshed (path=$UPD_CMD)"
-  fi
+  # 14c: there is no in-process update on any platform now, so there is no
+  # config refresh for this phase to assert. The install script re-runs
+  # `install`, which performs the refresh and is covered by Phase 8 (agent
+  # config install E2E) and Phase 13 (install script E2E).
+  echo "SKIP 14c: update hands off to $UPDATE_SCRIPT (config refresh covered by install)"
 
   # ── 14d-f: Real uninstall with binary removal ──
   # First verify binary + configs exist
@@ -3063,7 +3313,7 @@ sys.exit(0)
     exit 1
   fi
 
-  rm -rf "$UPDATE_HOME"
+  smoke_rmtree "$UPDATE_HOME"
 
 else
   # Local mode: basic binary replacement test (no download)
@@ -3083,7 +3333,7 @@ else
     exit 1
   fi
   echo "OK 14: binary replacement + verify (local mode)"
-  rm -rf "$UPDATE_DIR"
+  smoke_rmtree "$UPDATE_DIR"
 fi
 
 # ── Phase 12 + 13: Download E2E + install script E2E (CI only) ──
@@ -3129,11 +3379,9 @@ if [ "$DL_OS" = "darwin" ] || [ "$DL_OS" = "linux" ]; then
 else
   DL_EXT="zip"
 fi
-# Try standard name first, fall back to UI variant
 DL_ARCHIVE="codebase-memory-mcp-${DL_OS}-${DL_ARCH}.${DL_EXT}"
-DL_ARCHIVE_UI="codebase-memory-mcp-ui-${DL_OS}-${DL_ARCH}.${DL_EXT}"
 
-# 12a: curl download (try standard, then UI variant)
+# 12a: curl download
 echo "--- Phase 12a: curl download ---"
 # --noproxy '*': never route the local test server through a proxy — a proxy env
 # var present on some runners (notably windows-11-arm) made curl fail to reach
@@ -3141,15 +3389,10 @@ echo "--- Phase 12a: curl download ---"
 # surface curl's stderr instead of swallowing it so the reason is visible.
 CURL12_ERR="$DL_DIR/curl12a.err"
 if ! curl -fSL --noproxy '*' -o "$DL_DIR/$DL_ARCHIVE" "$SMOKE_DOWNLOAD_URL/$DL_ARCHIVE" 2>"$CURL12_ERR"; then
-  # Try UI variant
-  if curl -fSL --noproxy '*' -o "$DL_DIR/$DL_ARCHIVE_UI" "$SMOKE_DOWNLOAD_URL/$DL_ARCHIVE_UI" 2>>"$CURL12_ERR"; then
-    DL_ARCHIVE="$DL_ARCHIVE_UI"
-  else
-    echo "FAIL 12a: curl download failed (tried standard and ui variants)"
-    echo "--- curl stderr (url: $SMOKE_DOWNLOAD_URL/$DL_ARCHIVE) ---"
-    cat "$CURL12_ERR" 2>/dev/null || true
-    exit 1
-  fi
+  echo "FAIL 12a: curl download failed"
+  echo "--- curl stderr (url: $SMOKE_DOWNLOAD_URL/$DL_ARCHIVE) ---"
+  cat "$CURL12_ERR" 2>/dev/null || true
+  exit 1
 fi
 if [ ! -s "$DL_DIR/$DL_ARCHIVE" ]; then
   echo "FAIL 12a: downloaded archive is empty"
@@ -3234,7 +3477,7 @@ else
   echo "OK 12f: binary runs without signing ($DL_OS)"
 fi
 
-rm -rf "$DL_DIR"
+smoke_rmtree "$DL_DIR"
 
 echo ""
 echo "=== Phase 13: install script E2E ==="
@@ -3301,7 +3544,7 @@ if [ "$DL_OS" != "windows" ] && [ -f "$REPO_ROOT/install.sh" ]; then
     echo "OK 13f: PATH setup (rc file may not have been modified if already present)"
   fi
 
-  rm -rf "$INSTALL_TEST_HOME" "$INSTALL_TEST_DIR"
+  smoke_rmtree "$INSTALL_TEST_HOME" "$INSTALL_TEST_DIR"
 
 elif [ -f "$REPO_ROOT/install.ps1" ] && command -v powershell.exe &>/dev/null; then
   echo "--- Phase 13: install.ps1 E2E (Windows) ---"
@@ -3356,7 +3599,7 @@ elif [ -f "$REPO_ROOT/install.ps1" ] && command -v powershell.exe &>/dev/null; t
     exit 1
   fi
 
-  rm -rf "$PS1_TEST_HOME" "$PS1_TEST_DIR"
+  smoke_rmtree "$PS1_TEST_HOME" "$PS1_TEST_DIR"
 else
   echo "SKIP Phase 13: no install script available for this platform"
 fi
@@ -3369,10 +3612,12 @@ fi
 # ── Phase 15: UI HTTP server reachability ──
 # Only runs if the binary was built with embedded UI assets.
 #
-# SMOKE_REQUIRE_UI=1 (set by the wrappers for a -ui variant) makes the
-# no-assets outcome a FAILURE instead of a SKIP: a ui run that smoked a
-# standard binary under a ui name would otherwise pass green, and a skip that
-# cannot fail is not a gate.
+# SMOKE_REQUIRE_UI=1 makes the no-assets outcome a FAILURE instead of a SKIP.
+# scripts/ci/smoke-artifact.sh sets it because that lane builds --with-ui and
+# packages the real archive, so a binary serving no frontend is a defect there.
+# The fast PR lane builds without the frontend on purpose and leaves it unset --
+# a skip that cannot fail is not a gate, but neither is asserting a property the
+# lane deliberately does not produce.
 SMOKE_REQUIRE_UI="${SMOKE_REQUIRE_UI:-0}"
 smoke_ui_missing() {
   if [ "$SMOKE_REQUIRE_UI" = "1" ]; then
@@ -3408,13 +3653,13 @@ UI_PID=$!
 UI_READY=0
 for _ in $(seq 1 150); do
   if ! kill -0 "$UI_PID" 2>/dev/null; then break; fi
-  if curl -sf "http://127.0.0.1:$UI_PORT/" -o /dev/null 2>/dev/null; then UI_READY=1; break; fi
+  if curl --noproxy '*' -sf "http://127.0.0.1:$UI_PORT/" -o /dev/null 2>/dev/null; then UI_READY=1; break; fi
   sleep 0.2
 done
 
 if [ "$UI_READY" -eq 1 ] || kill -0 "$UI_PID" 2>/dev/null; then
   # 15a: GET / returns 200 with HTML content
-  UI_BODY=$(curl -sf "http://127.0.0.1:$UI_PORT/" 2>/dev/null || echo "")
+  UI_BODY=$(curl --noproxy '*' -sf "http://127.0.0.1:$UI_PORT/" 2>/dev/null || echo "")
   if echo "$UI_BODY" | grep -qi "<html"; then
     echo "OK 15a: UI serves HTML at /"
   elif [ -z "$UI_BODY" ]; then
@@ -3430,7 +3675,7 @@ if [ "$UI_READY" -eq 1 ] || kill -0 "$UI_PID" 2>/dev/null; then
   # old probe POSTed an MCP initialize at /rpc, but the UI's /rpc speaks the
   # UI's own narrow query protocol, not MCP — the probe asserted a request
   # the endpoint never answered; protocol depth belongs to the UI guards.)
-  RPC_BODY=$(curl -sf "http://127.0.0.1:$UI_PORT/api/ui-config" 2>/dev/null || echo "")
+  RPC_BODY=$(curl --noproxy '*' -sf "http://127.0.0.1:$UI_PORT/api/ui-config" 2>/dev/null || echo "")
   if echo "$RPC_BODY" | grep -q "{"; then
     echo "OK 15b: /api/ui-config returns JSON"
   elif [ -z "$RPC_BODY" ]; then

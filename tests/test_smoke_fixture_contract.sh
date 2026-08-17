@@ -69,6 +69,44 @@ require(
     "smoke-local.sh must not reserve/release a port or launch a separate http.server",
 )
 
+# Every environment variable the CLI honours ahead of $HOME. A fixture that
+# redirects only HOME still resolves these to the developer's real config, so
+# both the shell fixtures and the C runner must neutralize the whole set.
+CLIENT_HOME_OVERRIDES = (
+    "CLAUDE_CONFIG_DIR",
+    "CODEX_HOME",
+    "KIRO_HOME",
+    "HERMES_HOME",
+    "QWEN_HOME",
+    "CLINE_DATA_DIR",
+    "OPENCLAW_HOME",
+    "OPENCLAW_STATE_DIR",
+    "OPENCLAW_PROFILE",
+    "OPENCLAW_CONFIG_PATH",
+    "OPENCLAW_WORKSPACE_DIR",
+    "OPENCODE_CONFIG",
+    "OPENCODE_CONFIG_DIR",
+    "COPILOT_HOME",
+    "CRUSH_GLOBAL_CONFIG",
+    "VIBE_HOME",
+    "GLAB_CONFIG_DIR",
+    "KIMI_CODE_HOME",
+    "CBM_CONTINUE_CONFIG_PATH",
+    "CBM_TRAE_CONFIG_PATH",
+    "CBM_ROO_CONFIG_PATH",
+    "CBM_CODY_CONFIG_PATH",
+)
+
+# The C suite exercises the same install/uninstall paths as the shell fixtures,
+# so it needs the same neutralization — otherwise a green run on a developer
+# machine only proves the ambient config happened to be writable.
+test_main = read("tests/test_main.c")
+for variable in CLIENT_HOME_OVERRIDES:
+    require(
+        f'"{variable}"' in test_main,
+        f"tests/test_main.c must neutralize ambient {variable}",
+    )
+
 for relative, source in (
     ("scripts/smoke-local.sh", smoke_local),
     ("test-infrastructure/vm/vm-smoke.sh", vm_smoke),
@@ -89,31 +127,7 @@ for relative, source in (
         'wait "$SERVER_PID"' in source,
         f"{relative} cleanup must reap the fixture-server process",
     )
-    for variable in (
-        "CLAUDE_CONFIG_DIR",
-        "CODEX_HOME",
-        "KIRO_HOME",
-        "HERMES_HOME",
-        "QWEN_HOME",
-        "CLINE_DATA_DIR",
-        "OPENCLAW_HOME",
-        "OPENCLAW_STATE_DIR",
-        "OPENCLAW_PROFILE",
-        "OPENCLAW_CONFIG_PATH",
-        "OPENCLAW_WORKSPACE_DIR",
-        "OPENCODE_CONFIG",
-        "OPENCODE_CONFIG_DIR",
-        "COPILOT_HOME",
-        "CRUSH_GLOBAL_CONFIG",
-        "VIBE_HOME",
-        "GLAB_CONFIG_DIR",
-        "KIMI_CODE_HOME",
-        "CBM_CONTINUE_CONFIG_PATH",
-        "CBM_TRAE_CONFIG_PATH",
-        "CBM_ROO_CONFIG_PATH",
-        "CBM_CODY_CONFIG_PATH",
-        "CBM_TEST_WINDOWS_USER_PATH_RUN_ID",
-    ):
+    for variable in CLIENT_HOME_OVERRIDES + ("CBM_TEST_WINDOWS_USER_PATH_RUN_ID",):
         require(
             f"-u {variable}" in source,
             f"{relative} must neutralize ambient {variable}",
@@ -137,15 +151,33 @@ for relative, source in (
 # Unix fixtures mirror the release archive surface and Linux update aliases.
 for name in ("LICENSE", "install.sh", "THIRD_PARTY_NOTICES.md"):
     require(name in smoke_local, f"smoke-local.sh archive must include {name}")
+install_script = read("install.sh")
 require(
-    "codebase-memory-mcp${SUFFIX}-${OS}-${ARCH}.tar.gz" in smoke_local
-    and "codebase-memory-mcp-${OS}-${ARCH}.tar.gz" in smoke_local,
-    "smoke-local.sh must create the selected variant and standard alias",
+    'tar --no-same-owner -xzf "$DLDIR/$ARCHIVE" -C "$DLDIR"' in install_script,
+    "install.sh must not preserve release-builder ownership when extracting tar archives",
 )
 require(
-    "codebase-memory-mcp${SUFFIX}-${OS}-${ARCH}-portable.tar.gz" in smoke_local
-    and "codebase-memory-mcp-${OS}-${ARCH}-portable.tar.gz" in smoke_local,
-    "smoke-local.sh must create Linux portable selected-variant and standard aliases",
+    all(
+        needle in install_script
+        for needle in (
+            "ARCHIVE_MEMBER_COUNT",
+            "release archive contains unexpected member",
+            "release archive does not match the exact member set",
+            'for extracted_member in "$ARCHIVE_BINARY" LICENSE "$ARCHIVE_INSTALLER"',
+        )
+    )
+    and "cbm-integrations.json" not in install_script,
+    "install.sh must validate and accept the exact four-member release archive layout",
+)
+# One composition ships, so there is one archive name and no variant alias.
+require(
+    "codebase-memory-mcp-${OS}-${ARCH}.tar.gz" in smoke_local
+    and "${SUFFIX}" not in smoke_local,
+    "smoke-local.sh must create the single canonical archive with no variant alias",
+)
+require(
+    "codebase-memory-mcp-${OS}-${ARCH}-portable.tar.gz" in smoke_local,
+    "smoke-local.sh must create the Linux portable update alias",
 )
 require(
     'CBM_CACHE_DIR="$WORK_DIR/cache"' in smoke_local
@@ -311,9 +343,25 @@ require(
     and "& $args[1]" not in smoke_test,
     "Windows Phase 13 must execute install.ps1 directly with native paths",
 )
+# A count cannot tell "we still have four curls" from "every curl is safe" — it
+# passed while a loopback UI probe carried no --noproxy at all, which is the
+# exact failure this rule exists to prevent (an ambient http_proxy makes a
+# 127.0.0.1 request leave the machine). Assert the property on every invocation
+# instead, so adding or removing a curl cannot silently satisfy the rule.
+unproxied_curls = [
+    line.strip()
+    for line in smoke_test.splitlines()
+    # An invocation starts a command: line start, or after ; & | ( or `if`/`then`
+    # etc. Mentions inside echo/comment strings are not invocations.
+    if re.search(r"(?:^|[;&|(]|\b(?:if|then|else|do|not)\s)\s*curl\s", line)
+    and not line.lstrip().startswith("#")
+    and not re.search(r"echo\s", line.split("curl")[0])
+    and "--noproxy" not in line
+]
 require(
-    smoke_test.count("--noproxy '*'") >= 4,
-    "all loopback release-fixture curl requests must bypass ambient proxies",
+    not unproxied_curls,
+    "every curl in the smoke fixture must bypass ambient proxies (--noproxy '*'): "
+    + "; ".join(unproxied_curls[:3]),
 )
 require(
     "/tmp/cbm-curl12a.err" not in smoke_test
@@ -325,33 +373,29 @@ require(
     and "invalid Windows PATH smoke seam fell back" in smoke_test,
     "Windows release smoke must prove malformed PATH-test gating fails closed",
 )
+# There is no in-process update left to refresh the MCP command, so Phase 14
+# cannot assert a refresh. The refresh itself still happens -- the install
+# script re-runs `install` -- and is covered by Phase 8 (agent config install
+# E2E) and Phase 13 (install script E2E). Phase 14 must say so rather than
+# quietly dropping the step.
 require(
-    'if [ "$UPD_CMD" != "$EXPECTED_UPD_CMD" ]' in smoke_test,
-    "Phase 14 must require the refreshed MCP command to equal the updated binary",
+    "config refresh covered by install" in smoke_test,
+    "Phase 14 must name where the config-refresh coverage moved to",
 )
+# The retired-image driver existed to exercise an in-process replacement that no
+# platform performs any more: `update` prints the shipped install script's
+# command and touches nothing. Phase 14 now drives from the installed binary
+# everywhere, and 14a asserts the binary is byte-identical afterwards.
 require(
-    'UPDATE_DRIVER="$RETIRED_DIR/codebase-memory-mcp"' in smoke_test
+    'UPDATE_DRIVER="$UPDATE_HOME/.local/bin/codebase-memory-mcp"' in smoke_test
     and 'STALE_CMD="$UPDATE_DRIVER"' in smoke_test,
-    "POSIX Phase 14 must refresh from positive running-image identity without probing config paths",
+    "Phase 14 must drive update from the installed binary on every platform",
 )
-# This used to pin the retired path so Windows Phase 14 carried a config entry
-# naming a missing executable. Two things retired that intent. The fixture now
-# COPIES a binary to the retired path, so it stopped being missing regardless of
-# what this string says -- the requirement was only ever checking the string,
-# never the property. And Windows update is a handoff to install.ps1 now, so
-# nothing rewrites this entry in-process the way the launcher-managed update
-# did: an entry naming a foreign path simply survives to uninstall, which
-# correctly refuses to remove a config entry owned by a DIFFERENT installation,
-# and 14f would then be demanding the one thing uninstall must never do.
-#
-# The missing-executable classification lives on in named unit tests instead of
-# here: cli_editor_mcp_preserves_unrecorded_posix_absolute_entries_without_probe
-# and cli_editor_mcp_preserves_unsafe_windows_drive_probe (tests/test_cli.c),
-# the latter covering the Windows missing-drive case specifically.
 require(
-    'STALE_CMD="$UPDATE_HOME/.local/bin/codebase-memory-mcp.exe"' in smoke_test,
-    "Windows Phase 14 must seed the MCP command at the binary uninstall will own",
+    "update replaced the binary in-process" in smoke_test,
+    "Phase 14 must assert update leaves the binary byte-identical",
 )
+
 for changed_path in (
     "install\\.(sh|ps1)",
     "scripts/smoke-local",
