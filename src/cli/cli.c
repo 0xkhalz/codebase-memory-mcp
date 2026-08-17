@@ -3452,14 +3452,21 @@ int cbm_upsert_codex_mcp(const char *binary_path, const char *config_path) {
      * handshake closes during initialization, so Codex exposes no cbm tools at
      * all.
      *
-     * The name is listed unconditionally rather than only when the variable is
+     * The names are listed unconditionally rather than only when a variable is
      * set at install time: env_vars names variables to FORWARD IF PRESENT, so
-     * listing it costs nothing when unset and keeps working for someone who
-     * sets it after installing — which install-time detection would silently
-     * fail to cover. */
+     * listing them costs nothing when unset and keeps working for someone who
+     * sets one after installing — which install-time detection would silently
+     * fail to cover.
+     *
+     * CBM_RUNTIME_DIR joined the list with #1664: since #1645 it relocates
+     * the daemon rendezvous, so a Codex subprocess that does not receive it
+     * looks for the daemon in the DEFAULT location and never finds it — the
+     * same silent client/daemon split CBM_CACHE_DIR caused. Both names decide
+     * WHICH daemon a process talks to; behavioural knobs stay unforwarded. */
     int written = snprintf(block, sizeof(block),
                            CODEX_CMM_SECTION "\ncommand = \"%s\"\nargs = []\n"
-                                             "env_vars = [\"CBM_CACHE_DIR\"]\n",
+                                             "env_vars = [\"CBM_CACHE_DIR\", "
+                                             "\"CBM_RUNTIME_DIR\"]\n",
                            escaped);
     if (written < 0 || (size_t)written >= sizeof(block) ||
         cbm_remove_codex_legacy_mcp(config_path) != 0) {

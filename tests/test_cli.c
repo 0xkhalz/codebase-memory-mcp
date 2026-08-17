@@ -10612,7 +10612,7 @@ TEST(cli_upsert_codex_mcp_fresh) {
      * subprocess. Without CBM_CACHE_DIR the spawned server uses the DEFAULT
      * cache while the daemon uses the configured one, the two disagree, and the
      * handshake closes — Codex then shows no cbm tools at all. */
-    ASSERT(strstr(data, "env_vars = [\"CBM_CACHE_DIR\"]") != NULL);
+    ASSERT(strstr(data, "env_vars = [\"CBM_CACHE_DIR\", \"CBM_RUNTIME_DIR\"]") != NULL);
 
     test_rmdir_r(tmpdir);
     PASS();
