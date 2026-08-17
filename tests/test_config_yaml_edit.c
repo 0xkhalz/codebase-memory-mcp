@@ -1050,6 +1050,51 @@ TEST(config_yaml_edit_hermes_accepts_interior_apostrophe_and_plain_wrap_issue163
     PASS();
 }
 
+TEST(config_yaml_edit_accepts_utf8_bom_issue1656) {
+    /* PowerShell 5.1's `Set-Content -Encoding UTF8` writes a BOM, so real
+     * Windows-authored Hermes configs start with EF BB BF — and every edit op
+     * failed content-independently (#1656's 26-byte repro is the reporter's
+     * 23-byte file plus this BOM). The BOM is a prologue: skip it for
+     * structure, preserve it byte-for-byte on write. */
+    const char *initial = "\xEF\xBB\xBFmodel:\n  default: test\n";
+    yaml_fixture_t fixture;
+    ASSERT_EQ(yaml_fixture_init(&fixture, initial), 0);
+    ASSERT_EQ(yaml_hermes_upsert(&fixture), CBM_YAML_IDENTITY_EDIT_OK);
+    ASSERT_EQ(yaml_hermes_hook_upsert(&fixture), CBM_YAML_IDENTITY_EDIT_OK);
+    char *after = yaml_read_alloc(fixture.path);
+    ASSERT_NOT_NULL(after);
+    ASSERT_EQ(memcmp(after, "\xEF\xBB\xBFmodel:", 9), 0);
+    ASSERT_NOT_NULL(strstr(after, "  default: test\n"));
+    ASSERT_NOT_NULL(strstr(after, "command: \"/opt/codebase-memory-mcp\"\n"));
+    ASSERT_NOT_NULL(strstr(after, "cbm-context"));
+    free(after);
+    th_cleanup(fixture.dir);
+    PASS();
+}
+
+TEST(config_yaml_edit_bom_before_our_own_section_stays_single_issue1656) {
+    /* When the BOM immediately precedes OUR section key, the key lookup must
+     * still see `mcp_servers` — otherwise the upsert misses the existing
+     * section and appends a duplicate. */
+    const char *initial = "\xEF\xBB\xBFmcp_servers:\n"
+                          "  codebase-memory-mcp:\n"
+                          "    command: \"/opt/codebase-memory-mcp\"\n";
+    yaml_fixture_t fixture;
+    ASSERT_EQ(yaml_fixture_init(&fixture, initial), 0);
+    ASSERT_EQ(yaml_hermes_upsert(&fixture), CBM_YAML_IDENTITY_EDIT_OK);
+    char *after = yaml_read_alloc(fixture.path);
+    ASSERT_NOT_NULL(after);
+    size_t sections = 0U;
+    for (const char *c = after; (c = strstr(c, "mcp_servers:")) != NULL; c++) {
+        sections++;
+    }
+    ASSERT_EQ((int)sections, 1);
+    ASSERT_EQ(memcmp(after, "\xEF\xBB\xBF", 3), 0);
+    free(after);
+    th_cleanup(fixture.dir);
+    PASS();
+}
+
 /* ── Owned-entry repair (#1631 galaxy + goose upgrades) ──────────────────────
  *
  * Byte-identity alone freezes users on any OLD canonical our past writers
@@ -1910,6 +1955,8 @@ SUITE(config_yaml_edit) {
     RUN_TEST(config_yaml_edit_hermes_accepts_escaped_newline_in_double_quote_issue1631);
     RUN_TEST(config_yaml_edit_hermes_hook_accepts_column_zero_sequence_issue1631);
     RUN_TEST(config_yaml_edit_hermes_accepts_interior_apostrophe_and_plain_wrap_issue1631);
+    RUN_TEST(config_yaml_edit_accepts_utf8_bom_issue1656);
+    RUN_TEST(config_yaml_edit_bom_before_our_own_section_stays_single_issue1656);
     RUN_TEST(config_yaml_edit_repairs_prior_unquoted_command_entry_issue1631);
     RUN_TEST(config_yaml_edit_repairs_prior_goose_block_without_name);
     RUN_TEST(config_yaml_edit_still_refuses_truly_foreign_entry_under_our_key);

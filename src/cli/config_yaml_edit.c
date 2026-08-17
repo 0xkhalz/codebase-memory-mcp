@@ -298,13 +298,20 @@ static int yaml_validate_key(const char *key, size_t *out_len) {
     return 0;
 }
 
+static int yaml_validate_text_bytes_from(const char *data, size_t len, size_t from);
+
 static int yaml_validate_text_bytes(const char *data, size_t len) {
     if (len >= YAML_UTF8_BOM_LEN && (unsigned char)data[0] == YAML_BOM_BYTE_0 &&
         (unsigned char)data[YAML_UNIT] == YAML_BOM_BYTE_1 &&
         (unsigned char)data[YAML_ENTRY_INDENT] == YAML_BOM_BYTE_2) {
         return YAML_ERROR;
     }
-    for (size_t i = 0; i < len; i++) {
+    return yaml_validate_text_bytes_from(data, len, 0U);
+}
+
+/* Body of the byte validation, entered past any prologue. */
+static int yaml_validate_text_bytes_from(const char *data, size_t len, size_t from) {
+    for (size_t i = from; i < len; i++) {
         unsigned char c = (unsigned char)data[i];
         if (c == '\t' || c == '\0' || c == YAML_DELETE_BYTE) {
             return YAML_ERROR;
@@ -737,9 +744,21 @@ static int yaml_read_file(const char *path, char **out_data, size_t *out_len,
 #endif
 #endif
     data[len] = '\0';
-    if (yaml_validate_text_bytes(data, len) != 0) {
-        free(data);
-        return YAML_ERROR;
+    /* Documents may open with a UTF-8 BOM (#1656) — validated past it here,
+     * treated as a prologue by yaml_doc_init, preserved verbatim on write.
+     * Non-document inputs (keys, blocks, identity scalars) keep the strict
+     * no-BOM rule via yaml_validate_text_bytes. */
+    {
+        size_t prologue = 0U;
+        if (len >= YAML_UTF8_BOM_LEN && (unsigned char)data[0] == YAML_BOM_BYTE_0 &&
+            (unsigned char)data[YAML_UNIT] == YAML_BOM_BYTE_1 &&
+            (unsigned char)data[YAML_ENTRY_INDENT] == YAML_BOM_BYTE_2) {
+            prologue = YAML_UTF8_BOM_LEN;
+        }
+        if (yaml_validate_text_bytes_from(data, len, prologue) != 0) {
+            free(data);
+            return YAML_ERROR;
+        }
     }
     *out_data = data;
     *out_len = len;
@@ -1162,6 +1181,22 @@ static int yaml_doc_init(yaml_doc_t *doc, const char *data, size_t len) {
     doc->len = len;
     if (yaml_build_lines(doc) != 0) {
         return YAML_ERROR;
+    }
+    /* A UTF-8 BOM is a prologue, not content (#1656): Windows-authored
+     * configs routinely carry one (PowerShell 5.1 Set-Content -Encoding UTF8
+     * writes it), and treating its bytes as the first key made every edit op
+     * fail content-independently. Skip it for structure; edits splice ranges
+     * at line offsets, so the BOM survives every write byte-for-byte. */
+    if (doc->line_count > 0U && doc->len >= YAML_DOC_MARKER_LEN &&
+        (unsigned char)data[0] == 0xEFU && (unsigned char)data[1] == 0xBBU &&
+        (unsigned char)data[2] == 0xBFU) {
+        yaml_line_t *first = &doc->lines[0];
+        if (first->start == 0U && !first->blank) {
+            first->start = YAML_DOC_MARKER_LEN;
+            if (first->start + first->indent >= first->text_end) {
+                first->blank = true;
+            }
+        }
     }
     if (yaml_mark_dquote_continuations(doc) != 0) {
         yaml_doc_free(doc);

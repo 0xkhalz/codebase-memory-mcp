@@ -3006,6 +3006,22 @@ TEST(cli_opencode_moved_entry_without_authority_refuses_issue1630) {
         FAIL("cbm_mkdtemp failed");
     char configpath[512];
     snprintf(configpath, sizeof(configpath), "%s/opencode.jsonc", tmpdir);
+#ifdef _WIN32
+    /* A conclusively-missing fixed-drive path authorizes the repair; a
+     * POSIX-shaped or non-local path can never be proven absent (PATHEXT /
+     * remote rules) and stays refused. */
+    const char *initial = "{\n"
+                          "  \"mcp\": {\n"
+                          "    \"codebase-memory-mcp\": {\n"
+                          "      \"command\": "
+                          "[\"C:\\\\cbm-definitely-missing\\\\codebase-memory-mcp.exe\"],\n"
+                          "      \"type\": \"local\"\n"
+                          "    }\n"
+                          "  }\n"
+                          "}\n";
+    write_test_file(configpath, initial);
+    ASSERT_EQ(cbm_upsert_opencode_mcp("/opt/codebase-memory-mcp", configpath), 0);
+#else
     const char *initial = "{\n"
                           "  \"mcp\": {\n"
                           "    \"codebase-memory-mcp\": {\n"
@@ -3015,10 +3031,6 @@ TEST(cli_opencode_moved_entry_without_authority_refuses_issue1630) {
                           "  }\n"
                           "}\n";
     write_test_file(configpath, initial);
-#ifdef _WIN32
-    /* On Windows the conclusive dead-path probe authorizes the repair. */
-    ASSERT_EQ(cbm_upsert_opencode_mcp("/opt/codebase-memory-mcp", configpath), 0);
-#else
     ASSERT(cbm_upsert_opencode_mcp("/opt/codebase-memory-mcp", configpath) != 0);
     const char *data = read_test_file(configpath);
     ASSERT_NOT_NULL(data);
