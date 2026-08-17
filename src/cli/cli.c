@@ -1672,16 +1672,45 @@ static size_t cbm_json_mcp_ownership_fields(cbm_json_mcp_schema_t schema, const 
  * populated from config content. */
 static CBM_TLS const char *g_previous_managed_mcp_command = NULL;
 
+/* Path-shape-insensitive equality for OUR OWN binary path (#1582): clients
+ * and installers spell the same Windows file with different separators (the
+ * entry stores `C:\...\cbm.exe`, the installer compares `C:/.../cbm.exe`),
+ * and Windows filesystems are case-insensitive. Separators always compare
+ * equal; case only folds on Windows. POSIX byte-exactness otherwise holds. */
+static bool cbm_json_mcp_paths_equal(const char *a, const char *b) {
+    while (*a && *b) {
+        char ca = *a;
+        char cb = *b;
+        if (ca == '\\') {
+            ca = '/';
+        }
+        if (cb == '\\') {
+            cb = '/';
+        }
+#ifdef _WIN32
+        ca = (char)tolower((unsigned char)ca);
+        cb = (char)tolower((unsigned char)cb);
+#endif
+        if (ca != cb) {
+            return false;
+        }
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
+
 static bool cbm_json_mcp_owned_command(const char *command, const char *expected_binary,
                                        const char *previous_managed_binary) {
     if (!command || command[0] == '\0') {
         return false;
     }
-    if (expected_binary && expected_binary[0] && strcmp(command, expected_binary) == 0) {
+    if (expected_binary && expected_binary[0] &&
+        cbm_json_mcp_paths_equal(command, expected_binary)) {
         return true;
     }
     if (previous_managed_binary && previous_managed_binary[0] &&
-        strcmp(command, previous_managed_binary) == 0) {
+        cbm_json_mcp_paths_equal(command, previous_managed_binary)) {
         return true;
     }
     return strcmp(command, "codebase-memory-mcp") == 0 ||

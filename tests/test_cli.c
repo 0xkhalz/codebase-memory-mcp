@@ -3040,6 +3040,40 @@ TEST(cli_opencode_moved_entry_without_authority_refuses_issue1630) {
     PASS();
 }
 
+TEST(cli_opencode_owns_backslash_command_issue1582) {
+    /* gotspatel's live file: the entry stores the Windows path with
+     * backslashes while the installer compares its own path with forward
+     * slashes — the same file, refused over the separator spelling. Ownership
+     * comparison must be separator-insensitive. */
+    char tmpdir[256];
+    snprintf(tmpdir, sizeof(tmpdir), "/tmp/cli-oc-XXXXXX");
+    if (!cbm_mkdtemp(tmpdir))
+        FAIL("cbm_mkdtemp failed");
+    char configpath[512];
+    snprintf(configpath, sizeof(configpath), "%s/opencode.json", tmpdir);
+    const char *initial = "{\n"
+                          "  \"mcp\": {\n"
+                          "    \"codebase-memory-mcp\": {\n"
+                          "      \"enabled\": true,\n"
+                          "      \"type\": \"local\",\n"
+                          "      \"command\": [\"C:\\\\Users\\\\Admin\\\\Programs\\\\"
+                          "codebase-memory-mcp\\\\codebase-memory-mcp.exe\"]\n"
+                          "    }\n"
+                          "  }\n"
+                          "}\n";
+    write_test_file(configpath, initial);
+    ASSERT_EQ(
+        cbm_upsert_opencode_mcp(
+            "C:/Users/Admin/Programs/codebase-memory-mcp/codebase-memory-mcp.exe", configpath),
+        0);
+    const char *data = read_test_file(configpath);
+    ASSERT_NOT_NULL(data);
+    /* Already satisfied: the annotated entry names this binary — preserved. */
+    ASSERT(strcmp(data, initial) == 0);
+    test_rmdir_r(tmpdir);
+    PASS();
+}
+
 TEST(cli_gemini_mcp_install) {
     /* Port of TestGeminiMCPInstall */
     char tmpdir[256];
@@ -12973,6 +13007,7 @@ SUITE(cli) {
     RUN_TEST(cli_goose_block_carries_required_name_issue1675);
     RUN_TEST(cli_editor_mcp_field_repairs_annotated_entry_via_previous_issue1630);
     RUN_TEST(cli_opencode_moved_entry_without_authority_refuses_issue1630);
+    RUN_TEST(cli_opencode_owns_backslash_command_issue1582);
     RUN_TEST(cli_gemini_mcp_install);
     RUN_TEST(cli_openclaw_mcp_install_uses_nested_servers);
     RUN_TEST(cli_openclaw_mcp_preserves_existing_config);
