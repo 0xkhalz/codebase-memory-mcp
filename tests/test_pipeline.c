@@ -17,6 +17,7 @@
 #include "foundation/dump_verify.h"
 #include "foundation/sha256.h"
 #include "foundation/compat_fs.h"
+#include "foundation/log.h"
 #include "foundation/win_utf8.h" // cbm_utf8_to_wide (Windows pipeline_test_set_mtime); no-op elsewhere
 #include "discover/userconfig.h"
 
@@ -3314,6 +3315,116 @@ TEST(pipeline_exact_inputs_migrate_coverage_metadata_and_index_mode) {
     PASS();
 }
 
+typedef struct {
+    bool published;
+    int rename_calls;
+    int export_count;
+    int exports_before_publish;
+} artifact_publish_observer_t;
+
+static artifact_publish_observer_t *g_artifact_publish_observer;
+
+static void observe_artifact_publish_log(const char *line) {
+    if (g_artifact_publish_observer && line && strstr(line, "msg=artifact.export")) {
+        g_artifact_publish_observer->export_count++;
+        if (!g_artifact_publish_observer->published) {
+            g_artifact_publish_observer->exports_before_publish++;
+        }
+    }
+}
+
+static int observe_successful_publish_rename(const char *staging_path, const char *final_path,
+                                             void *arg) {
+    artifact_publish_observer_t *observer = (artifact_publish_observer_t *)arg;
+    observer->rename_calls++;
+    int rc = cbm_rename_replace(staging_path, final_path);
+    observer->published = rc == 0;
+    return rc;
+}
+
+static int run_observing_artifact_publish(cbm_pipeline_t *pipeline,
+                                          artifact_publish_observer_t *observer) {
+    cbm_pipeline_set_rename_hook_for_tests(pipeline, observe_successful_publish_rename, observer);
+    CBMLogLevel previous_level = cbm_log_get_level();
+    CBMLogFormat previous_format = cbm_log_get_format();
+    g_artifact_publish_observer = observer;
+    cbm_log_set_level(CBM_LOG_INFO);
+    cbm_log_set_format(CBM_LOG_FORMAT_TEXT);
+    cbm_log_set_sink_ex(observe_artifact_publish_log, CBM_LOG_SINK_REPLACE);
+    int rc = cbm_pipeline_run(pipeline);
+    cbm_log_set_sink(NULL);
+    cbm_log_set_format(previous_format);
+    cbm_log_set_level(previous_level);
+    g_artifact_publish_observer = NULL;
+    return rc;
+}
+
+static bool pipeline_reports_excluded_dir(cbm_pipeline_t *pipeline, const char *rel_path) {
+    char **excluded = NULL;
+    int excluded_count = 0;
+    cbm_pipeline_get_excluded(pipeline, &excluded, &excluded_count);
+    for (int i = 0; i < excluded_count; i++) {
+        if (excluded[i] && strcmp(excluded[i], rel_path) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+typedef struct {
+    int rc;
+    cbm_incremental_route_t route;
+    bool tools_excluded;
+    artifact_publish_observer_t publish;
+} observed_fast_run_t;
+
+static observed_fast_run_t run_observed_fast_pipeline(const char *repo_path, const char *db_path) {
+    observed_fast_run_t result = {.rc = CBM_NOT_FOUND};
+    cbm_pipeline_t *pipeline = cbm_pipeline_new(repo_path, db_path, CBM_MODE_FAST);
+    if (!pipeline) {
+        return result;
+    }
+    result.rc = run_observing_artifact_publish(pipeline, &result.publish);
+    result.route = cbm_pipeline_incremental_test_last_route();
+    result.tools_excluded = pipeline_reports_excluded_dir(pipeline, "tools");
+    cbm_pipeline_free(pipeline);
+    return result;
+}
+
+typedef struct {
+    int rc;
+    int before_nodes;
+    int after_nodes;
+} imported_generation_t;
+
+static imported_generation_t import_artifact_generation(const char *repo_path,
+                                                        const char *import_path,
+                                                        const char *project) {
+    imported_generation_t result = {
+        .rc = cbm_artifact_import(repo_path, import_path),
+        .before_nodes = -1,
+        .after_nodes = -1,
+    };
+    if (result.rc == 0) {
+        observe_named_generation(import_path, project, "StoredBefore", "StoredAfter",
+                                 &result.before_nodes, &result.after_nodes);
+    }
+    return result;
+}
+
+static bool stored_mode_is_full(const char *db_path, const char *project) {
+    cbm_store_t *store = cbm_store_open_path(db_path);
+    if (!store) {
+        return false;
+    }
+    cbm_coverage_meta_t meta = {0};
+    bool full = cbm_store_coverage_meta_get(store, project, &meta) == CBM_STORE_OK &&
+                meta.index_mode && strcmp(meta.index_mode, "full") == 0;
+    cbm_store_coverage_meta_clear(&meta);
+    cbm_store_close(store);
+    return full;
+}
+
 /* Once a repository contains a shared artifact, every subsequently published
  * full generation must refresh it, even when persistence was not explicitly
  * requested on that invocation. Otherwise the live DB advances while a clean
@@ -3331,10 +3442,11 @@ TEST(pipeline_existing_artifact_refreshes_after_default_forced_full_reindex) {
     ASSERT_EQ(th_write_file(source_path, "def ArtifactGenerationBefore():\n    return 1\n"), 0);
 
     cbm_pipeline_incremental_test_reset_faults();
+    artifact_publish_observer_t baseline_observer = {0};
     cbm_pipeline_t *baseline = cbm_pipeline_new(tmp, db_path, CBM_MODE_FULL);
     ASSERT_NOT_NULL(baseline);
     cbm_pipeline_set_persistence(baseline, true);
-    ASSERT_EQ(cbm_pipeline_run(baseline), 0);
+    int baseline_rc = run_observing_artifact_publish(baseline, &baseline_observer);
     char project[256];
     snprintf(project, sizeof(project), "%s", cbm_pipeline_project_name(baseline));
     cbm_pipeline_free(baseline);
@@ -3342,18 +3454,29 @@ TEST(pipeline_existing_artifact_refreshes_after_default_forced_full_reindex) {
 
     ASSERT_EQ(th_write_file(source_path, "def ArtifactGenerationAfter():\n    return 2\n"), 0);
     cbm_pipeline_incremental_test_reset_faults();
+    artifact_publish_observer_t reindex_observer = {0};
     cbm_pipeline_t *default_reindex = cbm_pipeline_new(tmp, db_path, CBM_MODE_FULL);
     ASSERT_NOT_NULL(default_reindex);
-    int reindex_rc = cbm_pipeline_run(default_reindex);
+    int reindex_rc = run_observing_artifact_publish(default_reindex, &reindex_observer);
     cbm_incremental_route_t reindex_route = cbm_pipeline_incremental_test_last_route();
     cbm_pipeline_free(default_reindex);
 
     /* A derived artifact must not become an input that forces another rebuild,
      * and refreshing it must not switch the authoritative DB back to WAL. */
     cbm_pipeline_incremental_test_reset_faults();
+    artifact_publish_observer_t explicit_observer = {0};
+    cbm_pipeline_t *explicit_noop = cbm_pipeline_new(tmp, db_path, CBM_MODE_FULL);
+    ASSERT_NOT_NULL(explicit_noop);
+    cbm_pipeline_set_persistence(explicit_noop, true);
+    int explicit_rc = run_observing_artifact_publish(explicit_noop, &explicit_observer);
+    cbm_incremental_route_t explicit_route = cbm_pipeline_incremental_test_last_route();
+    cbm_pipeline_free(explicit_noop);
+
+    cbm_pipeline_incremental_test_reset_faults();
+    artifact_publish_observer_t observer = {0};
     cbm_pipeline_t *unchanged = cbm_pipeline_new(tmp, db_path, CBM_MODE_FULL);
     ASSERT_NOT_NULL(unchanged);
-    int unchanged_rc = cbm_pipeline_run(unchanged);
+    int unchanged_rc = run_observing_artifact_publish(unchanged, &observer);
     cbm_incremental_route_t unchanged_route = cbm_pipeline_incremental_test_last_route();
     cbm_pipeline_free(unchanged);
 
@@ -3397,10 +3520,25 @@ TEST(pipeline_existing_artifact_refreshes_after_default_forced_full_reindex) {
     cbm_pipeline_incremental_test_reset_faults();
     th_rmtree(tmp);
 
+    ASSERT_EQ(baseline_rc, 0);
+    ASSERT_EQ(baseline_observer.rename_calls, 1);
+    ASSERT_EQ(baseline_observer.exports_before_publish, 0);
+    ASSERT_EQ(baseline_observer.export_count, 1);
     ASSERT_EQ(reindex_rc, 0);
     ASSERT_EQ(reindex_route, CBM_INCREMENTAL_ROUTE_FORCED_FULL);
+    ASSERT_EQ(reindex_observer.rename_calls, 1);
+    ASSERT_EQ(reindex_observer.exports_before_publish, 0);
+    ASSERT_EQ(reindex_observer.export_count, 1);
+    ASSERT_EQ(explicit_rc, 0);
+    ASSERT_EQ(explicit_route, CBM_INCREMENTAL_ROUTE_NOOP);
+    ASSERT_EQ(explicit_observer.rename_calls, 1);
+    ASSERT_EQ(explicit_observer.exports_before_publish, 0);
+    ASSERT_EQ(explicit_observer.export_count, 1);
     ASSERT_EQ(unchanged_rc, 0);
     ASSERT_EQ(unchanged_route, CBM_INCREMENTAL_ROUTE_NOOP);
+    ASSERT_EQ(observer.rename_calls, 1);
+    ASSERT_EQ(observer.exports_before_publish, 0);
+    ASSERT_EQ(observer.export_count, 1);
     ASSERT_TRUE(journal_ok);
     ASSERT_STR_EQ(journal_mode, "delete");
     ASSERT_EQ(live_before, 0);
@@ -10496,6 +10634,135 @@ TEST(full_reindex_preserves_exact_long_db_path) {
 }
 #endif
 
+TEST(incremental_downgrade_preserves_scope_and_artifact_across_change_noop_delete) {
+    char tmpdir[256];
+    char artifact_tmpdir[256];
+    snprintf(tmpdir, sizeof(tmpdir), "/tmp/cbm_mode_scope_XXXXXX");
+    snprintf(artifact_tmpdir, sizeof(artifact_tmpdir), "/tmp/cbm_mode_artifact_XXXXXX");
+    ASSERT_NOT_NULL(cbm_mkdtemp(tmpdir));
+    ASSERT_NOT_NULL(cbm_mkdtemp(artifact_tmpdir));
+
+    char dbpath[512];
+    char cancelled_import_path[512];
+    char retry_import_path[512];
+    char deleted_import_path[512];
+    snprintf(dbpath, sizeof(dbpath), "%s/test.db", tmpdir);
+    snprintf(cancelled_import_path, sizeof(cancelled_import_path), "%s/cancelled.db",
+             artifact_tmpdir);
+    snprintf(retry_import_path, sizeof(retry_import_path), "%s/retry.db", artifact_tmpdir);
+    snprintf(deleted_import_path, sizeof(deleted_import_path), "%s/deleted.db", artifact_tmpdir);
+    ASSERT_EQ(th_write_file(TH_PATH(tmpdir, "main.go"), "package main\n\nfunc main() {}\n"), 0);
+    ASSERT_TRUE(cbm_mkdir_p(TH_PATH(tmpdir, "tools"), 0755));
+    ASSERT_EQ(th_write_file(TH_PATH(tmpdir, "tools/util.go"),
+                            "package tools\n\nfunc StoredBefore() string { return \"old\" }\n"),
+              0);
+
+    cbm_pipeline_t *pipeline = cbm_pipeline_new(tmpdir, dbpath, CBM_MODE_FULL);
+    ASSERT_NOT_NULL(pipeline);
+    cbm_pipeline_set_persistence(pipeline, true);
+    ASSERT_EQ(cbm_pipeline_run(pipeline), 0);
+    char *project = strdup(cbm_pipeline_project_name(pipeline));
+    ASSERT_NOT_NULL(project);
+    cbm_pipeline_free(pipeline);
+    ASSERT_TRUE(cbm_artifact_exists(tmpdir));
+
+    ASSERT_EQ(th_write_file(TH_PATH(tmpdir, "tools/util.go"),
+                            "package tools\n\nfunc StoredAfter() string { return \"new\" }\n"),
+              0);
+
+    cbm_pipeline_incremental_test_reset_faults();
+    cbm_pipeline_incremental_test_cancel_after_predump_once();
+    observed_fast_run_t cancelled = run_observed_fast_pipeline(tmpdir, dbpath);
+    int cancelled_live_before;
+    int cancelled_live_after;
+    observe_named_generation(dbpath, project, "StoredBefore", "StoredAfter", &cancelled_live_before,
+                             &cancelled_live_after);
+    imported_generation_t cancelled_artifact =
+        import_artifact_generation(tmpdir, cancelled_import_path, project);
+
+    cbm_pipeline_incremental_test_reset_faults();
+    observed_fast_run_t retry = run_observed_fast_pipeline(tmpdir, dbpath);
+    int retry_live_before;
+    int retry_live_after;
+    observe_named_generation(dbpath, project, "StoredBefore", "StoredAfter", &retry_live_before,
+                             &retry_live_after);
+    bool retry_full_mode = stored_mode_is_full(dbpath, project);
+    imported_generation_t retry_artifact =
+        import_artifact_generation(tmpdir, retry_import_path, project);
+
+    cbm_pipeline_incremental_test_reset_faults();
+    observed_fast_run_t noop = run_observed_fast_pipeline(tmpdir, dbpath);
+
+    ASSERT_EQ(cbm_unlink(TH_PATH(tmpdir, "tools/util.go")), 0);
+    cbm_pipeline_incremental_test_reset_faults();
+    observed_fast_run_t deleted = run_observed_fast_pipeline(tmpdir, dbpath);
+    int deleted_live_before;
+    int deleted_live_after;
+    observe_named_generation(dbpath, project, "StoredBefore", "StoredAfter", &deleted_live_before,
+                             &deleted_live_after);
+    bool delete_full_mode = stored_mode_is_full(dbpath, project);
+
+    cbm_store_t *store = cbm_store_open_path(dbpath);
+    ASSERT_NOT_NULL(store);
+    cbm_file_hash_t deleted_hash = {0};
+    int deleted_hash_rc = cbm_store_get_file_hash(store, project, "tools/util.go", &deleted_hash);
+    cbm_store_clear_file_hash(&deleted_hash);
+    cbm_store_close(store);
+    imported_generation_t deleted_artifact =
+        import_artifact_generation(tmpdir, deleted_import_path, project);
+
+    cbm_pipeline_incremental_test_reset_faults();
+    free(project);
+    th_rmtree(artifact_tmpdir);
+    th_rmtree(tmpdir);
+
+    ASSERT_EQ(cancelled.rc, CBM_PIPELINE_ABORT_PRESERVE_DB);
+    ASSERT_EQ(cancelled.route, CBM_INCREMENTAL_ROUTE_FORCED_FULL);
+    ASSERT_TRUE(cancelled.tools_excluded);
+    ASSERT_EQ(cancelled_live_before, 1);
+    ASSERT_EQ(cancelled_live_after, 0);
+    ASSERT_EQ(cancelled.publish.rename_calls, 0);
+    ASSERT_EQ(cancelled.publish.export_count, 0);
+    ASSERT_EQ(cancelled_artifact.rc, 0);
+    ASSERT_EQ(cancelled_artifact.before_nodes, 1);
+    ASSERT_EQ(cancelled_artifact.after_nodes, 0);
+
+    ASSERT_EQ(retry.rc, 0);
+    ASSERT_EQ(retry.route, CBM_INCREMENTAL_ROUTE_FORCED_FULL);
+    ASSERT_TRUE(retry.tools_excluded);
+    ASSERT_TRUE(retry_full_mode);
+    ASSERT_EQ(retry_live_before, 0);
+    ASSERT_EQ(retry_live_after, 1);
+    ASSERT_EQ(retry.publish.rename_calls, 1);
+    ASSERT_EQ(retry.publish.exports_before_publish, 0);
+    ASSERT_EQ(retry.publish.export_count, 1);
+    ASSERT_EQ(retry_artifact.rc, 0);
+    ASSERT_EQ(retry_artifact.before_nodes, 0);
+    ASSERT_EQ(retry_artifact.after_nodes, 1);
+
+    ASSERT_EQ(noop.rc, 0);
+    ASSERT_EQ(noop.route, CBM_INCREMENTAL_ROUTE_NOOP);
+    ASSERT_TRUE(noop.tools_excluded);
+    ASSERT_EQ(noop.publish.rename_calls, 1);
+    ASSERT_EQ(noop.publish.exports_before_publish, 0);
+    ASSERT_EQ(noop.publish.export_count, 1);
+
+    ASSERT_EQ(deleted.rc, 0);
+    ASSERT_EQ(deleted.route, CBM_INCREMENTAL_ROUTE_FORCED_FULL);
+    ASSERT_TRUE(deleted.tools_excluded);
+    ASSERT_EQ(deleted.publish.rename_calls, 1);
+    ASSERT_EQ(deleted.publish.exports_before_publish, 0);
+    ASSERT_EQ(deleted.publish.export_count, 1);
+    ASSERT_EQ(deleted_hash_rc, CBM_STORE_NOT_FOUND);
+    ASSERT_TRUE(delete_full_mode);
+    ASSERT_EQ(deleted_live_before, 0);
+    ASSERT_EQ(deleted_live_after, 0);
+    ASSERT_EQ(deleted_artifact.rc, 0);
+    ASSERT_EQ(deleted_artifact.before_nodes, 0);
+    ASSERT_EQ(deleted_artifact.after_nodes, 0);
+    PASS();
+}
+
 TEST(incremental_fast_preserves_mode_skipped_tools_dir) {
     /* Regression: 2026-04-13. A fast-mode reindex after a full-mode index
      * was silently destroying every file under FAST_SKIP_DIRS directories
@@ -11987,6 +12254,7 @@ SUITE(pipeline) {
  * broad pipeline suite so RED/GREEN iterations exercise only this boundary;
  * the default all-suite run still executes it. */
 SUITE(pipeline_semantic_manifest_repro) {
+    RUN_TEST(incremental_downgrade_preserves_scope_and_artifact_across_change_noop_delete);
     RUN_TEST(pipeline_incremental_repoints_call_reference_without_stale_edge);
     RUN_TEST(pipeline_parallel_manifest_is_byte_stable_above_threshold);
     RUN_TEST(pipeline_closure_repair_body_edit_converges_with_fresh_full);
