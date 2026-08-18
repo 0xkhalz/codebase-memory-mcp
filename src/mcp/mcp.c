@@ -123,6 +123,7 @@ enum {
  * growing getline buffers without bound through ignored extension headers. */
 #define MCP_MAX_MESSAGE_SIZE ((size_t)10U * 1024U * 1024U)
 #define MCP_MAX_HEADER_SIZE ((size_t)8U * 1024U)
+#define MCP_SEARCH_OUTPUT_MAX ((size_t)64U * 1024U * 1024U)
 
 /* ── Helpers ────────────────────────────────────────────────────── */
 
@@ -1575,6 +1576,7 @@ struct cbm_mcp_server {
     void *quarantine_test_context;
     cbm_mcp_command_test_hook_fn command_test_hook;
     void *command_test_context;
+    size_t search_output_limit_override;
     cbm_thread_t autoindex_tid;
     bool autoindex_active; /* true if auto-index thread was started */
 
@@ -1871,6 +1873,12 @@ void cbm_mcp_server_set_command_test_hook(cbm_mcp_server_t *srv, cbm_mcp_command
     }
     srv->command_test_hook = hook;
     srv->command_test_context = context;
+}
+
+void cbm_mcp_server_set_search_output_limit_for_test(cbm_mcp_server_t *srv, size_t limit) {
+    if (srv) {
+        srv->search_output_limit_override = limit;
+    }
 }
 
 /* ── Cache dir + project DB path helpers ───────────────────────── */
@@ -9779,6 +9787,32 @@ static bool compile_path_filter(const char *filter, cbm_regex_t *re) {
     return cbm_regcomp(re, filter, CBM_REG_EXTENDED | CBM_REG_NOSUB) == CBM_REG_OK;
 }
 
+static int mcp_run_shell_command_cancellable_bounded(cbm_mcp_server_t *srv, const char *command,
+                                                     char output_path[CBM_SZ_2K],
+                                                     size_t output_limit,
+                                                     bool *output_limit_exceeded,
+                                                     cbm_proc_result_t *result_out);
+
+#ifdef _WIN32
+static char *search_code_scan_error(search_scratch_t *scratch, const char *output_path,
+                                    bool has_path_filter, cbm_regex_t *path_regex, char *root_path,
+                                    char *pattern, char *project, char *file_pattern,
+                                    const char *message) {
+    if (output_path && output_path[0]) {
+        (void)cbm_unlink(output_path);
+    }
+    search_scratch_close(scratch);
+    if (has_path_filter) {
+        cbm_regfree(path_regex);
+    }
+    free(root_path);
+    free(pattern);
+    free(project);
+    free(file_pattern);
+    return cbm_mcp_text_result(message, true);
+}
+#endif
+
 static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
     char *pattern = cbm_mcp_get_string_arg(args, "pattern");
     char *project = get_project_arg(args);
@@ -9962,6 +9996,44 @@ static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
         cbm_search_code_build_grep_cmd(cmd, sizeof(cmd), use_regex, scoped, file_pattern, tmpfile,
                                        filelist, root_path);
 
+#ifdef _WIN32
+        char output_path[CBM_SZ_2K] = {0};
+        cbm_proc_result_t scan_result = {0};
+        bool scan_output_exceeded = false;
+        size_t scan_output_limit = srv->search_output_limit_override
+                                       ? srv->search_output_limit_override
+                                       : MCP_SEARCH_OUTPUT_MAX;
+        int scan_run = mcp_run_shell_command_cancellable_bounded(
+            srv, cmd, output_path, scan_output_limit, &scan_output_exceeded, &scan_result);
+        if (scan_output_exceeded) {
+            char message[CBM_SZ_128];
+            snprintf(message, sizeof(message),
+                     "search failed: output exceeded the %zu-byte safety limit", scan_output_limit);
+            return search_code_scan_error(&scratch, output_path, has_path_filter, &path_regex,
+                                          root_path, pattern, project, file_pattern, message);
+        }
+        bool scan_cancelled = scan_result.cancellation_requested || mcp_request_cancelled(srv);
+        if (scan_cancelled) {
+            return search_code_scan_error(&scratch, output_path, has_path_filter, &path_regex,
+                                          root_path, pattern, project, file_pattern,
+                                          "search_code cancelled for this request");
+        }
+        if (scan_run != 0) {
+            return search_code_scan_error(
+                &scratch, output_path, has_path_filter, &path_regex, root_path, pattern, project,
+                file_pattern, "search failed: the contained command could not complete");
+        }
+        FILE *fp = cbm_fopen(output_path, "rb");
+        if (!fp) {
+            return search_code_scan_error(&scratch, output_path, has_path_filter, &path_regex,
+                                          root_path, pattern, project, file_pattern,
+                                          "search failed: contained output could not be read");
+        }
+        gm = collect_grep_matches(fp, root_path, strlen(root_path), has_path_filter, &path_regex,
+                                  grep_limit, &gm_count);
+        (void)fclose(fp);
+        (void)cbm_unlink(output_path);
+#else
         FILE *fp = cbm_popen(cmd, "r");
         if (!fp) {
             search_scratch_close(&scratch);
@@ -9978,6 +10050,7 @@ static char *handle_search_code(cbm_mcp_server_t *srv, const char *args) {
         gm = collect_grep_matches(fp, root_path, strlen(root_path), has_path_filter, &path_regex,
                                   grep_limit, &gm_count);
         cbm_pclose(fp);
+#endif
         /* Both scratch files and the private directory go here — unlike the old
          * code, the file list is removed even when the scan was not scoped. */
         search_scratch_close(&scratch);
@@ -10138,10 +10211,16 @@ static bool mcp_resolve_windows_cmd(char out[CBM_SZ_4K]) {
 }
 #endif
 
-static int mcp_run_shell_command_cancellable(cbm_mcp_server_t *srv, const char *command,
-                                             char output_path[CBM_SZ_2K],
-                                             cbm_proc_result_t *result_out) {
-    if (!srv || !command || !output_path || !result_out || !mcp_command_output_path(output_path)) {
+static int mcp_run_shell_command_cancellable_bounded(cbm_mcp_server_t *srv, const char *command,
+                                                     char output_path[CBM_SZ_2K],
+                                                     size_t output_limit,
+                                                     bool *output_limit_exceeded,
+                                                     cbm_proc_result_t *result_out) {
+    if (output_limit_exceeded) {
+        *output_limit_exceeded = false;
+    }
+    if (!srv || !command || !output_path || !result_out ||
+        (output_limit > 0 && !output_limit_exceeded) || !mcp_command_output_path(output_path)) {
         return -1;
     }
     /* Internal test seam: rejecting after output allocation exercises the same
@@ -10180,9 +10259,17 @@ static int mcp_run_shell_command_cancellable(cbm_mcp_server_t *srv, const char *
     }
 
     cbm_proc_poll_t state;
+    bool limit_exceeded = false;
     for (;;) {
         if (mcp_request_cancelled(srv)) {
             (void)cbm_subprocess_request_cancel(process);
+        }
+        if (!limit_exceeded && output_limit > 0) {
+            int64_t output_size = cbm_file_size(output_path);
+            if (output_size > 0 && (uint64_t)output_size > output_limit) {
+                limit_exceeded = true;
+                (void)cbm_subprocess_request_cancel(process);
+            }
         }
         state = cbm_subprocess_poll(process, result_out);
         if (state != CBM_PROC_POLL_RUNNING) {
@@ -10193,7 +10280,21 @@ static int mcp_run_shell_command_cancellable(cbm_mcp_server_t *srv, const char *
     bool contained = state == CBM_PROC_POLL_TERMINAL && result_out->tree_quiesced &&
                      !result_out->supervision_failed;
     cbm_subprocess_destroy(process);
+    if (!limit_exceeded && output_limit > 0) {
+        int64_t final_size = cbm_file_size(output_path);
+        limit_exceeded = final_size > 0 && (uint64_t)final_size > output_limit;
+    }
+    if (output_limit_exceeded) {
+        *output_limit_exceeded = limit_exceeded;
+    }
     return contained ? 0 : -1;
+}
+
+static int mcp_run_shell_command_cancellable(cbm_mcp_server_t *srv, const char *command,
+                                             char output_path[CBM_SZ_2K],
+                                             cbm_proc_result_t *result_out) {
+    return mcp_run_shell_command_cancellable_bounded(srv, command, output_path, 0, NULL,
+                                                     result_out);
 }
 
 /* Does `node`'s line range overlap any recorded hunk for `file`? Used to scope
