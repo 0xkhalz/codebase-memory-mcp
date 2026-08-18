@@ -5047,6 +5047,9 @@ TEST(search_code_windows_output_limit_fails_closed_and_cleans_scan) {
     PASS();
 #else
     SKIP_PLATFORM("supervised Select-String output limit runs on Windows");
+#endif
+}
+
 /* Windows raw scans must pin the PowerShell pipe to UTF-8: PS 5.1 otherwise
  * emits stdout in the console OEM codepage and non-ASCII content degrades to
  * '?' depending on the inherited console CP (seen as test_mcp raw-Русский
